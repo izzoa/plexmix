@@ -222,6 +222,11 @@ def doctor():
 
         if orphaned_count == 0:
             console.print("\n[green]✓ No orphaned embeddings found. Database is healthy![/green]")
+
+            if typer.confirm("\nRun a full sync to check for deleted tracks in Plex?", default=False):
+                console.print("\n[bold]Running full sync...[/bold]")
+                sync_full(embeddings=False)
+                console.print("\n[green]✓ Sync completed![/green]")
             return
 
         if typer.confirm(f"\nDelete {orphaned_count} orphaned embeddings?", default=True):
@@ -319,14 +324,31 @@ def doctor():
                         console.print(f"\n[green]✓ Successfully generated {embeddings_saved} embeddings![/green]")
 
                     except KeyboardInterrupt:
-                        console.print(f"\n[yellow]Embedding generation interrupted.[/yellow]")
-                        console.print(f"[green]Saved {embeddings_saved} embeddings before interruption.[/green]")
+                        console.print(f"\n[yellow]⚠ Interrupted. Saved {embeddings_saved} embeddings.[/yellow]")
                         console.print("[yellow]Run 'plexmix doctor' again to continue.[/yellow]")
                         raise typer.Exit(130)
                 else:
                     console.print("\n[yellow]Run 'plexmix sync full' later to generate embeddings.[/yellow]")
         else:
             console.print("[yellow]Operation cancelled.[/yellow]")
+
+        console.print("\n[cyan]Checking for deleted tracks in Plex...[/cyan]")
+        if typer.confirm("\nRun a full sync to remove deleted tracks from database?", default=True):
+            console.print("\n[bold]Running full sync...[/bold]")
+            sync_full(embeddings=False)
+            console.print("\n[green]✓ Sync completed![/green]")
+
+        cursor.execute('SELECT COUNT(*) FROM tracks WHERE tags IS NULL OR tags = ""')
+        untagged_count = cursor.fetchone()[0]
+
+    if untagged_count > 0:
+        console.print(f"\n[cyan]Found {untagged_count} tracks without tags[/cyan]")
+        if typer.confirm("\nGenerate AI tags for untagged tracks?", default=True):
+            console.print("\n[bold]Generating tags...[/bold]")
+            tags_generate(provider="gemini", regenerate_embeddings=True)
+            console.print("\n[green]✓ Tags generated![/green]")
+    else:
+        console.print("\n[green]✓ All tracks have tags![/green]")
 
 
 @tags_app.command("generate")
@@ -419,7 +441,7 @@ def tags_generate(
         console.print(f"[green]Updated {updated_count} tracks with tags![/green]")
 
         if regenerate_embeddings and updated_count > 0:
-            console.print("\n[bold]Regenerating embeddings with tags...[/bold]")
+            console.print("\n[bold]Regenerating embeddings for newly tagged tracks...[/bold]")
 
             google_key = credentials.get_google_api_key()
             if not google_key:
@@ -442,7 +464,8 @@ def tags_generate(
             from ..database.models import Embedding
             from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
-            tagged_tracks = [t for t in all_tracks if t.tags and t.get_tags_list()]
+            newly_tagged_track_ids = {track.id for track in tracks_needing_tags if track.id in tags_dict and tags_dict[track.id]}
+            tagged_tracks = [t for t in tracks_needing_tags if t.id in newly_tagged_track_ids]
 
             try:
                 with Progress(
