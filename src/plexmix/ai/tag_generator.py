@@ -1,6 +1,7 @@
 from typing import List, Dict, Any
 import json
 import logging
+import time
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from .base import AIProvider
@@ -41,13 +42,31 @@ class TagGenerator:
     def _generate_batch(self, tracks: List[Dict[str, Any]]) -> Dict[int, List[str]]:
         prompt = self._prepare_tag_prompt(tracks)
 
-        try:
-            response = self._call_ai_provider(prompt)
-            parsed_tags = self._parse_tag_response(response, tracks)
-            return parsed_tags
-        except Exception as e:
-            logger.error(f"Failed to generate tags for batch: {e}")
-            return {track['id']: [] for track in tracks}
+        max_retries = 5
+        base_delay = 2
+
+        for attempt in range(max_retries):
+            try:
+                response = self._call_ai_provider(prompt)
+                parsed_tags = self._parse_tag_response(response, tracks)
+                return parsed_tags
+            except Exception as e:
+                error_str = str(e)
+
+                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        logger.error(f"Rate limit exceeded after {max_retries} attempts: {e}")
+                        return {track['id']: [] for track in tracks}
+                else:
+                    logger.error(f"Failed to generate tags for batch: {e}")
+                    return {track['id']: [] for track in tracks}
+
+        return {track['id']: [] for track in tracks}
 
     def _prepare_tag_prompt(self, tracks: List[Dict[str, Any]]) -> str:
         system_prompt = """You are a music expert helping to categorize songs with descriptive tags.

@@ -36,39 +36,73 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
     def generate_embedding(self, text: str) -> List[float]:
         import google.generativeai as genai
 
-        try:
-            result = genai.embed_content(
-                model=f"models/{self.model_name}",
-                content=text,
-                task_type="retrieval_document"
-            )
-            return result['embedding']
-        except Exception as e:
-            logger.error(f"Failed to generate Gemini embedding: {e}")
-            raise
+        max_retries = 5
+        base_delay = 2
+
+        for attempt in range(max_retries):
+            try:
+                result = genai.embed_content(
+                    model=f"models/{self.model_name}",
+                    content=text,
+                    task_type="retrieval_document"
+                )
+                return result['embedding']
+            except Exception as e:
+                error_str = str(e)
+
+                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                    if attempt < max_retries - 1:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"Rate limit hit. Retrying in {delay}s...")
+                        time.sleep(delay)
+                        continue
+                    else:
+                        logger.error(f"Rate limit exceeded after {max_retries} attempts: {e}")
+                        raise
+                else:
+                    logger.error(f"Failed to generate Gemini embedding: {e}")
+                    raise
+
+        raise Exception("Max retries exceeded")
 
     def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
         import google.generativeai as genai
 
         embeddings = []
         total_batches = (len(texts) + batch_size - 1) // batch_size
+        max_retries = 5
+        base_delay = 2
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
             batch_num = i // batch_size + 1
 
-            try:
-                logger.info(f"Generating Gemini embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"Generating Gemini embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
 
-                for text in batch:
-                    embedding = self.generate_embedding(text)
-                    embeddings.append(embedding)
-                    time.sleep(0.1)
+                    for text in batch:
+                        embedding = self.generate_embedding(text)
+                        embeddings.append(embedding)
+                        time.sleep(0.1)
 
-                logger.info(f"Completed Gemini batch {batch_num}/{total_batches}")
-            except Exception as e:
-                logger.error(f"Failed to generate batch embeddings (batch {batch_num}): {e}")
-                raise
+                    logger.info(f"Completed Gemini batch {batch_num}/{total_batches}")
+                    break
+                except Exception as e:
+                    error_str = str(e)
+
+                    if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                        if attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(f"Rate limit hit on batch {batch_num} (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                            time.sleep(delay)
+                            continue
+                        else:
+                            logger.error(f"Rate limit exceeded for batch {batch_num} after {max_retries} attempts: {e}")
+                            raise
+                    else:
+                        logger.error(f"Failed to generate batch embeddings (batch {batch_num}): {e}")
+                        raise
 
         return embeddings
 
