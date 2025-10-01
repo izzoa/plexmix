@@ -197,37 +197,50 @@ class SyncEngine:
             return
 
         progress.update(task, total=len(tracks_needing_embeddings))
-
-        track_data_list = []
-        for track in tracks_needing_embeddings:
-            artist = self.db.get_artist_by_id(track.artist_id)
-            album = self.db.get_album_by_id(track.album_id)
-
-            track_data = {
-                'id': track.id,
-                'title': track.title,
-                'artist': artist.name if artist else 'Unknown',
-                'album': album.title if album else 'Unknown',
-                'genre': track.genre or '',
-                'year': track.year or '',
-                'tags': track.tags or ''
-            }
-            track_data_list.append(track_data)
-
-        texts = [create_track_text(td) for td in track_data_list]
-        embeddings = self.embedding_generator.generate_batch_embeddings(texts, batch_size=100)
+        logger.info(f"Generating embeddings for {len(tracks_needing_embeddings)} tracks")
 
         from ..database.models import Embedding
 
-        for track, embedding_vector in zip(tracks_needing_embeddings, embeddings):
-            embedding = Embedding(
-                track_id=track.id,
-                embedding_model=self.embedding_generator.provider_name,
-                embedding_dim=self.embedding_generator.get_dimension(),
-                vector=embedding_vector
-            )
-            self.db.insert_embedding(embedding)
-            progress.update(task, advance=1)
+        batch_size = 50
+        for i in range(0, len(tracks_needing_embeddings), batch_size):
+            batch_tracks = tracks_needing_embeddings[i:i + batch_size]
+
+            track_data_list = []
+            for track in batch_tracks:
+                artist = self.db.get_artist_by_id(track.artist_id)
+                album = self.db.get_album_by_id(track.album_id)
+
+                track_data = {
+                    'id': track.id,
+                    'title': track.title,
+                    'artist': artist.name if artist else 'Unknown',
+                    'album': album.title if album else 'Unknown',
+                    'genre': track.genre or '',
+                    'year': track.year or '',
+                    'tags': track.tags or ''
+                }
+                track_data_list.append(track_data)
+
+            texts = [create_track_text(td) for td in track_data_list]
+            logger.debug(f"Generating embeddings for batch {i//batch_size + 1} ({len(texts)} tracks)")
+
+            try:
+                embeddings = self.embedding_generator.generate_batch_embeddings(texts, batch_size=50)
+
+                for track, embedding_vector in zip(batch_tracks, embeddings):
+                    embedding = Embedding(
+                        track_id=track.id,
+                        embedding_model=self.embedding_generator.provider_name,
+                        embedding_dim=self.embedding_generator.get_dimension(),
+                        vector=embedding_vector
+                    )
+                    self.db.insert_embedding(embedding)
+                    progress.update(task, advance=1)
+
+                logger.debug(f"Completed batch {i//batch_size + 1}")
+            except Exception as e:
+                logger.error(f"Failed to generate embeddings for batch {i//batch_size + 1}: {e}")
+                raise
 
         all_embeddings = self.db.get_all_embeddings()
         track_ids = [emb[0] for emb in all_embeddings]

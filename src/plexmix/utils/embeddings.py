@@ -51,17 +51,23 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         import google.generativeai as genai
 
         embeddings = []
+        total_batches = (len(texts) + batch_size - 1) // batch_size
+
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
+            batch_num = i // batch_size + 1
+
             try:
+                logger.info(f"Generating Gemini embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
+
                 for text in batch:
                     embedding = self.generate_embedding(text)
                     embeddings.append(embedding)
                     time.sleep(0.1)
 
-                logger.debug(f"Generated {len(batch)} embeddings (batch {i//batch_size + 1})")
+                logger.info(f"Completed Gemini batch {batch_num}/{total_batches}")
             except Exception as e:
-                logger.error(f"Failed to generate batch embeddings: {e}")
+                logger.error(f"Failed to generate batch embeddings (batch {batch_num}): {e}")
                 raise
 
         return embeddings
