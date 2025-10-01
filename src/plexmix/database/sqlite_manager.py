@@ -86,6 +86,7 @@ class SQLiteManager:
                 play_count INTEGER DEFAULT 0,
                 last_played TIMESTAMP,
                 file_path TEXT,
+                tags TEXT,
                 FOREIGN KEY (artist_id) REFERENCES artists(id) ON DELETE CASCADE,
                 FOREIGN KEY (album_id) REFERENCES albums(id) ON DELETE CASCADE
             )
@@ -279,10 +280,10 @@ class SQLiteManager:
         cursor = self.get_connection().cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO tracks
-            (plex_key, title, artist_id, album_id, duration_ms, genre, year, rating, play_count, last_played, file_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (plex_key, title, artist_id, album_id, duration_ms, genre, year, rating, play_count, last_played, file_path, tags)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (track.plex_key, track.title, track.artist_id, track.album_id, track.duration_ms,
-              track.genre, track.year, track.rating, track.play_count, track.last_played, track.file_path))
+              track.genre, track.year, track.rating, track.play_count, track.last_played, track.file_path, track.tags))
         self.get_connection().commit()
         return cursor.lastrowid
 

@@ -185,12 +185,15 @@ def create_track_text(track_data: dict) -> str:
     album = track_data.get('album', 'Unknown Album')
     genres = track_data.get('genre', '')
     year = track_data.get('year', '')
+    tags = track_data.get('tags', '')
 
     text = f"{title} by {artist} from {album}"
     if genres:
         text += f" - {genres}"
     if year:
         text += f" ({year})"
+    if tags:
+        text += f" | tags: {tags}"
 
     return text
 

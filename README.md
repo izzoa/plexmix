@@ -11,6 +11,7 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 ✨ **Simple Setup** - Only requires a Google API key to get started
 🎵 **Smart Sync** - Syncs Plex music library with incremental updates
 🤖 **AI-Powered** - Uses Google Gemini, OpenAI GPT, or Anthropic Claude
+🏷️ **AI Tagging** - Automatically generates descriptive tags (mood, energy, activity) for tracks
 🔍 **Semantic Search** - FAISS vector similarity search for intelligent track matching
 🎨 **Mood-Based** - Generate playlists from natural language descriptions
 ⚡ **Fast** - Local database with optimized indexes and full-text search
@@ -27,6 +28,9 @@ poetry run plexmix config init
 
 # Sync your Plex library (generates embeddings automatically)
 poetry run plexmix sync full
+
+# Generate AI tags for tracks (enhances search quality)
+poetry run plexmix tags generate
 
 # Create a playlist
 poetry run plexmix create "upbeat morning energy"
@@ -99,6 +103,29 @@ plexmix sync full
 plexmix sync full --no-embeddings
 ```
 
+### Tag Generation
+
+```bash
+# Generate AI tags for all untagged tracks
+plexmix tags generate
+
+# Use alternative AI provider
+plexmix tags generate --provider openai
+
+# Skip embedding regeneration (faster, but tags won't be in search)
+plexmix tags generate --no-regenerate-embeddings
+```
+
+**What are tags?**
+AI-generated descriptive labels (3-5 per track) that enhance semantic search:
+- **Mood**: energetic, melancholic, upbeat, chill, intense
+- **Energy level**: high-energy, low-energy, moderate
+- **Activity fit**: workout, study, party, sleep, driving
+- **Tempo feel**: fast-paced, slow, mid-tempo
+- **Emotional tone**: happy, sad, angry, romantic, nostalgic
+
+Tags are automatically included in embeddings for more accurate mood-based playlist generation.
+
 ### Playlist Generation
 
 ```bash
@@ -126,11 +153,12 @@ plexmix create "test playlist" --no-create-in-plex
 
 ## Architecture
 
-PlexMix uses a two-stage retrieval system:
+PlexMix uses a two-stage retrieval system with AI-enhanced tagging:
 
-1. **SQL Filters** → Filter tracks by genre, year, rating, artist
-2. **FAISS Similarity Search** → Retrieve top-K candidates using semantic embeddings
-3. **LLM Selection** → AI provider selects final tracks matching the mood
+1. **AI Tagging** → Tracks receive 3-5 descriptive tags (mood, energy, activity, tempo, emotion)
+2. **SQL Filters** → Filter tracks by genre, year, rating, artist
+3. **FAISS Similarity Search** → Retrieve top-K candidates using semantic embeddings (including tags)
+4. **LLM Selection** → AI provider selects final tracks matching the mood
 
 ### Technology Stack
 
@@ -151,7 +179,8 @@ plexmix/
 │   │   ├── base.py       # Abstract base class
 │   │   ├── gemini_provider.py
 │   │   ├── openai_provider.py
-│   │   └── claude_provider.py
+│   │   ├── claude_provider.py
+│   │   └── tag_generator.py  # AI-based tag generation
 │   ├── cli/              # Command-line interface
 │   │   └── main.py       # Typer CLI app
 │   ├── config/           # Configuration management
@@ -178,8 +207,8 @@ PlexMix stores all music metadata locally:
 
 - **artists**: Artist information
 - **albums**: Album details with artist relationships
-- **tracks**: Track metadata with full-text search
-- **embeddings**: Vector embeddings for semantic search
+- **tracks**: Track metadata with full-text search and AI-generated tags (up to 5 per track)
+- **embeddings**: Vector embeddings for semantic search (includes tags)
 - **playlists**: Generated playlist metadata
 - **sync_history**: Synchronization audit log
 
@@ -195,7 +224,7 @@ PlexMix stores all music metadata locally:
 
 | Provider | Model | Context | Notes |
 |----------|-------|---------|-------|
-| **Google Gemini** (default) | gemini-2.0-flash-exp | ~1M tokens | Fast, accurate, cost-effective |
+| **Google Gemini** (default) | gemini-2.5-flash | ~1M tokens | Fast, accurate, cost-effective |
 | OpenAI | gpt-4o-mini | ~128K tokens | High quality, moderate cost |
 | Anthropic | claude-3-5-sonnet | ~200K tokens | Excellent reasoning |
 

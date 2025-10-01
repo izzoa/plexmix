@@ -209,7 +209,8 @@ class SyncEngine:
                 'artist': artist.name if artist else 'Unknown',
                 'album': album.title if album else 'Unknown',
                 'genre': track.genre or '',
-                'year': track.year or ''
+                'year': track.year or '',
+                'tags': track.tags or ''
             }
             track_data_list.append(track_data)
 

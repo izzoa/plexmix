@@ -14,6 +14,7 @@ from ..plex.client import PlexClient
 from ..plex.sync import SyncEngine
 from ..utils.embeddings import EmbeddingGenerator
 from ..ai import get_ai_provider
+from ..ai.tag_generator import TagGenerator
 from ..playlist.generator import PlaylistGenerator
 from ..utils.logging import setup_logging
 
@@ -129,6 +130,9 @@ def config_show():
 sync_app = typer.Typer(name="sync", help="Library synchronization")
 app.add_typer(sync_app)
 
+tags_app = typer.Typer(name="tags", help="AI-based tag generation")
+app.add_typer(tags_app)
+
 
 @sync_app.command("full")
 def sync_full(
@@ -179,6 +183,139 @@ def sync_full(
         console.print(f"  Tracks added: {sync_result.tracks_added}")
         console.print(f"  Tracks updated: {sync_result.tracks_updated}")
         console.print(f"  Tracks removed: {sync_result.tracks_removed}")
+
+
+@tags_app.command("generate")
+def tags_generate(
+    provider: str = typer.Option("gemini", help="AI provider (gemini, openai, claude)"),
+    regenerate_embeddings: bool = typer.Option(True, help="Regenerate embeddings after tagging")
+):
+    console.print("[bold]Generating tags for tracks...[/bold]")
+
+    settings = Settings.load_from_file()
+
+    google_key = credentials.get_google_api_key()
+    openai_key = credentials.get_openai_api_key()
+    anthropic_key = credentials.get_anthropic_api_key()
+
+    if provider == "gemini" and not google_key:
+        console.print("[red]Google API key not configured.[/red]")
+        raise typer.Exit(1)
+    elif provider == "openai" and not openai_key:
+        console.print("[red]OpenAI API key not configured.[/red]")
+        raise typer.Exit(1)
+    elif provider == "claude" and not anthropic_key:
+        console.print("[red]Anthropic API key not configured.[/red]")
+        raise typer.Exit(1)
+
+    api_key = google_key if provider == "gemini" else (openai_key if provider == "openai" else anthropic_key)
+
+    db_path = settings.database.get_db_path()
+    with SQLiteManager(str(db_path)) as db:
+        all_tracks = db.get_all_tracks()
+
+        tracks_needing_tags = [t for t in all_tracks if not t.tags or not t.get_tags_list()]
+
+        if not tracks_needing_tags:
+            console.print("[green]All tracks already have tags![/green]")
+            return
+
+        console.print(f"Found {len(tracks_needing_tags)} tracks without tags")
+
+        ai_provider = get_ai_provider(provider, api_key=api_key)
+        tag_generator = TagGenerator(ai_provider)
+
+        track_data_list = []
+        for track in tracks_needing_tags:
+            artist = db.get_artist_by_id(track.artist_id)
+            track_data_list.append({
+                'id': track.id,
+                'title': track.title,
+                'artist': artist.name if artist else 'Unknown',
+                'genre': track.genre or 'unknown'
+            })
+
+        tags_dict = tag_generator.generate_tags_batch(track_data_list, batch_size=20)
+
+        updated_count = 0
+        for track in tracks_needing_tags:
+            if track.id in tags_dict and tags_dict[track.id]:
+                track.set_tags_list(tags_dict[track.id])
+                db.insert_track(track)
+                updated_count += 1
+
+        console.print(f"[green]Updated {updated_count} tracks with tags![/green]")
+
+        if regenerate_embeddings and updated_count > 0:
+            console.print("\n[bold]Regenerating embeddings with tags...[/bold]")
+
+            google_key = credentials.get_google_api_key()
+            if not google_key:
+                console.print("[yellow]Google API key required for embeddings. Skipping.[/yellow]")
+                return
+
+            embedding_generator = EmbeddingGenerator(
+                provider=settings.embedding.default_provider,
+                api_key=google_key,
+                model=settings.embedding.model
+            )
+
+            index_path = settings.database.get_index_path()
+            vector_index = VectorIndex(
+                dimension=embedding_generator.get_dimension(),
+                index_path=str(index_path)
+            )
+
+            from ..utils.embeddings import create_track_text
+            from ..database.models import Embedding
+            from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+            ) as progress:
+                task = progress.add_task("Regenerating embeddings...", total=updated_count)
+
+                track_data_list = []
+                for track in tracks_needing_tags:
+                    if track.id in tags_dict and tags_dict[track.id]:
+                        artist = db.get_artist_by_id(track.artist_id)
+                        album = db.get_album_by_id(track.album_id)
+
+                        track_data = {
+                            'id': track.id,
+                            'title': track.title,
+                            'artist': artist.name if artist else 'Unknown',
+                            'album': album.title if album else 'Unknown',
+                            'genre': track.genre or '',
+                            'year': track.year or '',
+                            'tags': track.tags or ''
+                        }
+                        track_data_list.append(track_data)
+
+                texts = [create_track_text(td) for td in track_data_list]
+                embeddings = embedding_generator.generate_batch_embeddings(texts, batch_size=100)
+
+                for track_data, embedding_vector in zip(track_data_list, embeddings):
+                    embedding = Embedding(
+                        track_id=track_data['id'],
+                        embedding_model=embedding_generator.provider_name,
+                        embedding_dim=embedding_generator.get_dimension(),
+                        vector=embedding_vector
+                    )
+                    db.insert_embedding(embedding)
+                    progress.update(task, advance=1)
+
+            all_embeddings = db.get_all_embeddings()
+            track_ids = [emb[0] for emb in all_embeddings]
+            vectors = [emb[1] for emb in all_embeddings]
+
+            vector_index.build_index(vectors, track_ids)
+            vector_index.save_index(str(index_path))
+
+            console.print(f"[green]Regenerated {len(embeddings)} embeddings with tags![/green]")
 
 
 @app.command("create")

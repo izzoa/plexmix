@@ -56,6 +56,7 @@ class Track(BaseModel):
     play_count: Optional[int] = None
     last_played: Optional[datetime] = None
     file_path: Optional[str] = None
+    tags: Optional[str] = None
 
     @field_validator('title')
     @classmethod
@@ -77,6 +78,16 @@ class Track(BaseModel):
         if v is not None and v < 0:
             raise ValueError('Duration cannot be negative')
         return v
+
+    def get_tags_list(self) -> List[str]:
+        if not self.tags:
+            return []
+        return [tag.strip() for tag in self.tags.split(',') if tag.strip()]
+
+    def set_tags_list(self, tags: List[str]) -> None:
+        if len(tags) > 5:
+            tags = tags[:5]
+        self.tags = ', '.join(tags) if tags else None
 
 
 class Genre(BaseModel):

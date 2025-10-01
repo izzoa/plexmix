@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiProvider(AIProvider):
-    def __init__(self, api_key: str, model: str = "gemini-2.0-flash-exp", temperature: float = 0.7):
+    def __init__(self, api_key: str, model: str = "gemini-2.5-flash", temperature: float = 0.7):
         super().__init__(api_key, model, temperature)
         try:
             import google.generativeai as genai
