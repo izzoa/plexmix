@@ -37,21 +37,31 @@ class TagGenerator:
             except Exception as e:
                 error_str = str(e)
 
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                # Check if error is retryable (rate limits, timeouts, server errors)
+                is_rate_limit = "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower()
+                is_timeout = "504" in error_str or "timeout" in error_str.lower() or "timed out" in error_str.lower()
+                is_server_error = "500" in error_str or "502" in error_str or "503" in error_str
+
+                if is_rate_limit or is_timeout or is_server_error:
                     if attempt < max_retries - 1:
                         retry_after = self._extract_retry_delay(error_str)
 
                         if retry_after:
                             delay = retry_after * backoff_multiplier
-                            logger.warning(f"Rate limit hit. Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
+                            logger.warning(f"API error (attempt {attempt + 1}/{max_retries}). Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
                         else:
                             delay = base_delay * (2 ** attempt)
-                            logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                            if is_rate_limit:
+                                logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                            elif is_timeout:
+                                logger.warning(f"Request timeout (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                            else:
+                                logger.warning(f"Server error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
 
                         time.sleep(delay)
                         continue
                     else:
-                        logger.error(f"Rate limit exceeded after {max_retries} attempts: {e}")
+                        logger.error(f"Failed after {max_retries} attempts: {e}")
                         return {track['id']: [] for track in tracks}
                 else:
                     logger.error(f"Failed to generate tags for batch: {e}")
