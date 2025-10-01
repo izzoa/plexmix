@@ -139,18 +139,31 @@ class VectorIndex:
             self._create_index()
             return
 
-        self.index = faiss.read_index(str(load_path))
+        try:
+            self.index = faiss.read_index(str(load_path))
 
-        metadata_path = load_path.with_suffix('.metadata')
-        if metadata_path.exists():
-            with open(metadata_path, 'rb') as f:
-                metadata = pickle.load(f)
-                self.track_ids = metadata.get('track_ids', [])
-                loaded_dimension = metadata.get('dimension', self.dimension)
+            metadata_path = load_path.with_suffix('.metadata')
+            if metadata_path.exists():
+                with open(metadata_path, 'rb') as f:
+                    metadata = pickle.load(f)
+                    self.track_ids = metadata.get('track_ids', [])
+                    loaded_dimension = metadata.get('dimension', self.dimension)
 
-                if loaded_dimension != self.dimension:
-                    logger.warning(
-                        f"Loaded index dimension {loaded_dimension} does not match expected {self.dimension}"
-                    )
+                    if loaded_dimension != self.dimension:
+                        logger.warning(
+                            f"Loaded index dimension {loaded_dimension} does not match expected {self.dimension}"
+                        )
 
-        logger.info(f"Loaded FAISS index from {load_path} with {len(self.track_ids)} vectors")
+            logger.info(f"Loaded FAISS index from {load_path} with {len(self.track_ids)} vectors")
+        except Exception as e:
+            logger.error(f"Failed to load corrupted index file: {e}")
+            logger.info("Deleting corrupted index and creating new one")
+
+            if load_path.exists():
+                load_path.unlink()
+
+            metadata_path = load_path.with_suffix('.metadata')
+            if metadata_path.exists():
+                metadata_path.unlink()
+
+            self._create_index()
