@@ -1,0 +1,209 @@
+from typing import List, Optional, Union
+import logging
+import time
+from abc import ABC, abstractmethod
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+class EmbeddingProvider(ABC):
+    @abstractmethod
+    def generate_embedding(self, text: str) -> List[float]:
+        pass
+
+    @abstractmethod
+    def generate_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
+        pass
+
+    @abstractmethod
+    def get_dimension(self) -> int:
+        pass
+
+
+class GeminiEmbeddingProvider(EmbeddingProvider):
+    def __init__(self, api_key: str, model: str = "gemini-embedding-001"):
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=api_key)
+            self.model_name = model
+            self.dimension = 3072
+            logger.info(f"Initialized Gemini embedding provider with model {model}")
+        except ImportError:
+            raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
+
+    def generate_embedding(self, text: str) -> List[float]:
+        import google.generativeai as genai
+
+        try:
+            result = genai.embed_content(
+                model=f"models/{self.model_name}",
+                content=text,
+                task_type="retrieval_document"
+            )
+            return result['embedding']
+        except Exception as e:
+            logger.error(f"Failed to generate Gemini embedding: {e}")
+            raise
+
+    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+        import google.generativeai as genai
+
+        embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            try:
+                for text in batch:
+                    embedding = self.generate_embedding(text)
+                    embeddings.append(embedding)
+                    time.sleep(0.1)
+
+                logger.debug(f"Generated {len(batch)} embeddings (batch {i//batch_size + 1})")
+            except Exception as e:
+                logger.error(f"Failed to generate batch embeddings: {e}")
+                raise
+
+        return embeddings
+
+    def get_dimension(self) -> int:
+        return self.dimension
+
+
+class OpenAIEmbeddingProvider(EmbeddingProvider):
+    def __init__(self, api_key: str, model: str = "text-embedding-3-small"):
+        try:
+            from openai import OpenAI
+            self.client = OpenAI(api_key=api_key)
+            self.model_name = model
+            self.dimension = 1536
+            logger.info(f"Initialized OpenAI embedding provider with model {model}")
+        except ImportError:
+            raise ImportError("openai not installed. Run: pip install openai")
+
+    def generate_embedding(self, text: str) -> List[float]:
+        try:
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=text
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            logger.error(f"Failed to generate OpenAI embedding: {e}")
+            raise
+
+    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+        embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            try:
+                response = self.client.embeddings.create(
+                    model=self.model_name,
+                    input=batch
+                )
+                batch_embeddings = [item.embedding for item in response.data]
+                embeddings.extend(batch_embeddings)
+                logger.debug(f"Generated {len(batch)} embeddings (batch {i//batch_size + 1})")
+            except Exception as e:
+                logger.error(f"Failed to generate batch embeddings: {e}")
+                raise
+
+        return embeddings
+
+    def get_dimension(self) -> int:
+        return self.dimension
+
+
+class LocalEmbeddingProvider(EmbeddingProvider):
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        try:
+            from sentence_transformers import SentenceTransformer
+            self.model = SentenceTransformer(model_name)
+            self.dimension = self.model.get_sentence_embedding_dimension()
+            logger.info(f"Initialized local embedding provider with model {model_name} (dim: {self.dimension})")
+        except ImportError:
+            raise ImportError("sentence-transformers not installed. Run: pip install sentence-transformers")
+
+    def generate_embedding(self, text: str) -> List[float]:
+        try:
+            embedding = self.model.encode(text, convert_to_numpy=True)
+            return embedding.tolist()
+        except Exception as e:
+            logger.error(f"Failed to generate local embedding: {e}")
+            raise
+
+    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
+        try:
+            embeddings = self.model.encode(
+                texts,
+                batch_size=batch_size,
+                show_progress_bar=True,
+                convert_to_numpy=True
+            )
+            return embeddings.tolist()
+        except Exception as e:
+            logger.error(f"Failed to generate batch embeddings: {e}")
+            raise
+
+    def get_dimension(self) -> int:
+        return self.dimension
+
+
+class EmbeddingGenerator:
+    def __init__(self, provider: str, api_key: Optional[str] = None, model: Optional[str] = None):
+        self.provider_name = provider.lower()
+
+        if self.provider_name == "gemini":
+            if not api_key:
+                raise ValueError("API key required for Gemini provider")
+            model = model or "gemini-embedding-001"
+            self.provider = GeminiEmbeddingProvider(api_key, model)
+        elif self.provider_name == "openai":
+            if not api_key:
+                raise ValueError("API key required for OpenAI provider")
+            model = model or "text-embedding-3-small"
+            self.provider = OpenAIEmbeddingProvider(api_key, model)
+        elif self.provider_name == "local":
+            model = model or "all-MiniLM-L6-v2"
+            self.provider = LocalEmbeddingProvider(model)
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
+
+    def generate_embedding(self, text: str) -> List[float]:
+        return self.provider.generate_embedding(text)
+
+    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+        return self.provider.generate_batch_embeddings(texts, batch_size)
+
+    def get_dimension(self) -> int:
+        return self.provider.get_dimension()
+
+
+def create_track_text(track_data: dict) -> str:
+    title = track_data.get('title', 'Unknown')
+    artist = track_data.get('artist', 'Unknown Artist')
+    album = track_data.get('album', 'Unknown Album')
+    genres = track_data.get('genre', '')
+    year = track_data.get('year', '')
+
+    text = f"{title} by {artist} from {album}"
+    if genres:
+        text += f" - {genres}"
+    if year:
+        text += f" ({year})"
+
+    return text
+
+
+def embed_track(track_data: dict, generator: EmbeddingGenerator) -> List[float]:
+    text = create_track_text(track_data)
+    return generator.generate_embedding(text)
+
+
+def embed_all_tracks(
+    tracks: List[dict],
+    generator: EmbeddingGenerator,
+    batch_size: int = 100
+) -> List[List[float]]:
+    texts = [create_track_text(track) for track in tracks]
+    return generator.generate_batch_embeddings(texts, batch_size)
