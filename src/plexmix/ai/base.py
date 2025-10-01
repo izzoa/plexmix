@@ -24,13 +24,12 @@ class AIProvider(ABC):
     def get_max_candidates(self) -> int:
         """Return maximum candidate pool size based on model context window."""
         context_limits = {
-            'gemini-2.5-flash': 500,
+            'gemini-2.5-flash': 1000,
             'gpt-5-mini': 500,
             'gpt-5-nano': 500,
             'gpt-4o-mini': 200,
             'gpt-4o': 300,
             'claude-4-5-sonnet': 300,
-            'claude-3-5-sonnet': 300,
             'claude-3-5-haiku': 300,
             'claude-3-haiku': 200,
         }

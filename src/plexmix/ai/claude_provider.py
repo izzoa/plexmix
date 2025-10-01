@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class ClaudeProvider(AIProvider):
-    def __init__(self, api_key: str, model: str = "claude-3-5-sonnet-20241022", temperature: float = 0.7):
+    def __init__(self, api_key: str, model: str = "claude-4-5-sonnet-20241022", temperature: float = 0.7):
         super().__init__(api_key, model, temperature)
         try:
             from anthropic import Anthropic
