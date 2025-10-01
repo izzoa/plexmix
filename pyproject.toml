@@ -1,0 +1,60 @@
+[tool.poetry]
+name = "plexmix"
+version = "0.1.0"
+description = "AI-powered Plex playlist generator using mood-based queries"
+authors = ["Anthony Izzo"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "plexmix", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+plexapi = "^4.15.0"
+typer = "^0.9.0"
+rich = "^13.7.0"
+pydantic = "^2.5.0"
+pydantic-settings = "^2.1.0"
+python-dotenv = "^1.0.0"
+keyring = "^24.3.0"
+openai = "^1.6.0"
+google-generativeai = "^0.3.0"
+anthropic = "^0.8.0"
+faiss-cpu = "^1.7.4"
+numpy = "^1.26.0"
+sentence-transformers = "^2.2.0"
+pyyaml = "^6.0.1"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+black = "^23.12.0"
+ruff = "^0.1.0"
+mypy = "^1.7.0"
+
+[tool.poetry.scripts]
+plexmix = "plexmix.cli.main:app"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 100
+target-version = ['py310']
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--cov=plexmix --cov-report=html --cov-report=term-missing"
