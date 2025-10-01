@@ -1,6 +1,8 @@
 import logging
 import logging.handlers
 import os
+import sys
+import warnings
 from pathlib import Path
 from typing import Optional
 
@@ -10,8 +12,21 @@ def setup_logging(
     log_file: Optional[str] = None,
     log_format: Optional[str] = None
 ) -> None:
+    # Suppress gRPC and Google library warnings
     os.environ['GRPC_VERBOSITY'] = 'ERROR'
     os.environ['GLOG_minloglevel'] = '2'
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+
+    # Suppress absl logging warnings (unless in debug mode)
+    if level.upper() != 'DEBUG':
+        try:
+            import absl.logging
+            absl.logging.set_verbosity('error')
+            absl.logging.set_stderrthreshold('error')
+        except ImportError:
+            pass
+        warnings.filterwarnings('ignore', category=DeprecationWarning, module='google')
+        warnings.filterwarnings('ignore', category=FutureWarning, module='google')
     if log_format is None:
         log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
