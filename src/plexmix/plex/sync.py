@@ -1,7 +1,7 @@
 from typing import Optional, Dict, Any
 import logging
 from datetime import datetime
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
 from ..plex.client import PlexClient
 from ..database.sqlite_manager import SQLiteManager
@@ -41,6 +41,7 @@ class SyncEngine:
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
                 TaskProgressColumn(),
+                TimeRemainingColumn(),
             ) as progress:
                 task = progress.add_task("Syncing artists...", total=None)
                 artist_map = self._sync_artists(progress, task)

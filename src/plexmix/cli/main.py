@@ -276,7 +276,7 @@ def doctor():
 
                     from ..utils.embeddings import create_track_text
                     from ..database.models import Embedding
-                    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+                    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
                     all_tracks = db.get_all_tracks()
                     tracks_to_embed = [t for t in all_tracks if not db.get_embedding_by_track_id(t.id)]
@@ -287,6 +287,7 @@ def doctor():
                             TextColumn("[progress.description]{task.description}"),
                             BarColumn(),
                             TaskProgressColumn(),
+                            TimeRemainingColumn(),
                         ) as progress:
                             task = progress.add_task("Generating embeddings...", total=len(tracks_to_embed))
 
@@ -409,7 +410,7 @@ def tags_generate(
         updated_count = 0
         batch_size = 20
 
-        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
         try:
             with Progress(
@@ -417,6 +418,7 @@ def tags_generate(
                 TextColumn("[progress.description]{task.description}"),
                 BarColumn(),
                 TaskProgressColumn(),
+                TimeRemainingColumn(),
             ) as progress:
                 task = progress.add_task("Generating tags...", total=len(track_data_list))
 
@@ -467,7 +469,7 @@ def tags_generate(
 
             from ..utils.embeddings import create_track_text
             from ..database.models import Embedding
-            from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+            from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
             newly_tagged_track_ids = {track.id for track in tracks_needing_tags if track.id in tags_dict and tags_dict[track.id]}
             tagged_tracks = [t for t in tracks_needing_tags if t.id in newly_tagged_track_ids]
@@ -478,6 +480,7 @@ def tags_generate(
                     TextColumn("[progress.description]{task.description}"),
                     BarColumn(),
                     TaskProgressColumn(),
+                    TimeRemainingColumn(),
                 ) as progress:
                     task = progress.add_task("Regenerating embeddings...", total=len(tagged_tracks))
 
