@@ -235,6 +235,18 @@ def doctor():
             db.get_connection().commit()
             console.print(f"[green]Deleted {deleted} orphaned embeddings[/green]")
 
+            # Check for untagged tracks first (tags should be generated before embeddings)
+            cursor.execute('SELECT COUNT(*) FROM tracks WHERE tags IS NULL OR tags = ""')
+            untagged_count = cursor.fetchone()[0]
+
+            should_generate_tags = False
+            if untagged_count > 0:
+                console.print(f"\n[cyan]Found {untagged_count} tracks without tags[/cyan]")
+                if typer.confirm("\nGenerate AI tags for untagged tracks first? (recommended before embeddings)", default=True):
+                    should_generate_tags = True
+                else:
+                    console.print("\n[yellow]Skipping tag generation. Tags improve embedding quality![/yellow]")
+
             cursor.execute('SELECT COUNT(*) FROM tracks WHERE id NOT IN (SELECT DISTINCT track_id FROM embeddings)')
             tracks_needing_embeddings = cursor.fetchone()[0]
 
@@ -338,17 +350,10 @@ def doctor():
             sync_full(embeddings=False)
             console.print("\n[green]✓ Sync completed![/green]")
 
-        cursor.execute('SELECT COUNT(*) FROM tracks WHERE tags IS NULL OR tags = ""')
-        untagged_count = cursor.fetchone()[0]
-
-    if untagged_count > 0:
-        console.print(f"\n[cyan]Found {untagged_count} tracks without tags[/cyan]")
-        if typer.confirm("\nGenerate AI tags for untagged tracks?", default=True):
-            console.print("\n[bold]Generating tags...[/bold]")
-            tags_generate(provider="gemini", regenerate_embeddings=True)
-            console.print("\n[green]✓ Tags generated![/green]")
-    else:
-        console.print("\n[green]✓ All tracks have tags![/green]")
+    # Generate tags outside the database context
+    if should_generate_tags:
+        tags_generate(provider="gemini", regenerate_embeddings=True)
+        console.print("\n[green]✓ Tags generated![/green]")
 
 
 @tags_app.command("generate")
