@@ -108,6 +108,9 @@ class PlexClient:
                     if len(batch) >= batch_size:
                         yield batch
                         batch = []
+                except ValueError as e:
+                    logger.debug(f"Skipping artist: {e}")
+                    continue
                 except Exception as e:
                     logger.warning(f"Failed to extract artist metadata: {e}")
                     continue
@@ -136,6 +139,9 @@ class PlexClient:
                     if len(batch) >= batch_size:
                         yield batch
                         batch = []
+                except ValueError as e:
+                    logger.debug(f"Skipping album: {e}")
+                    continue
                 except Exception as e:
                     logger.warning(f"Failed to extract album metadata: {e}")
                     continue
@@ -164,6 +170,9 @@ class PlexClient:
                     if len(batch) >= batch_size:
                         yield batch
                         batch = []
+                except ValueError as e:
+                    logger.debug(f"Skipping track: {e}")
+                    continue
                 except Exception as e:
                     logger.warning(f"Failed to extract track metadata: {e}")
                     continue
@@ -175,6 +184,9 @@ class PlexClient:
             logger.error(f"Failed to retrieve tracks: {e}")
 
     def extract_artist_metadata(self, plex_artist) -> Artist:
+        if not plex_artist.title or not plex_artist.title.strip():
+            raise ValueError(f"Artist has empty name (key: {plex_artist.ratingKey})")
+
         genres = [genre.tag for genre in plex_artist.genres] if hasattr(plex_artist, 'genres') else []
         genre_str = ", ".join(genres) if genres else None
 
@@ -186,6 +198,9 @@ class PlexClient:
         )
 
     def extract_album_metadata(self, plex_album) -> Album:
+        if not plex_album.title or not plex_album.title.strip():
+            raise ValueError(f"Album has empty title (key: {plex_album.ratingKey})")
+
         genres = [genre.tag for genre in plex_album.genres] if hasattr(plex_album, 'genres') else []
         genre_str = ", ".join(genres) if genres else None
 
@@ -202,6 +217,9 @@ class PlexClient:
         )
 
     def extract_track_metadata(self, plex_track) -> Track:
+        if not plex_track.title or not plex_track.title.strip():
+            raise ValueError(f"Track has empty title (key: {plex_track.ratingKey})")
+
         genres = [genre.tag for genre in plex_track.genres] if hasattr(plex_track, 'genres') else []
         genre_str = ", ".join(genres) if genres else None
 
