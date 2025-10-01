@@ -235,14 +235,32 @@ def tags_generate(
                 'genre': track.genre or 'unknown'
             })
 
-        tags_dict = tag_generator.generate_tags_batch(track_data_list, batch_size=20)
-
         updated_count = 0
-        for track in tracks_needing_tags:
-            if track.id in tags_dict and tags_dict[track.id]:
-                track.set_tags_list(tags_dict[track.id])
-                db.insert_track(track)
-                updated_count += 1
+        batch_size = 20
+
+        try:
+            for i in range(0, len(track_data_list), batch_size):
+                batch = track_data_list[i:i + batch_size]
+                batch_num = i // batch_size + 1
+                total_batches = (len(track_data_list) + batch_size - 1) // batch_size
+
+                console.print(f"Processing batch {batch_num}/{total_batches} ({len(batch)} tracks)")
+
+                tags_dict = tag_generator.generate_tags_batch(batch, batch_size=batch_size)
+
+                for track in tracks_needing_tags:
+                    if track.id in tags_dict and tags_dict[track.id]:
+                        track.set_tags_list(tags_dict[track.id])
+                        db.insert_track(track)
+                        updated_count += 1
+
+                console.print(f"[green]Saved {len(tags_dict)} tags to database[/green]")
+
+        except KeyboardInterrupt:
+            console.print(f"\n[yellow]Tag generation interrupted by user.[/yellow]")
+            console.print(f"[green]Successfully saved {updated_count} tracks with tags before interruption.[/green]")
+            if updated_count > 0 and regenerate_embeddings:
+                console.print("[yellow]Tip: Run the command again to continue tagging remaining tracks.[/yellow]")
 
         console.print(f"[green]Updated {updated_count} tracks with tags![/green]")
 
@@ -270,52 +288,67 @@ def tags_generate(
             from ..database.models import Embedding
             from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-            ) as progress:
-                task = progress.add_task("Regenerating embeddings...", total=updated_count)
+            tagged_tracks = [t for t in all_tracks if t.tags and t.get_tags_list()]
 
-                track_data_list = []
-                for track in tracks_needing_tags:
-                    if track.id in tags_dict and tags_dict[track.id]:
-                        artist = db.get_artist_by_id(track.artist_id)
-                        album = db.get_album_by_id(track.album_id)
+            try:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    BarColumn(),
+                    TaskProgressColumn(),
+                ) as progress:
+                    task = progress.add_task("Regenerating embeddings...", total=len(tagged_tracks))
 
-                        track_data = {
-                            'id': track.id,
-                            'title': track.title,
-                            'artist': artist.name if artist else 'Unknown',
-                            'album': album.title if album else 'Unknown',
-                            'genre': track.genre or '',
-                            'year': track.year or '',
-                            'tags': track.tags or ''
-                        }
-                        track_data_list.append(track_data)
+                    emb_batch_size = 50
+                    embeddings_saved = 0
 
-                texts = [create_track_text(td) for td in track_data_list]
-                embeddings = embedding_generator.generate_batch_embeddings(texts, batch_size=100)
+                    for i in range(0, len(tagged_tracks), emb_batch_size):
+                        batch_tracks = tagged_tracks[i:i + emb_batch_size]
 
-                for track_data, embedding_vector in zip(track_data_list, embeddings):
-                    embedding = Embedding(
-                        track_id=track_data['id'],
-                        embedding_model=embedding_generator.provider_name,
-                        embedding_dim=embedding_generator.get_dimension(),
-                        vector=embedding_vector
-                    )
-                    db.insert_embedding(embedding)
-                    progress.update(task, advance=1)
+                        track_data_list = []
+                        for track in batch_tracks:
+                            artist = db.get_artist_by_id(track.artist_id)
+                            album = db.get_album_by_id(track.album_id)
 
-            all_embeddings = db.get_all_embeddings()
-            track_ids = [emb[0] for emb in all_embeddings]
-            vectors = [emb[1] for emb in all_embeddings]
+                            track_data = {
+                                'id': track.id,
+                                'title': track.title,
+                                'artist': artist.name if artist else 'Unknown',
+                                'album': album.title if album else 'Unknown',
+                                'genre': track.genre or '',
+                                'year': track.year or '',
+                                'tags': track.tags or ''
+                            }
+                            track_data_list.append(track_data)
 
-            vector_index.build_index(vectors, track_ids)
-            vector_index.save_index(str(index_path))
+                        texts = [create_track_text(td) for td in track_data_list]
+                        embeddings = embedding_generator.generate_batch_embeddings(texts, batch_size=emb_batch_size)
 
-            console.print(f"[green]Regenerated {len(embeddings)} embeddings with tags![/green]")
+                        for track_data, embedding_vector in zip(track_data_list, embeddings):
+                            embedding = Embedding(
+                                track_id=track_data['id'],
+                                embedding_model=embedding_generator.provider_name,
+                                embedding_dim=embedding_generator.get_dimension(),
+                                vector=embedding_vector
+                            )
+                            db.insert_embedding(embedding)
+                            embeddings_saved += 1
+                            progress.update(task, advance=1)
+
+                all_embeddings = db.get_all_embeddings()
+                track_ids = [emb[0] for emb in all_embeddings]
+                vectors = [emb[1] for emb in all_embeddings]
+
+                vector_index.build_index(vectors, track_ids)
+                vector_index.save_index(str(index_path))
+
+                console.print(f"[green]Regenerated {embeddings_saved} embeddings with tags![/green]")
+
+            except KeyboardInterrupt:
+                console.print(f"\n[yellow]Embedding regeneration interrupted by user.[/yellow]")
+                console.print(f"[green]Successfully saved {embeddings_saved} embeddings before interruption.[/green]")
+                console.print("[yellow]Note: Vector index not rebuilt. Run 'plexmix sync' to rebuild index with all embeddings.[/yellow]")
+                return
 
 
 @app.command("create")

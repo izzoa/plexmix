@@ -19,25 +19,7 @@ class TagGenerator:
         batch_size: int = 20
     ) -> Dict[int, List[str]]:
         logger.info(f"Generating tags for {len(tracks)} tracks")
-
-        all_tags = {}
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-        ) as progress:
-            task = progress.add_task("Generating tags...", total=len(tracks))
-
-            for i in range(0, len(tracks), batch_size):
-                batch = tracks[i:i + batch_size]
-                batch_tags = self._generate_batch(batch)
-                all_tags.update(batch_tags)
-                progress.update(task, advance=len(batch))
-
-        logger.info(f"Generated tags for {len(all_tags)} tracks")
-        return all_tags
+        return self._generate_batch(tracks)
 
     def _generate_batch(self, tracks: List[Dict[str, Any]]) -> Dict[int, List[str]]:
         prompt = self._prepare_tag_prompt(tracks)
