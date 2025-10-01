@@ -246,23 +246,33 @@ def tags_generate(
         updated_count = 0
         batch_size = 20
 
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+
         try:
-            for i in range(0, len(track_data_list), batch_size):
-                batch = track_data_list[i:i + batch_size]
-                batch_num = i // batch_size + 1
-                total_batches = (len(track_data_list) + batch_size - 1) // batch_size
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                TaskProgressColumn(),
+            ) as progress:
+                task = progress.add_task("Generating tags...", total=len(track_data_list))
 
-                console.print(f"Processing batch {batch_num}/{total_batches} ({len(batch)} tracks)")
+                for i in range(0, len(track_data_list), batch_size):
+                    batch = track_data_list[i:i + batch_size]
+                    batch_num = i // batch_size + 1
+                    total_batches = (len(track_data_list) + batch_size - 1) // batch_size
 
-                tags_dict = tag_generator.generate_tags_batch(batch, batch_size=batch_size)
+                    progress.update(task, description=f"Generating tags (batch {batch_num}/{total_batches})...")
 
-                for track in tracks_needing_tags:
-                    if track.id in tags_dict and tags_dict[track.id]:
-                        track.set_tags_list(tags_dict[track.id])
-                        db.insert_track(track)
-                        updated_count += 1
+                    tags_dict = tag_generator.generate_tags_batch(batch, batch_size=batch_size)
 
-                console.print(f"[green]Saved {len(tags_dict)} tags to database[/green]")
+                    for track in tracks_needing_tags:
+                        if track.id in tags_dict and tags_dict[track.id]:
+                            track.set_tags_list(tags_dict[track.id])
+                            db.insert_track(track)
+                            updated_count += 1
+
+                    progress.update(task, advance=len(batch))
 
         except KeyboardInterrupt:
             console.print(f"\n[yellow]Tag generation interrupted by user.[/yellow]")
