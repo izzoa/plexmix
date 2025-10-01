@@ -36,14 +36,11 @@ class DatabaseSettings(BaseSettings):
 
 class AISettings(BaseSettings):
     default_provider: str = Field(default="gemini", description="Default AI provider")
-    google_api_key: Optional[str] = Field(default=None, description="Google API key")
-    openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key")
-    anthropic_api_key: Optional[str] = Field(default=None, description="Anthropic API key")
     model: Optional[str] = Field(default=None, description="Model name")
     temperature: float = Field(default=0.7, description="LLM temperature")
 
     class Config:
-        env_prefix = ""
+        env_prefix = "AI_"
 
 
 class EmbeddingSettings(BaseSettings):
@@ -52,7 +49,7 @@ class EmbeddingSettings(BaseSettings):
     dimension: int = Field(default=3072, description="Embedding dimension")
 
     class Config:
-        env_prefix = "DEFAULT_EMBEDDING_"
+        env_prefix = "EMBEDDING_"
 
     def get_dimension_for_provider(self, provider: str) -> int:
         dimension_map = {
@@ -94,10 +91,12 @@ class Settings(BaseSettings):
     playlist: PlaylistSettings = Field(default_factory=PlaylistSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    model_config = {
+        'env_file': '.env',
+        'env_file_encoding': 'utf-8',
+        'case_sensitive': False,
+        'extra': 'ignore'
+    }
 
     @classmethod
     def load_from_file(cls, config_path: Optional[str] = None) -> "Settings":
