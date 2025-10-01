@@ -28,7 +28,7 @@ class PlaylistGenerator:
         self,
         mood_query: str,
         max_tracks: int = 50,
-        candidate_pool_size: int = 100,
+        candidate_pool_size: int = 500,
         filters: Optional[Dict[str, Any]] = None
     ) -> List[Dict[str, Any]]:
         logger.info(f"Generating playlist for mood: {mood_query}")
@@ -55,8 +55,12 @@ class PlaylistGenerator:
             logger.warning("AI provider returned no tracks, using top candidates")
             selected_ids = [c['id'] for c in candidates[:max_tracks]]
 
+        seen_tracks = set()
         playlist_tracks = []
         for track_id in selected_ids:
+            if track_id in seen_tracks:
+                continue
+            seen_tracks.add(track_id)
             track = self.db.get_track_by_id(track_id)
             if track:
                 artist = self.db.get_artist_by_id(track.artist_id)
