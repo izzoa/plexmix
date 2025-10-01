@@ -21,12 +21,31 @@ class AIProvider(ABC):
     ) -> List[int]:
         pass
 
+    def get_max_candidates(self) -> int:
+        """Return maximum candidate pool size based on model context window."""
+        context_limits = {
+            'gemini-2.5-flash': 500,
+            'gpt-5-mini': 500,
+            'gpt-5-nano': 500,
+            'gpt-4o-mini': 200,
+            'gpt-4o': 300,
+            'claude-4-5-sonnet': 300,
+            'claude-3-5-sonnet': 300,
+            'claude-3-5-haiku': 300,
+            'claude-3-haiku': 200,
+        }
+        return context_limits.get(self.model, 200)
+
     def _prepare_prompt(
         self,
         mood_query: str,
         candidate_tracks: List[Dict[str, Any]],
         max_tracks: int
     ) -> str:
+        max_candidates = self.get_max_candidates()
+        if len(candidate_tracks) > max_candidates:
+            logger.warning(f"Truncating {len(candidate_tracks)} candidates to {max_candidates} for model {self.model}")
+            candidate_tracks = candidate_tracks[:max_candidates]
         system_prompt = """You are an expert music curator helping create the perfect playlist.
 Your task is to select tracks from the provided candidate list that best match the user's mood query.
 
