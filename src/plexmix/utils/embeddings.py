@@ -100,14 +100,14 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
             for attempt in range(max_retries):
                 try:
-                    logger.info(f"Generating Gemini embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
+                    logger.debug(f"Generating Gemini embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
 
                     for text in batch:
                         embedding = self.generate_embedding(text)
                         embeddings.append(embedding)
                         time.sleep(0.1)
 
-                    logger.info(f"Completed Gemini batch {batch_num}/{total_batches}")
+                    logger.debug(f"Completed Gemini batch {batch_num}/{total_batches}")
                     break
                 except Exception as e:
                     error_str = str(e)
