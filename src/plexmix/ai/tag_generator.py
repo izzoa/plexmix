@@ -1,7 +1,8 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import json
 import logging
 import time
+import re
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from .base import AIProvider
@@ -26,6 +27,7 @@ class TagGenerator:
 
         max_retries = 5
         base_delay = 2
+        backoff_multiplier = 1.5
 
         for attempt in range(max_retries):
             try:
@@ -37,8 +39,15 @@ class TagGenerator:
 
                 if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
                     if attempt < max_retries - 1:
-                        delay = base_delay * (2 ** attempt)
-                        logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                        retry_after = self._extract_retry_delay(error_str)
+
+                        if retry_after:
+                            delay = retry_after * backoff_multiplier
+                            logger.warning(f"Rate limit hit. Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
+                        else:
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+
                         time.sleep(delay)
                         continue
                     else:
@@ -49,6 +58,17 @@ class TagGenerator:
                     return {track['id']: [] for track in tracks}
 
         return {track['id']: [] for track in tracks}
+
+    def _extract_retry_delay(self, error_message: str) -> Optional[float]:
+        retry_match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)', error_message)
+        if retry_match:
+            return float(retry_match.group(1))
+
+        retry_after_match = re.search(r'Retry-After:\s*(\d+)', error_message, re.IGNORECASE)
+        if retry_after_match:
+            return float(retry_after_match.group(1))
+
+        return None
 
     def _prepare_tag_prompt(self, tracks: List[Dict[str, Any]]) -> str:
         system_prompt = """You are a music expert helping to categorize songs with descriptive tags.

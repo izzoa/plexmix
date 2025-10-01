@@ -1,6 +1,7 @@
 from typing import List, Optional, Union
 import logging
 import time
+import re
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -38,6 +39,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
         max_retries = 5
         base_delay = 2
+        backoff_multiplier = 1.5
 
         for attempt in range(max_retries):
             try:
@@ -52,8 +54,15 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
                 if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
                     if attempt < max_retries - 1:
-                        delay = base_delay * (2 ** attempt)
-                        logger.warning(f"Rate limit hit. Retrying in {delay}s...")
+                        retry_after = self._extract_retry_delay(error_str)
+
+                        if retry_after:
+                            delay = retry_after * backoff_multiplier
+                            logger.warning(f"Rate limit hit. Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
+                        else:
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(f"Rate limit hit. Retrying in {delay}s...")
+
                         time.sleep(delay)
                         continue
                     else:
@@ -65,6 +74,17 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
         raise Exception("Max retries exceeded")
 
+    def _extract_retry_delay(self, error_message: str) -> Optional[float]:
+        retry_match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)', error_message)
+        if retry_match:
+            return float(retry_match.group(1))
+
+        retry_after_match = re.search(r'Retry-After:\s*(\d+)', error_message, re.IGNORECASE)
+        if retry_after_match:
+            return float(retry_after_match.group(1))
+
+        return None
+
     def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
         import google.generativeai as genai
 
@@ -72,6 +92,7 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         total_batches = (len(texts) + batch_size - 1) // batch_size
         max_retries = 5
         base_delay = 2
+        backoff_multiplier = 1.5
 
         for i in range(0, len(texts), batch_size):
             batch = texts[i:i + batch_size]
@@ -93,8 +114,15 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
                     if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
                         if attempt < max_retries - 1:
-                            delay = base_delay * (2 ** attempt)
-                            logger.warning(f"Rate limit hit on batch {batch_num} (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                            retry_after = self._extract_retry_delay(error_str)
+
+                            if retry_after:
+                                delay = retry_after * backoff_multiplier
+                                logger.warning(f"Rate limit hit on batch {batch_num}. Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
+                            else:
+                                delay = base_delay * (2 ** attempt)
+                                logger.warning(f"Rate limit hit on batch {batch_num} (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+
                             time.sleep(delay)
                             continue
                         else:
