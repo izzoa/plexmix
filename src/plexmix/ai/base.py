@@ -29,8 +29,9 @@ class AIProvider(ABC):
             'gpt-5-nano': 500,
             'gpt-4o-mini': 200,
             'gpt-4o': 300,
-            'claude-4-5-sonnet': 300,
-            'claude-3-5-haiku': 300,
+            'claude-sonnet-4-5': 300,
+            'claude-sonnet-4-5-20250929': 300,
+            'claude-3-5-haiku-20241022': 300,
             'claude-3-haiku': 200,
         }
         return context_limits.get(self.model, 200)

@@ -36,7 +36,7 @@ def get_ai_provider(
         model = model or "gpt-4o-mini"
         return OpenAIProvider(api_key, model, temperature)
     elif provider_name == "claude":
-        model = model or "claude-4-5-sonnet-20241022"
+        model = model or "claude-sonnet-4-5-20250929"
         return ClaudeProvider(api_key, model, temperature)
     else:
         raise ValueError(f"Unknown provider: {provider_name}. Choose from: gemini, openai, claude")
