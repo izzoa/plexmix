@@ -40,6 +40,9 @@ poetry run plexmix create "chill evening vibes" --genre jazz --year-min 2010 --l
 
 # Use alternative AI provider
 poetry run plexmix create "workout motivation" --provider openai
+
+# If you encounter issues (e.g., "0 candidate tracks")
+poetry run plexmix doctor
 ```
 
 ## Installation
@@ -102,6 +105,26 @@ plexmix sync full
 # Sync without embeddings
 plexmix sync full --no-embeddings
 ```
+
+### Database Health Check
+
+```bash
+# Diagnose and fix database issues
+plexmix doctor
+```
+
+**What does doctor do?**
+- Detects orphaned embeddings (embeddings that reference deleted tracks)
+- Shows database health status (track count, embeddings, orphans)
+- Interactively removes orphaned data
+- Regenerates missing embeddings
+- Rebuilds vector index
+
+**When to use:**
+- After "No tracks found matching criteria" errors
+- When playlist generation finds 0 candidates
+- After database corruption or manual track deletion
+- Periodic maintenance to keep database healthy
 
 ### Tag Generation
 
@@ -273,9 +296,15 @@ poetry run pytest --cov=plexmix --cov-report=html
 - Try local embeddings: `--embedding-provider local`
 
 ### "No tracks found matching criteria"
+- **First, try:** `plexmix doctor` to check for database issues
 - Ensure library is synced: `plexmix sync full`
 - Check filters aren't too restrictive
 - Verify embeddings were generated
+
+### "0 candidate tracks" or "No orphaned embeddings"
+- This usually means embeddings reference old track IDs
+- **Solution:** Run `plexmix doctor` to detect and fix orphaned embeddings
+- The doctor will clean up orphaned data and regenerate embeddings
 
 ### Performance Tips
 
