@@ -30,7 +30,7 @@ def get_ai_provider(
         raise ValueError(f"API key required for {provider_name} provider")
 
     if provider_name == "gemini":
-        model = model or "gemini-2.0-flash-exp"
+        model = model or "gemini-2.5-flash"
         return GeminiProvider(api_key, model, temperature)
     elif provider_name == "openai":
         model = model or "gpt-4o-mini"
