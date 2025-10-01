@@ -177,12 +177,20 @@ def sync_full(
                 )
 
         sync_engine = SyncEngine(plex_client, db, embedding_generator, vector_index)
-        sync_result = sync_engine.full_sync(generate_embeddings=embeddings)
 
-        console.print(f"\n[green]Sync completed successfully![/green]")
-        console.print(f"  Tracks added: {sync_result.tracks_added}")
-        console.print(f"  Tracks updated: {sync_result.tracks_updated}")
-        console.print(f"  Tracks removed: {sync_result.tracks_removed}")
+        try:
+            sync_result = sync_engine.full_sync(generate_embeddings=embeddings)
+
+            console.print(f"\n[green]Sync completed successfully![/green]")
+            console.print(f"  Tracks added: {sync_result.tracks_added}")
+            console.print(f"  Tracks updated: {sync_result.tracks_updated}")
+            console.print(f"  Tracks removed: {sync_result.tracks_removed}")
+
+        except KeyboardInterrupt:
+            console.print(f"\n[yellow]Sync interrupted by user.[/yellow]")
+            console.print("[green]Progress has been saved to database.[/green]")
+            console.print("[yellow]Tip: Run 'plexmix sync full' again to continue from where you left off.[/yellow]")
+            raise typer.Exit(130)
 
 
 @tags_app.command("generate")

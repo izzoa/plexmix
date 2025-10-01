@@ -72,6 +72,18 @@ class SyncEngine:
             )
             return sync_record
 
+        except KeyboardInterrupt:
+            logger.warning("Sync interrupted by user")
+            sync_record = SyncHistory(
+                tracks_added=stats['tracks_added'],
+                tracks_updated=stats['tracks_updated'],
+                tracks_removed=stats['tracks_removed'],
+                status='interrupted',
+                error_message='User interrupted sync'
+            )
+            self.db.insert_sync_record(sync_record)
+            raise
+
         except Exception as e:
             logger.error(f"Full sync failed: {e}")
             sync_record = SyncHistory(
@@ -202,29 +214,33 @@ class SyncEngine:
         from ..database.models import Embedding
 
         batch_size = 50
-        for i in range(0, len(tracks_needing_embeddings), batch_size):
-            batch_tracks = tracks_needing_embeddings[i:i + batch_size]
+        embeddings_saved = 0
+        total_batches = (len(tracks_needing_embeddings) + batch_size - 1) // batch_size
 
-            track_data_list = []
-            for track in batch_tracks:
-                artist = self.db.get_artist_by_id(track.artist_id)
-                album = self.db.get_album_by_id(track.album_id)
+        try:
+            for i in range(0, len(tracks_needing_embeddings), batch_size):
+                batch_tracks = tracks_needing_embeddings[i:i + batch_size]
+                batch_num = i // batch_size + 1
 
-                track_data = {
-                    'id': track.id,
-                    'title': track.title,
-                    'artist': artist.name if artist else 'Unknown',
-                    'album': album.title if album else 'Unknown',
-                    'genre': track.genre or '',
-                    'year': track.year or '',
-                    'tags': track.tags or ''
-                }
-                track_data_list.append(track_data)
+                track_data_list = []
+                for track in batch_tracks:
+                    artist = self.db.get_artist_by_id(track.artist_id)
+                    album = self.db.get_album_by_id(track.album_id)
 
-            texts = [create_track_text(td) for td in track_data_list]
-            logger.debug(f"Generating embeddings for batch {i//batch_size + 1} ({len(texts)} tracks)")
+                    track_data = {
+                        'id': track.id,
+                        'title': track.title,
+                        'artist': artist.name if artist else 'Unknown',
+                        'album': album.title if album else 'Unknown',
+                        'genre': track.genre or '',
+                        'year': track.year or '',
+                        'tags': track.tags or ''
+                    }
+                    track_data_list.append(track_data)
 
-            try:
+                texts = [create_track_text(td) for td in track_data_list]
+                logger.debug(f"Generating embeddings for batch {batch_num}/{total_batches} ({len(texts)} tracks)")
+
                 embeddings = self.embedding_generator.generate_batch_embeddings(texts, batch_size=50)
 
                 for track, embedding_vector in zip(batch_tracks, embeddings):
@@ -235,12 +251,14 @@ class SyncEngine:
                         vector=embedding_vector
                     )
                     self.db.insert_embedding(embedding)
+                    embeddings_saved += 1
                     progress.update(task, advance=1)
 
-                logger.debug(f"Completed batch {i//batch_size + 1}")
-            except Exception as e:
-                logger.error(f"Failed to generate embeddings for batch {i//batch_size + 1}: {e}")
-                raise
+                logger.debug(f"Completed batch {batch_num}/{total_batches}")
+
+        except KeyboardInterrupt:
+            logger.warning(f"Embedding generation interrupted. Saved {embeddings_saved} embeddings.")
+            raise
 
         all_embeddings = self.db.get_all_embeddings()
         track_ids = [emb[0] for emb in all_embeddings]
@@ -249,5 +267,5 @@ class SyncEngine:
         self.vector_index.build_index(vectors, track_ids)
         self.vector_index.save_index(str(self.vector_index.index_path))
 
-        progress.update(task, description=f"Generated {len(embeddings)} embeddings")
-        logger.info(f"Generated embeddings for {len(embeddings)} tracks")
+        progress.update(task, description=f"Generated {embeddings_saved} embeddings")
+        logger.info(f"Generated embeddings for {embeddings_saved} tracks")
