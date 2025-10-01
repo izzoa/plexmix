@@ -19,7 +19,7 @@ class TagGenerator:
         tracks: List[Dict[str, Any]],
         batch_size: int = 20
     ) -> Dict[int, List[str]]:
-        logger.info(f"Generating tags for {len(tracks)} tracks")
+        logger.debug(f"Generating tags for {len(tracks)} tracks")
         return self._generate_batch(tracks)
 
     def _generate_batch(self, tracks: List[Dict[str, Any]]) -> Dict[int, List[str]]:

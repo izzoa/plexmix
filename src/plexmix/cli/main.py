@@ -630,7 +630,14 @@ def create_playlist(
             if plex_token and settings.plex.url:
                 plex_client = PlexClient(settings.plex.url, plex_token)
                 if plex_client.connect() and plex_client.select_library(settings.plex.library_name):
-                    playlist = plex_client.create_playlist(name, track_ids, f"AI-generated playlist: {mood}")
+                    plex_rating_keys = []
+                    with SQLiteManager(str(db_path)) as db:
+                        for track_id in track_ids:
+                            track = db.get_track_by_id(track_id)
+                            if track and track.plex_key:
+                                plex_rating_keys.append(int(track.plex_key))
+
+                    playlist = plex_client.create_playlist(name, plex_rating_keys, f"AI-generated playlist: {mood}")
                     if playlist:
                         plex_key = str(playlist.ratingKey)
                         console.print(f"[green]Created playlist in Plex![/green]")
