@@ -28,7 +28,7 @@ console = Console()
 
 @app.callback()
 def main(
-    config: Optional[str] = typer.Option(None, "--config", help="Path to config file"),
+    config: Optional[str] = typer.Option(None, help="Path to config file"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Quiet mode"),
 ):
