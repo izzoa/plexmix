@@ -1,5 +1,6 @@
 import logging
 import logging.handlers
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -9,6 +10,8 @@ def setup_logging(
     log_file: Optional[str] = None,
     log_format: Optional[str] = None
 ) -> None:
+    os.environ['GRPC_VERBOSITY'] = 'ERROR'
+    os.environ['GLOG_minloglevel'] = '2'
     if log_format is None:
         log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
