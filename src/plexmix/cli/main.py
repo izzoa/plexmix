@@ -193,9 +193,9 @@ def sync_full(
             raise typer.Exit(130)
 
 
-@sync_app.command("fix-embeddings")
-def fix_embeddings():
-    console.print("[bold]Fixing orphaned embeddings...[/bold]")
+@app.command("doctor")
+def doctor():
+    console.print("[bold]🩺 PlexMix Doctor - Database Health Check[/bold]")
 
     settings = Settings.load_from_file()
     db_path = settings.database.get_db_path()
@@ -221,7 +221,7 @@ def fix_embeddings():
         console.print(f"  Orphaned embeddings: {orphaned_count}")
 
         if orphaned_count == 0:
-            console.print("\n[green]No orphaned embeddings found. Database is healthy![/green]")
+            console.print("\n[green]✓ No orphaned embeddings found. Database is healthy![/green]")
             return
 
         if typer.confirm(f"\nDelete {orphaned_count} orphaned embeddings?", default=True):
@@ -316,12 +316,12 @@ def fix_embeddings():
                         vector_index.build_index(vectors, track_ids)
                         vector_index.save_index(str(index_path))
 
-                        console.print(f"\n[green]Successfully generated {embeddings_saved} embeddings![/green]")
+                        console.print(f"\n[green]✓ Successfully generated {embeddings_saved} embeddings![/green]")
 
                     except KeyboardInterrupt:
                         console.print(f"\n[yellow]Embedding generation interrupted.[/yellow]")
                         console.print(f"[green]Saved {embeddings_saved} embeddings before interruption.[/green]")
-                        console.print("[yellow]Run 'plexmix sync fix-embeddings' again to continue.[/yellow]")
+                        console.print("[yellow]Run 'plexmix doctor' again to continue.[/yellow]")
                         raise typer.Exit(130)
                 else:
                     console.print("\n[yellow]Run 'plexmix sync full' later to generate embeddings.[/yellow]")
