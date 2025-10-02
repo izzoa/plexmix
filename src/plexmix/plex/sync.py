@@ -237,7 +237,7 @@ class SyncEngine:
                         'genre': track.genre or '',
                         'year': track.year or '',
                         'tags': track.tags or '',
-                        'environment': track.environment or '',
+                        'environments': track.environments or '',
                         'primary_instrument': track.primary_instrument or ''
                     }
                     track_data_list.append(track_data)

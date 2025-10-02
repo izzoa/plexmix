@@ -62,12 +62,12 @@ class TagGenerator:
                         continue
                     else:
                         logger.error(f"Failed after {max_retries} attempts: {e}")
-                        return {track['id']: {'tags': [], 'environment': None, 'primary_instrument': None} for track in tracks}
+                        return {track['id']: {'tags': [], 'environments': [], 'primary_instrument': None} for track in tracks}
                 else:
                     logger.error(f"Failed to generate tags for batch: {e}")
-                    return {track['id']: {'tags': [], 'environment': None, 'primary_instrument': None} for track in tracks}
+                    return {track['id']: {'tags': [], 'environments': [], 'primary_instrument': None} for track in tracks}
 
-        return {track['id']: {'tags': [], 'environment': None, 'primary_instrument': None} for track in tracks}
+        return {track['id']: {'tags': [], 'environments': [], 'primary_instrument': None} for track in tracks}
 
     def _extract_retry_delay(self, error_message: str) -> Optional[float]:
         retry_match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)', error_message)
@@ -85,7 +85,7 @@ class TagGenerator:
 
 Your task is to analyze each song and provide:
 1. **Tags** (3-5 descriptive tags)
-2. **Environment** (single best-fit context: work, study, focus, relax, party, workout, sleep, driving, or social)
+2. **Environments** (top 3 best-fit contexts from: work, study, focus, relax, party, workout, sleep, driving, social)
 3. **Primary Instrument** (main instrument: piano, guitar, saxophone, trumpet, drums, bass, synth, vocals, strings, or orchestra)
 
 Tags should describe:
@@ -96,20 +96,21 @@ Tags should describe:
 
 Rules:
 1. Assign 3-5 tags per song
-2. Use lowercase for all fields
-3. Be consistent with naming
-4. Return ONLY a JSON object mapping track IDs to objects with tags, environment, and primary_instrument
+2. Assign 1-3 environments per song (ordered by best fit)
+3. Use lowercase for all fields
+4. Be consistent with naming
+5. Return ONLY a JSON object mapping track IDs to objects with tags, environments, and primary_instrument
 
 Example output format:
 {
   "1": {
     "tags": ["energetic", "workout", "high-energy", "upbeat"],
-    "environment": "workout",
+    "environments": ["workout", "party", "driving"],
     "primary_instrument": "guitar"
   },
   "2": {
     "tags": ["melancholic", "slow", "sad", "introspective"],
-    "environment": "study",
+    "environments": ["study", "focus", "relax"],
     "primary_instrument": "piano"
   }
 }"""
@@ -197,7 +198,7 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
 
                     if isinstance(data, dict):
                         tags = data.get('tags', [])
-                        environment = data.get('environment')
+                        environments = data.get('environments', [])
                         primary_instrument = data.get('primary_instrument')
 
                         if isinstance(tags, list):
@@ -205,33 +206,37 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
                         else:
                             tags = []
 
-                        if environment:
-                            environment = str(environment).lower().strip()
+                        if isinstance(environments, list):
+                            environments = [str(env).lower().strip() for env in environments[:3]]
+                        elif isinstance(environments, str):
+                            environments = [str(environments).lower().strip()]
+                        else:
+                            environments = []
 
                         if primary_instrument:
                             primary_instrument = str(primary_instrument).lower().strip()
 
                         result[track_id] = {
                             'tags': tags,
-                            'environment': environment,
+                            'environments': environments,
                             'primary_instrument': primary_instrument
                         }
                     elif isinstance(data, list):
                         result[track_id] = {
                             'tags': [str(tag).lower().strip() for tag in data[:5]],
-                            'environment': None,
+                            'environments': [],
                             'primary_instrument': None
                         }
                     else:
-                        result[track_id] = {'tags': [], 'environment': None, 'primary_instrument': None}
+                        result[track_id] = {'tags': [], 'environments': [], 'primary_instrument': None}
                 else:
-                    result[track_id] = {'tags': [], 'environment': None, 'primary_instrument': None}
+                    result[track_id] = {'tags': [], 'environments': [], 'primary_instrument': None}
 
             return result
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON response: {e}")
-            return {track['id']: {'tags': [], 'environment': None, 'primary_instrument': None} for track in tracks}
+            return {track['id']: {'tags': [], 'environments': [], 'primary_instrument': None} for track in tracks}
         except Exception as e:
             logger.error(f"Failed to parse tag response: {e}")
-            return {track['id']: {'tags': [], 'environment': None, 'primary_instrument': None} for track in tracks}
+            return {track['id']: {'tags': [], 'environments': [], 'primary_instrument': None} for track in tracks}

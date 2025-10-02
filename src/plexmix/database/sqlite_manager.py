@@ -87,7 +87,7 @@ class SQLiteManager:
                 last_played TIMESTAMP,
                 file_path TEXT,
                 tags TEXT,
-                environment TEXT,
+                environments TEXT,
                 primary_instrument TEXT,
                 FOREIGN KEY (artist_id) REFERENCES artists(id) ON DELETE CASCADE,
                 FOREIGN KEY (album_id) REFERENCES albums(id) ON DELETE CASCADE
@@ -233,9 +233,12 @@ class SQLiteManager:
         cursor.execute("PRAGMA table_info(tracks)")
         columns = {col[1] for col in cursor.fetchall()}
 
-        if 'environment' not in columns:
-            logger.info("Running migration: Adding environment column to tracks")
-            cursor.execute("ALTER TABLE tracks ADD COLUMN environment TEXT")
+        if 'environment' in columns and 'environments' not in columns:
+            logger.info("Running migration: Renaming environment to environments")
+            cursor.execute("ALTER TABLE tracks RENAME COLUMN environment TO environments")
+        elif 'environment' not in columns and 'environments' not in columns:
+            logger.info("Running migration: Adding environments column to tracks")
+            cursor.execute("ALTER TABLE tracks ADD COLUMN environments TEXT")
 
         if 'primary_instrument' not in columns:
             logger.info("Running migration: Adding primary_instrument column to tracks")
@@ -295,11 +298,11 @@ class SQLiteManager:
         cursor = self.get_connection().cursor()
         cursor.execute('''
             INSERT OR REPLACE INTO tracks
-            (plex_key, title, artist_id, album_id, duration_ms, genre, year, rating, play_count, last_played, file_path, tags, environment, primary_instrument)
+            (plex_key, title, artist_id, album_id, duration_ms, genre, year, rating, play_count, last_played, file_path, tags, environments, primary_instrument)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (track.plex_key, track.title, track.artist_id, track.album_id, track.duration_ms,
               track.genre, track.year, track.rating, track.play_count, track.last_played, track.file_path, track.tags,
-              track.environment, track.primary_instrument))
+              track.environments, track.primary_instrument))
         self.get_connection().commit()
         return cursor.lastrowid
 

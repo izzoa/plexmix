@@ -254,7 +254,7 @@ def create_track_text(track_data: dict) -> str:
     genres = track_data.get('genre', '')
     year = track_data.get('year', '')
     tags = track_data.get('tags', '')
-    environment = track_data.get('environment', '')
+    environments = track_data.get('environments', '')
     primary_instrument = track_data.get('primary_instrument', '')
 
     text = f"{title} by {artist} from {album}"
@@ -264,8 +264,8 @@ def create_track_text(track_data: dict) -> str:
         text += f" ({year})"
     if tags:
         text += f" | tags: {tags}"
-    if environment:
-        text += f" | environment: {environment}"
+    if environments:
+        text += f" | environments: {environments}"
     if primary_instrument:
         text += f" | instrument: {primary_instrument}"
 

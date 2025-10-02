@@ -113,8 +113,8 @@ class PlaylistGenerator:
             params.append(filters['year_max'])
 
         if 'environment' in filters:
-            where_clauses.append("environment = ?")
-            params.append(filters['environment'].lower())
+            where_clauses.append("environments LIKE ?")
+            params.append(f"%{filters['environment'].lower()}%")
 
         if 'primary_instrument' in filters:
             where_clauses.append("primary_instrument = ?")

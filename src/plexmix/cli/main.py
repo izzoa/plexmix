@@ -436,7 +436,11 @@ def tags_generate(
                             tag_data = tags_dict[track.id]
                             if isinstance(tag_data, dict):
                                 track.set_tags_list(tag_data.get('tags', []))
-                                track.environment = tag_data.get('environment')
+                                environments = tag_data.get('environments', [])
+                                if isinstance(environments, list):
+                                    track.environments = ', '.join(environments) if environments else None
+                                else:
+                                    track.environments = environments
                                 track.primary_instrument = tag_data.get('primary_instrument')
                             else:
                                 track.set_tags_list(tag_data if isinstance(tag_data, list) else [])
