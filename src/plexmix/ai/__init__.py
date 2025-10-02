@@ -33,7 +33,7 @@ def get_ai_provider(
         model = model or "gemini-2.5-flash"
         return GeminiProvider(api_key, model, temperature)
     elif provider_name == "openai":
-        model = model or "gpt-4o-mini"
+        model = model or "gpt-5-mini"
         return OpenAIProvider(api_key, model, temperature)
     elif provider_name == "claude":
         model = model or "claude-sonnet-4-5-20250929"

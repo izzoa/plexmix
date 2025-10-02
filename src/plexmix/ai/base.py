@@ -27,8 +27,6 @@ class AIProvider(ABC):
             'gemini-2.5-flash': 1000,
             'gpt-5-mini': 500,
             'gpt-5-nano': 500,
-            'gpt-4o-mini': 200,
-            'gpt-4o': 300,
             'claude-sonnet-4-5': 300,
             'claude-sonnet-4-5-20250929': 300,
             'claude-3-5-haiku-20241022': 300,

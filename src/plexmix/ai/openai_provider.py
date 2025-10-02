@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider(AIProvider):
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini", temperature: float = 0.7):
+    def __init__(self, api_key: str, model: str = "gpt-5-mini", temperature: float = 0.7):
         super().__init__(api_key, model, temperature)
         try:
             from openai import OpenAI

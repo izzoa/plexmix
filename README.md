@@ -289,7 +289,6 @@ PlexMix stores all music metadata locally:
 | **Google Gemini** (default) | gemini-2.5-flash | ~1M tokens | Fast, accurate, cost-effective |
 | OpenAI | gpt-5-mini | ~400K tokens | Latest model, high quality |
 | OpenAI | gpt-5-nano | ~400K tokens | Fastest, most efficient |
-| OpenAI | gpt-4o-mini | ~128K tokens | Previous generation |
 | Anthropic | claude-sonnet-4-5 | ~200K tokens | Latest model, excellent reasoning |
 | Anthropic | claude-3-5-haiku-20241022 | ~200K tokens | Fast, efficient |
 
