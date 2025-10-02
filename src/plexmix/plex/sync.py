@@ -236,7 +236,9 @@ class SyncEngine:
                         'album': album.title if album else 'Unknown',
                         'genre': track.genre or '',
                         'year': track.year or '',
-                        'tags': track.tags or ''
+                        'tags': track.tags or '',
+                        'environment': track.environment or '',
+                        'primary_instrument': track.primary_instrument or ''
                     }
                     track_data_list.append(track_data)
 

@@ -112,6 +112,14 @@ class PlaylistGenerator:
             where_clauses.append("year <= ?")
             params.append(filters['year_max'])
 
+        if 'environment' in filters:
+            where_clauses.append("environment = ?")
+            params.append(filters['environment'].lower())
+
+        if 'primary_instrument' in filters:
+            where_clauses.append("primary_instrument = ?")
+            params.append(filters['primary_instrument'].lower())
+
         if 'rating_min' in filters:
             where_clauses.append("rating >= ?")
             params.append(filters['rating_min'])

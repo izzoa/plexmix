@@ -57,6 +57,8 @@ class Track(BaseModel):
     last_played: Optional[datetime] = None
     file_path: Optional[str] = None
     tags: Optional[str] = None
+    environment: Optional[str] = None
+    primary_instrument: Optional[str] = None
 
     @field_validator('title')
     @classmethod

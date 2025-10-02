@@ -433,7 +433,13 @@ def tags_generate(
 
                     for track in tracks_needing_tags:
                         if track.id in tags_dict and tags_dict[track.id]:
-                            track.set_tags_list(tags_dict[track.id])
+                            tag_data = tags_dict[track.id]
+                            if isinstance(tag_data, dict):
+                                track.set_tags_list(tag_data.get('tags', []))
+                                track.environment = tag_data.get('environment')
+                                track.primary_instrument = tag_data.get('primary_instrument')
+                            else:
+                                track.set_tags_list(tag_data if isinstance(tag_data, list) else [])
                             db.insert_track(track)
                             updated_count += 1
 
@@ -544,6 +550,8 @@ def create_playlist(
     name: Optional[str] = typer.Option(None, help="Playlist name"),
     genre: Optional[str] = typer.Option(None, help="Filter by genre"),
     year: Optional[int] = typer.Option(None, help="Filter by year"),
+    environment: Optional[str] = typer.Option(None, help="Filter by environment (work, study, focus, relax, party, workout, sleep, driving, social)"),
+    primary_instrument: Optional[str] = typer.Option(None, help="Filter by primary instrument (piano, guitar, saxophone, trumpet, drums, bass, synth, vocals, strings, orchestra)"),
     create_in_plex: bool = typer.Option(True, help="Create playlist in Plex"),
 ):
     console.print(f"[bold]Creating playlist for mood: {mood}[/bold]")
@@ -596,6 +604,10 @@ def create_playlist(
             filters['genre'] = genre
         if year:
             filters['year'] = year
+        if environment:
+            filters['environment'] = environment
+        if primary_instrument:
+            filters['primary_instrument'] = primary_instrument
 
         tracks = generator.generate(
             mood,

@@ -18,11 +18,11 @@ class TagGenerator:
         self,
         tracks: List[Dict[str, Any]],
         batch_size: int = 20
-    ) -> Dict[int, List[str]]:
+    ) -> Dict[int, Dict[str, Any]]:
         logger.debug(f"Generating tags for {len(tracks)} tracks")
         return self._generate_batch(tracks)
 
-    def _generate_batch(self, tracks: List[Dict[str, Any]]) -> Dict[int, List[str]]:
+    def _generate_batch(self, tracks: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
         prompt = self._prepare_tag_prompt(tracks)
 
         max_retries = 5
@@ -62,12 +62,12 @@ class TagGenerator:
                         continue
                     else:
                         logger.error(f"Failed after {max_retries} attempts: {e}")
-                        return {track['id']: [] for track in tracks}
+                        return {track['id']: {'tags': [], 'environment': None, 'primary_instrument': None} for track in tracks}
                 else:
                     logger.error(f"Failed to generate tags for batch: {e}")
-                    return {track['id']: [] for track in tracks}
+                    return {track['id']: {'tags': [], 'environment': None, 'primary_instrument': None} for track in tracks}
 
-        return {track['id']: [] for track in tracks}
+        return {track['id']: {'tags': [], 'environment': None, 'primary_instrument': None} for track in tracks}
 
     def _extract_retry_delay(self, error_message: str) -> Optional[float]:
         retry_match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)', error_message)
@@ -81,27 +81,37 @@ class TagGenerator:
         return None
 
     def _prepare_tag_prompt(self, tracks: List[Dict[str, Any]]) -> str:
-        system_prompt = """You are a music expert helping to categorize songs with descriptive tags.
+        system_prompt = """You are a music expert helping to categorize songs with descriptive tags, environment contexts, and primary instruments.
 
-Your task is to assign up to 5 tags per song based on the song title, artist, and genre.
+Your task is to analyze each song and provide:
+1. **Tags** (3-5 descriptive tags)
+2. **Environment** (single best-fit context: work, study, focus, relax, party, workout, sleep, driving, or social)
+3. **Primary Instrument** (main instrument: piano, guitar, saxophone, trumpet, drums, bass, synth, vocals, strings, or orchestra)
 
 Tags should describe:
 - Mood (e.g., energetic, melancholic, upbeat, chill, intense)
 - Energy level (e.g., high-energy, low-energy, moderate)
-- Activity fit (e.g., workout, study, party, sleep, driving)
 - Tempo feel (e.g., fast-paced, slow, mid-tempo)
 - Emotional tone (e.g., happy, sad, angry, romantic, nostalgic)
 
 Rules:
 1. Assign 3-5 tags per song
-2. Use lowercase, single words or hyphenated phrases
-3. Be consistent with tag naming
-4. Return ONLY a JSON object mapping track IDs to tag arrays
+2. Use lowercase for all fields
+3. Be consistent with naming
+4. Return ONLY a JSON object mapping track IDs to objects with tags, environment, and primary_instrument
 
 Example output format:
 {
-  "1": ["energetic", "workout", "high-energy", "upbeat"],
-  "2": ["melancholic", "slow", "sad", "introspective", "chill"]
+  "1": {
+    "tags": ["energetic", "workout", "high-energy", "upbeat"],
+    "environment": "workout",
+    "primary_instrument": "guitar"
+  },
+  "2": {
+    "tags": ["melancholic", "slow", "sad", "introspective"],
+    "environment": "study",
+    "primary_instrument": "piano"
+  }
 }"""
 
         tracks_list = []
@@ -167,7 +177,7 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
         self,
         response: str,
         tracks: List[Dict[str, Any]]
-    ) -> Dict[int, List[str]]:
+    ) -> Dict[int, Dict[str, Any]]:
         try:
             response = response.strip()
 
@@ -183,20 +193,45 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
                 track_id_str = str(track_id)
 
                 if track_id_str in tags_dict:
-                    tags = tags_dict[track_id_str]
-                    if isinstance(tags, list):
-                        tags = [str(tag).lower().strip() for tag in tags[:5]]
-                        result[track_id] = tags
+                    data = tags_dict[track_id_str]
+
+                    if isinstance(data, dict):
+                        tags = data.get('tags', [])
+                        environment = data.get('environment')
+                        primary_instrument = data.get('primary_instrument')
+
+                        if isinstance(tags, list):
+                            tags = [str(tag).lower().strip() for tag in tags[:5]]
+                        else:
+                            tags = []
+
+                        if environment:
+                            environment = str(environment).lower().strip()
+
+                        if primary_instrument:
+                            primary_instrument = str(primary_instrument).lower().strip()
+
+                        result[track_id] = {
+                            'tags': tags,
+                            'environment': environment,
+                            'primary_instrument': primary_instrument
+                        }
+                    elif isinstance(data, list):
+                        result[track_id] = {
+                            'tags': [str(tag).lower().strip() for tag in data[:5]],
+                            'environment': None,
+                            'primary_instrument': None
+                        }
                     else:
-                        result[track_id] = []
+                        result[track_id] = {'tags': [], 'environment': None, 'primary_instrument': None}
                 else:
-                    result[track_id] = []
+                    result[track_id] = {'tags': [], 'environment': None, 'primary_instrument': None}
 
             return result
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON response: {e}")
-            return {track['id']: [] for track in tracks}
+            return {track['id']: {'tags': [], 'environment': None, 'primary_instrument': None} for track in tracks}
         except Exception as e:
             logger.error(f"Failed to parse tag response: {e}")
-            return {track['id']: [] for track in tracks}
+            return {track['id']: {'tags': [], 'environment': None, 'primary_instrument': None} for track in tracks}
