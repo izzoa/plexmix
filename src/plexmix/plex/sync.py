@@ -238,7 +238,7 @@ class SyncEngine:
                         'year': track.year or '',
                         'tags': track.tags or '',
                         'environments': track.environments or '',
-                        'primary_instrument': track.primary_instrument or ''
+                        'instruments': track.instruments or ''
                     }
                     track_data_list.append(track_data)
 

@@ -58,7 +58,7 @@ class Track(BaseModel):
     file_path: Optional[str] = None
     tags: Optional[str] = None
     environments: Optional[str] = None
-    primary_instrument: Optional[str] = None
+    instruments: Optional[str] = None
 
     @field_validator('title')
     @classmethod

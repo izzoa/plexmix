@@ -116,9 +116,9 @@ class PlaylistGenerator:
             where_clauses.append("environments LIKE ?")
             params.append(f"%{filters['environment'].lower()}%")
 
-        if 'primary_instrument' in filters:
-            where_clauses.append("primary_instrument = ?")
-            params.append(filters['primary_instrument'].lower())
+        if 'instrument' in filters:
+            where_clauses.append("instruments LIKE ?")
+            params.append(f"%{filters['instrument'].lower()}%")
 
         if 'rating_min' in filters:
             where_clauses.append("rating >= ?")

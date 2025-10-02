@@ -441,7 +441,11 @@ def tags_generate(
                                     track.environments = ', '.join(environments) if environments else None
                                 else:
                                     track.environments = environments
-                                track.primary_instrument = tag_data.get('primary_instrument')
+                                instruments = tag_data.get('instruments', [])
+                                if isinstance(instruments, list):
+                                    track.instruments = ', '.join(instruments) if instruments else None
+                                else:
+                                    track.instruments = instruments
                             else:
                                 track.set_tags_list(tag_data if isinstance(tag_data, list) else [])
                             db.insert_track(track)
@@ -555,7 +559,7 @@ def create_playlist(
     genre: Optional[str] = typer.Option(None, help="Filter by genre"),
     year: Optional[int] = typer.Option(None, help="Filter by year"),
     environment: Optional[str] = typer.Option(None, help="Filter by environment (work, study, focus, relax, party, workout, sleep, driving, social)"),
-    primary_instrument: Optional[str] = typer.Option(None, help="Filter by primary instrument (piano, guitar, saxophone, trumpet, drums, bass, synth, vocals, strings, orchestra)"),
+    instrument: Optional[str] = typer.Option(None, help="Filter by instrument (piano, guitar, saxophone, trumpet, drums, bass, synth, vocals, strings, orchestra)"),
     create_in_plex: bool = typer.Option(True, help="Create playlist in Plex"),
 ):
     console.print(f"[bold]Creating playlist for mood: {mood}[/bold]")
@@ -610,8 +614,8 @@ def create_playlist(
             filters['year'] = year
         if environment:
             filters['environment'] = environment
-        if primary_instrument:
-            filters['primary_instrument'] = primary_instrument
+        if instrument:
+            filters['instrument'] = instrument
 
         tracks = generator.generate(
             mood,
