@@ -55,6 +55,7 @@ class EmbeddingSettings(BaseSettings):
         dimension_map = {
             "gemini": 3072,
             "openai": 1536,
+            "cohere": 1024,
             "local": 768
         }
         return dimension_map.get(provider, self.dimension)

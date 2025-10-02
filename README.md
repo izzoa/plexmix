@@ -85,7 +85,8 @@ PlexMix uses **Google Gemini by default** for both AI playlist generation and em
 ### Optional Alternative Providers
 
 - **OpenAI API Key**: For GPT models and text-embedding-3-small
-- **Anthropic API Key**: For Claude models
+- **Anthropic API Key**: For Claude models (AI only, no embeddings)
+- **Cohere API Key**: For Command R models and embed-english-v3.0
 - **Local Embeddings**: sentence-transformers (free, offline, no API key needed)
 
 ### Getting a Plex Token
@@ -280,6 +281,7 @@ PlexMix stores all music metadata locally:
 |----------|-------|------------|------------------|
 | **Google Gemini** (default) | gemini-embedding-001 | 3072 | Yes |
 | OpenAI | text-embedding-3-small | 1536 | Yes |
+| Cohere | embed-english-v3.0 | 1024 | Yes |
 | Local | all-MiniLM-L6-v2 | 384 | No |
 
 ## AI Providers
@@ -289,6 +291,8 @@ PlexMix stores all music metadata locally:
 | **Google Gemini** (default) | gemini-2.5-flash | ~1M tokens | Fast, accurate, cost-effective |
 | OpenAI | gpt-5-mini | ~400K tokens | Latest model, high quality |
 | OpenAI | gpt-5-nano | ~400K tokens | Fastest, most efficient |
+| Cohere | command-r-plus-08-2024 | ~128K tokens | Balanced performance, multilingual |
+| Cohere | command-r-08-2024 | ~128K tokens | Faster, efficient variant |
 | Anthropic | claude-sonnet-4-5 | ~200K tokens | Latest model, excellent reasoning |
 | Anthropic | claude-3-5-haiku-20241022 | ~200K tokens | Fast, efficient |
 

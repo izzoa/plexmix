@@ -6,6 +6,7 @@ from .base import AIProvider
 from .gemini_provider import GeminiProvider
 from .openai_provider import OpenAIProvider
 from .claude_provider import ClaudeProvider
+from .cohere_provider import CohereProvider
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,8 @@ def get_ai_provider(
             api_key = os.getenv("OPENAI_API_KEY")
         elif provider_name == "claude":
             api_key = os.getenv("ANTHROPIC_API_KEY")
+        elif provider_name == "cohere":
+            api_key = os.getenv("COHERE_API_KEY")
 
     if not api_key:
         raise ValueError(f"API key required for {provider_name} provider")
@@ -38,8 +41,11 @@ def get_ai_provider(
     elif provider_name == "claude":
         model = model or "claude-sonnet-4-5-20250929"
         return ClaudeProvider(api_key, model, temperature)
+    elif provider_name == "cohere":
+        model = model or "command-r-plus-08-2024"
+        return CohereProvider(api_key, model, temperature)
     else:
-        raise ValueError(f"Unknown provider: {provider_name}. Choose from: gemini, openai, claude")
+        raise ValueError(f"Unknown provider: {provider_name}. Choose from: gemini, openai, claude, cohere")
 
 
 __all__ = [
@@ -47,5 +53,6 @@ __all__ = [
     "GeminiProvider",
     "OpenAIProvider",
     "ClaudeProvider",
+    "CohereProvider",
     "get_ai_provider"
 ]

@@ -71,3 +71,11 @@ def get_anthropic_api_key() -> Optional[str]:
 
 def store_anthropic_api_key(api_key: str) -> bool:
     return store_credential("anthropic_api_key", api_key)
+
+
+def get_cohere_api_key() -> Optional[str]:
+    return get_credential("cohere_api_key")
+
+
+def store_cohere_api_key(api_key: str) -> bool:
+    return store_credential("cohere_api_key", api_key)

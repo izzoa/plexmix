@@ -76,8 +76,9 @@ def config_init():
     console.print("  1. Google Gemini (default) - Single API key for both AI and embeddings")
     console.print("  2. OpenAI - GPT models and embeddings")
     console.print("  3. Anthropic Claude - AI playlist generation only (no embeddings)")
-    console.print("  4. Local embeddings - Free, offline (no API key needed)\n")
-    console.print("[dim]Note: Anthropic does not provide embeddings, so you'll need Gemini, OpenAI, or local for embeddings.[/dim]\n")
+    console.print("  4. Cohere - Command R models and embeddings")
+    console.print("  5. Local embeddings - Free, offline (no API key needed)\n")
+    console.print("[dim]Note: Anthropic does not provide embeddings, so you'll need Gemini, OpenAI, Cohere, or local.[/dim]\n")
 
     use_gemini = typer.confirm("Use Google Gemini? (recommended)", default=True)
 
@@ -105,6 +106,22 @@ def config_init():
             if use_openai_ai:
                 ai_provider = "openai"
 
+    use_cohere = typer.confirm("\nConfigure Cohere?", default=False)
+    cohere_key = None
+    if use_cohere:
+        cohere_key = typer.prompt("Cohere API key", hide_input=True)
+        credentials.store_cohere_api_key(cohere_key)
+
+        if not use_gemini and not use_openai:
+            console.print("\nCohere will be used for:")
+            use_cohere_embeddings = typer.confirm("  - Embeddings?", default=True)
+            use_cohere_ai = typer.confirm("  - Playlist generation?", default=True)
+
+            if use_cohere_embeddings:
+                embedding_provider = "cohere"
+            if use_cohere_ai:
+                ai_provider = "cohere"
+
     use_anthropic = typer.confirm("\nConfigure Anthropic Claude?", default=False)
     if use_anthropic:
         anthropic_key = typer.prompt("Anthropic API key", hide_input=True)
@@ -118,12 +135,13 @@ def config_init():
             console.print("Choose an embedding provider:")
             console.print("  1. Google Gemini (3072 dimensions)")
             console.print("  2. OpenAI (1536 dimensions)")
-            console.print("  3. Local (384 dimensions, free, offline)")
+            console.print("  3. Cohere (1024 dimensions)")
+            console.print("  4. Local (384 dimensions, free, offline)")
 
             emb_choice = typer.prompt(
                 "\nEmbedding provider",
                 type=int,
-                default=3,
+                default=4,
                 show_default=True
             )
 
@@ -137,6 +155,11 @@ def config_init():
                     openai_key = typer.prompt("OpenAI API key", hide_input=True)
                     credentials.store_openai_api_key(openai_key)
                 embedding_provider = "openai"
+            elif emb_choice == 3:
+                if not cohere_key:
+                    cohere_key = typer.prompt("Cohere API key", hide_input=True)
+                    credentials.store_cohere_api_key(cohere_key)
+                embedding_provider = "cohere"
             else:
                 embedding_provider = "local"
 
@@ -146,7 +169,7 @@ def config_init():
 
     if not ai_provider:
         console.print("\n[red]Error: No AI provider configured for playlist generation.[/red]")
-        console.print("You must configure at least one of: Gemini, OpenAI, or Anthropic")
+        console.print("You must configure at least one of: Gemini, OpenAI, Cohere, or Anthropic")
         raise typer.Exit(1)
 
     settings = Settings()

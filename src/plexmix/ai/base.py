@@ -31,6 +31,8 @@ class AIProvider(ABC):
             'claude-sonnet-4-5-20250929': 300,
             'claude-3-5-haiku-20241022': 300,
             'claude-3-haiku': 200,
+            'command-r-plus-08-2024': 500,
+            'command-r-08-2024': 400,
         }
         return context_limits.get(self.model, 200)
 
