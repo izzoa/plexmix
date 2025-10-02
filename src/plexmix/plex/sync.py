@@ -152,8 +152,9 @@ class SyncEngine:
             for track in track_batch:
                 plex_track_keys.add(track.plex_key)
 
-                artist_plex_key = track.plex_key.rsplit('/', 2)[0] if track.plex_key.count('/') >= 2 else None
-                album_plex_key = track.plex_key.rsplit('/', 1)[0] if '/' in track.plex_key else None
+                # Use the artist/album rating keys stored by extract_track_metadata
+                artist_plex_key = track.__dict__.get('_artist_key')
+                album_plex_key = track.__dict__.get('_album_key')
 
                 if artist_plex_key and artist_plex_key in artist_map:
                     track.artist_id = artist_map[artist_plex_key]

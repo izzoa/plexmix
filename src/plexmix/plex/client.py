@@ -223,14 +223,15 @@ class PlexClient:
         genres = [genre.tag for genre in plex_track.genres] if hasattr(plex_track, 'genres') else []
         genre_str = ", ".join(genres) if genres else None
 
+        # Get artist and album IDs directly from Plex relationships
         artist = plex_track.artist() if hasattr(plex_track, 'artist') else None
         album = plex_track.album() if hasattr(plex_track, 'album') else None
 
-        return Track(
+        track = Track(
             plex_key=str(plex_track.ratingKey),
             title=plex_track.title,
-            artist_id=0,
-            album_id=0,
+            artist_id=0,  # Will be set in sync based on artist rating key
+            album_id=0,  # Will be set in sync based on album rating key
             duration_ms=plex_track.duration if hasattr(plex_track, 'duration') else None,
             genre=genre_str,
             year=plex_track.year if hasattr(plex_track, 'year') else None,
@@ -239,6 +240,12 @@ class PlexClient:
             last_played=plex_track.lastViewedAt if hasattr(plex_track, 'lastViewedAt') else None,
             file_path=None
         )
+
+        # Store rating keys as temporary attributes (not part of model schema)
+        track.__dict__['_artist_key'] = str(artist.ratingKey) if artist else None
+        track.__dict__['_album_key'] = str(album.ratingKey) if album else None
+
+        return track
 
     def create_playlist(self, name: str, track_ids: List[int], description: Optional[str] = None):
         if not self.music_library:
