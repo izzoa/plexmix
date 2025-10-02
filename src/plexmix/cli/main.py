@@ -75,8 +75,9 @@ def config_init():
     console.print("PlexMix supports multiple AI and embedding providers:\n")
     console.print("  1. Google Gemini (default) - Single API key for both AI and embeddings")
     console.print("  2. OpenAI - GPT models and embeddings")
-    console.print("  3. Anthropic Claude - Advanced reasoning for playlists")
+    console.print("  3. Anthropic Claude - AI playlist generation only (no embeddings)")
     console.print("  4. Local embeddings - Free, offline (no API key needed)\n")
+    console.print("[dim]Note: Anthropic does not provide embeddings, so you'll need Gemini, OpenAI, or local for embeddings.[/dim]\n")
 
     use_gemini = typer.confirm("Use Google Gemini? (recommended)", default=True)
 
@@ -111,6 +112,33 @@ def config_init():
 
         if not ai_provider:
             ai_provider = "claude"
+
+        if not embedding_provider:
+            console.print("\n[yellow]Anthropic selected for AI, but does not provide embeddings.[/yellow]")
+            console.print("Choose an embedding provider:")
+            console.print("  1. Google Gemini (3072 dimensions)")
+            console.print("  2. OpenAI (1536 dimensions)")
+            console.print("  3. Local (384 dimensions, free, offline)")
+
+            emb_choice = typer.prompt(
+                "\nEmbedding provider",
+                type=int,
+                default=3,
+                show_default=True
+            )
+
+            if emb_choice == 1:
+                if not google_api_key:
+                    google_api_key = typer.prompt("Google Gemini API key", hide_input=True)
+                    credentials.store_google_api_key(google_api_key)
+                embedding_provider = "gemini"
+            elif emb_choice == 2:
+                if not openai_key:
+                    openai_key = typer.prompt("OpenAI API key", hide_input=True)
+                    credentials.store_openai_api_key(openai_key)
+                embedding_provider = "openai"
+            else:
+                embedding_provider = "local"
 
     if not embedding_provider:
         console.print("\n[yellow]No embedding provider selected. Using local embeddings (free, offline).[/yellow]")
