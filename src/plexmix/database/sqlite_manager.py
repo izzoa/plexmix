@@ -27,6 +27,7 @@ class SQLiteManager:
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
         logger.info(f"Connected to database at {self.db_path}")
+        self._run_migrations(self.conn.cursor())
 
     def get_connection(self) -> sqlite3.Connection:
         if not self.conn:
@@ -233,19 +234,29 @@ class SQLiteManager:
         cursor.execute("PRAGMA table_info(tracks)")
         columns = {col[1] for col in cursor.fetchall()}
 
+        migrations_run = False
+
         if 'environment' in columns and 'environments' not in columns:
             logger.info("Running migration: Renaming environment to environments")
             cursor.execute("ALTER TABLE tracks RENAME COLUMN environment TO environments")
+            migrations_run = True
         elif 'environment' not in columns and 'environments' not in columns:
             logger.info("Running migration: Adding environments column to tracks")
             cursor.execute("ALTER TABLE tracks ADD COLUMN environments TEXT")
+            migrations_run = True
 
         if 'primary_instrument' in columns and 'instruments' not in columns:
             logger.info("Running migration: Renaming primary_instrument to instruments")
             cursor.execute("ALTER TABLE tracks RENAME COLUMN primary_instrument TO instruments")
+            migrations_run = True
         elif 'primary_instrument' not in columns and 'instruments' not in columns:
             logger.info("Running migration: Adding instruments column to tracks")
             cursor.execute("ALTER TABLE tracks ADD COLUMN instruments TEXT")
+            migrations_run = True
+
+        if migrations_run:
+            self.get_connection().commit()
+            logger.info("Database migrations completed")
 
     def insert_artist(self, artist: Artist) -> int:
         cursor = self.get_connection().cursor()
