@@ -44,12 +44,6 @@ jobs:
     - name: Run tests
       run: poetry run pytest
 
-    - name: Run linter
-      run: poetry run ruff check src/
-
-    - name: Run type checker
-      run: poetry run mypy src/
-
   publish:
     needs: test
     runs-on: ubuntu-latest

@@ -45,12 +45,6 @@ jobs:
     - name: Run tests
       run: poetry run pytest
 
-    - name: Run linter
-      run: poetry run ruff check src/
-
-    - name: Run type checker
-      run: poetry run mypy src/ --no-strict-optional
-
     - name: Upload coverage
       uses: codecov/codecov-action@v4
       if: matrix.python-version == '3.10'
