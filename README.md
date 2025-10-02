@@ -20,48 +20,51 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 ## Quick Start
 
 ```bash
-# Install dependencies
-poetry install
+# Install from PyPI
+pip install plexmix
 
 # Run setup wizard
-poetry run plexmix config init
+plexmix config init
 
 # Sync your Plex library (generates embeddings automatically)
-poetry run plexmix sync full
+plexmix sync full
 
 # Generate AI tags for tracks (enhances search quality)
-poetry run plexmix tags generate
+plexmix tags generate
 
 # Create a playlist
-poetry run plexmix create "upbeat morning energy"
+plexmix create "upbeat morning energy"
 
 # With filters
-poetry run plexmix create "chill evening vibes" --genre jazz --year-min 2010 --limit 30
+plexmix create "chill evening vibes" --genre jazz --year-min 2010 --limit 30
 
 # Filter by environment and instrument
-poetry run plexmix create "focus music" --environment study --instrument piano
+plexmix create "focus music" --environment study --instrument piano
 
 # Use alternative AI provider
-poetry run plexmix create "workout motivation" --provider openai
+plexmix create "workout motivation" --provider openai
 
 # If you encounter issues (e.g., "0 candidate tracks")
-poetry run plexmix doctor
+plexmix doctor
+
+# Force regenerate all tags and embeddings
+plexmix doctor --force
 ```
 
 ## Installation
 
-### From Source (Recommended)
+### From PyPI (Recommended)
+
+```bash
+pip install plexmix
+```
+
+### From Source
 
 ```bash
 git clone https://github.com/izzoa/plexmix.git
 cd plexmix
 poetry install
-```
-
-### From PyPI (Coming Soon)
-
-```bash
-pip install plexmix
 ```
 
 ## Configuration
@@ -114,6 +117,9 @@ plexmix sync full --no-embeddings
 ```bash
 # Diagnose and fix database issues
 plexmix doctor
+
+# Force regenerate all tags and embeddings
+plexmix doctor --force
 ```
 
 **What does doctor do?**
@@ -123,11 +129,18 @@ plexmix doctor
 - Regenerates missing embeddings
 - Rebuilds vector index
 
+**What does --force do?**
+- Deletes ALL tags, environments, instruments, and embeddings
+- Regenerates tags for all tracks using Gemini AI
+- Regenerates embeddings with the new tags
+- Rebuilds the complete vector index from scratch
+
 **When to use:**
 - After "No tracks found matching criteria" errors
 - When playlist generation finds 0 candidates
 - After database corruption or manual track deletion
 - Periodic maintenance to keep database healthy
+- Use `--force` when you want to start completely fresh with AI-generated data
 
 ### Tag Generation
 
@@ -140,6 +153,16 @@ plexmix tags generate --provider openai
 
 # Skip embedding regeneration (faster, but tags won't be in search)
 plexmix tags generate --no-regenerate-embeddings
+```
+
+### Embedding Generation
+
+```bash
+# Generate embeddings for tracks without them
+plexmix embeddings generate
+
+# Regenerate all embeddings from scratch
+plexmix embeddings generate --regenerate
 ```
 
 **What are tags?**
