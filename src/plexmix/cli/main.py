@@ -310,11 +310,47 @@ def sync_full(
 
 
 @app.command("doctor")
-def doctor():
+def doctor(
+    force: bool = typer.Option(False, "--force", help="Force regenerate all tags and embeddings")
+):
     console.print("[bold]🩺 PlexMix Doctor - Database Health Check[/bold]")
 
     settings = Settings.load_from_file()
     db_path = settings.database.get_db_path()
+
+    if force:
+        console.print("\n[yellow]⚠️  FORCE MODE: Will delete all tags and embeddings and regenerate everything[/yellow]")
+        if not typer.confirm("Are you sure you want to continue?", default=False):
+            console.print("[yellow]Operation cancelled.[/yellow]")
+            return
+
+        with SQLiteManager(str(db_path)) as db:
+            cursor = db.get_connection().cursor()
+
+            cursor.execute('SELECT COUNT(*) FROM tracks')
+            total_tracks = cursor.fetchone()[0]
+
+            cursor.execute('SELECT COUNT(*) FROM embeddings')
+            total_embeddings = cursor.fetchone()[0]
+
+            console.print(f"\n[cyan]Current state:[/cyan]")
+            console.print(f"  Total tracks: {total_tracks}")
+            console.print(f"  Current embeddings: {total_embeddings}")
+
+            console.print("\n[yellow]Deleting all tags and embeddings...[/yellow]")
+            cursor.execute('UPDATE tracks SET tags = NULL, environments = NULL, instruments = NULL')
+            cursor.execute('DELETE FROM embeddings')
+            db.get_connection().commit()
+            console.print("[green]✓ Deleted all tags and embeddings[/green]")
+
+        console.print("\n[bold]Step 1: Generating tags for all tracks...[/bold]")
+        tags_generate(provider="gemini", regenerate_embeddings=False)
+
+        console.print("\n[bold]Step 2: Generating embeddings for all tracks...[/bold]")
+        embeddings_generate(regenerate=False)
+
+        console.print("\n[green]✓ Force regeneration complete![/green]")
+        return
 
     with SQLiteManager(str(db_path)) as db:
         cursor = db.get_connection().cursor()
