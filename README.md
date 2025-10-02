@@ -1,8 +1,14 @@
-# PlexMix
+<div align="center">
+  <img src="logo.png" alt="PlexMix Logo" width="300"/>
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+  # PlexMix
 
-**AI-powered Plex playlist generator using mood-based queries**
+  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+  [![PyPI version](https://badge.fury.io/py/plexmix.svg)](https://badge.fury.io/py/plexmix)
+  [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+
+  **AI-powered Plex playlist generator using mood-based queries**
+</div>
 
 PlexMix syncs your Plex music library to a local SQLite database, generates semantic embeddings for tracks, and uses AI to create personalized playlists based on mood descriptions.
 
