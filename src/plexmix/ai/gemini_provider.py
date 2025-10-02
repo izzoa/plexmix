@@ -36,11 +36,24 @@ class GeminiProvider(AIProvider):
 
             response = model.generate_content(prompt)
 
-            if not response or not response.text:
+            if not response:
                 logger.error("Empty response from Gemini")
                 return []
 
-            track_ids = self._parse_response(response.text)
+            try:
+                response_text = response.text
+            except ValueError:
+                if response.candidates and response.candidates[0].content.parts:
+                    response_text = "".join(part.text for part in response.candidates[0].content.parts)
+                else:
+                    logger.error("Could not extract text from Gemini response")
+                    return []
+
+            if not response_text:
+                logger.error("Empty response text from Gemini")
+                return []
+
+            track_ids = self._parse_response(response_text)
             validated_ids = self._validate_selections(track_ids, candidate_tracks)
 
             logger.info(f"Gemini selected {len(validated_ids)} tracks for mood: {mood_query}")

@@ -12,10 +12,12 @@ def setup_logging(
     log_file: Optional[str] = None,
     log_format: Optional[str] = None
 ) -> None:
-    # Suppress gRPC and Google library warnings
+    # Suppress gRPC and Google library warnings (must be set before import)
     os.environ['GRPC_VERBOSITY'] = 'ERROR'
     os.environ['GLOG_minloglevel'] = '2'
     os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
+    os.environ['GRPC_TRACE'] = ''
+    os.environ['GRPC_VERBOSITY'] = 'NONE'
 
     # Suppress absl logging warnings (unless in debug mode)
     if level.upper() != 'DEBUG':
