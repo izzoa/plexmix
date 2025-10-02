@@ -101,6 +101,20 @@ def test_embedding_generator_openai_dimension():
         assert generator.provider_name == 'openai'
 
 
+def test_embedding_generator_cohere_dimension():
+    with patch('cohere.ClientV2'):
+        generator = EmbeddingGenerator(provider='cohere', api_key='test-key')
+        assert generator.get_dimension() == 1024
+        assert generator.provider_name == 'cohere'
+
+
+def test_embedding_generator_cohere_custom_dimension():
+    with patch('cohere.ClientV2'):
+        from plexmix.utils.embeddings import CohereEmbeddingProvider
+        provider = CohereEmbeddingProvider(api_key='test-key', output_dimension=512)
+        assert provider.get_dimension() == 512
+
+
 def test_embedding_generator_local_generate():
     generator = EmbeddingGenerator(provider='local')
 
