@@ -182,6 +182,60 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         return self.dimension
 
 
+class CohereEmbeddingProvider(EmbeddingProvider):
+    def __init__(self, api_key: str, model: str = "embed-v4", output_dimension: int = 1024):
+        try:
+            import cohere
+            self.client = cohere.ClientV2(api_key=api_key)
+            self.model_name = model
+            self.dimension = output_dimension
+            logger.info(f"Initialized Cohere embedding provider with model {model} (dim: {output_dimension})")
+        except ImportError:
+            raise ImportError("cohere not installed. Run: pip install cohere")
+
+    def generate_embedding(self, text: str) -> List[float]:
+        try:
+            response = self.client.embed(
+                model=self.model_name,
+                texts=[text],
+                input_type="search_document",
+                embedding_types=["float"],
+                output_dimension=self.dimension
+            )
+            return response.embeddings.float_[0]
+        except Exception as e:
+            logger.error(f"Failed to generate Cohere embedding: {e}")
+            raise
+
+    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 96) -> List[List[float]]:
+        embeddings = []
+        total_batches = (len(texts) + batch_size - 1) // batch_size
+
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            batch_num = i // batch_size + 1
+
+            try:
+                logger.debug(f"Generating Cohere embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
+                response = self.client.embed(
+                    model=self.model_name,
+                    texts=batch,
+                    input_type="search_document",
+                    embedding_types=["float"],
+                    output_dimension=self.dimension
+                )
+                embeddings.extend(response.embeddings.float_)
+                logger.debug(f"Completed Cohere batch {batch_num}/{total_batches}")
+            except Exception as e:
+                logger.error(f"Failed to generate batch embeddings (batch {batch_num}): {e}")
+                raise
+
+        return embeddings
+
+    def get_dimension(self) -> int:
+        return self.dimension
+
+
 class LocalEmbeddingProvider(EmbeddingProvider):
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         try:
@@ -231,6 +285,11 @@ class EmbeddingGenerator:
                 raise ValueError("API key required for OpenAI provider")
             model = model or "text-embedding-3-small"
             self.provider = OpenAIEmbeddingProvider(api_key, model)
+        elif self.provider_name == "cohere":
+            if not api_key:
+                raise ValueError("API key required for Cohere provider")
+            model = model or "embed-v4"
+            self.provider = CohereEmbeddingProvider(api_key, model, output_dimension=1024)
         elif self.provider_name == "local":
             model = model or "all-MiniLM-L6-v2"
             self.provider = LocalEmbeddingProvider(model)
