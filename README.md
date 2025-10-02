@@ -275,27 +275,44 @@ PlexMix stores all music metadata locally:
 - **playlists**: Generated playlist metadata
 - **sync_history**: Synchronization audit log
 
-## Embedding Providers
+## AI Provider Comparison
 
-| Provider | Model | Dimensions | API Key Required |
-|----------|-------|------------|------------------|
-| **Google Gemini** (default) | gemini-embedding-001 | 3072 | Yes |
-| OpenAI | text-embedding-3-small | 1536 | Yes |
-| Cohere | embed-v4 | 256/512/1024/1536 | Yes |
-| Local | all-MiniLM-L6-v2 | 384 | No |
+| Provider | Model | Context Window | Default Temp | Speed | Quality | Cost | Best For |
+|----------|-------|----------------|--------------|-------|---------|------|----------|
+| **Google Gemini** ⭐ | gemini-2.5-flash | 1M tokens | 0.7 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | General use, RAG, large contexts |
+| OpenAI | gpt-5-mini | 400K tokens | 0.7 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰 Medium | High-quality responses, reasoning |
+| OpenAI | gpt-5-nano | 400K tokens | 0.7 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Speed-optimized, efficient |
+| Cohere | command-r7b-12-2024 | 128K tokens | 0.3 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | RAG, tool use, agents |
+| Cohere | command-r-plus-08-2024 | 128K tokens | 0.3 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰 Medium | Multilingual, complex tasks |
+| Cohere | command-r-08-2024 | 128K tokens | 0.3 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Balanced performance |
+| Anthropic | claude-sonnet-4-5 | 200K tokens | 0.7 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰💰 High | Advanced reasoning, analysis |
+| Anthropic | claude-3-5-haiku-20241022 | 200K tokens | 0.7 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Fast responses, efficiency |
 
-## AI Providers
+**Legend:**
+- ⭐ Default/recommended option
+- Speed: ⚡ Slow, ⚡⚡ Moderate, ⚡⚡⚡ Fast
+- Quality: ⭐ Basic → ⭐⭐⭐⭐⭐ Outstanding
+- Cost: 💰 Low, 💰💰 Medium, 💰💰💰 High
 
-| Provider | Model | Context | Notes |
-|----------|-------|---------|-------|
-| **Google Gemini** (default) | gemini-2.5-flash | ~1M tokens | Fast, accurate, cost-effective |
-| OpenAI | gpt-5-mini | ~400K tokens | Latest model, high quality |
-| OpenAI | gpt-5-nano | ~400K tokens | Fastest, most efficient |
-| Cohere | command-r7b-12-2024 | ~128K tokens | Latest, fast, RAG-optimized |
-| Cohere | command-r-plus-08-2024 | ~128K tokens | Balanced performance, multilingual |
-| Cohere | command-r-08-2024 | ~128K tokens | Efficient variant |
-| Anthropic | claude-sonnet-4-5 | ~200K tokens | Latest model, excellent reasoning |
-| Anthropic | claude-3-5-haiku-20241022 | ~200K tokens | Fast, efficient |
+## Embedding Provider Comparison
+
+| Provider | Model | Dimensions | Quality | Speed | Cost | API Key | Best For |
+|----------|-------|------------|---------|-------|------|---------|----------|
+| **Google Gemini** ⭐ | gemini-embedding-001 | 3072 | ⭐⭐⭐⭐⭐ Outstanding | ⚡⚡ Moderate | 💰 Low | Required | High-dimensional, accurate semantic search |
+| OpenAI | text-embedding-3-small | 1536 | ⭐⭐⭐⭐ Excellent | ⚡⚡⚡ Fast | 💰💰 Medium | Required | Balanced performance, OpenAI ecosystem |
+| Cohere | embed-v4 | 256/512/1024/1536 | ⭐⭐⭐⭐ Excellent | ⚡⚡⚡ Fast | 💰 Low | Required | Flexible dimensions (Matryoshka), multimodal |
+| Local | all-MiniLM-L6-v2 | 384 | ⭐⭐⭐ Good | ⚡⚡⚡ Fast | 💰 Free | None | Offline use, privacy, no API costs |
+
+**Key Features:**
+- **Gemini**: Highest dimensions (3072d) for maximum semantic precision
+- **OpenAI**: Industry standard, excellent ecosystem integration
+- **Cohere**: Configurable dimensions (256/512/1024/1536), supports images with v4
+- **Local**: Completely free, offline, private, no internet required
+
+**Dimension Trade-offs:**
+- Higher dimensions = Better semantic understanding but larger storage
+- Lower dimensions = Faster search but slightly less accurate
+- Cohere's Matryoshka embeddings allow dynamic dimension selection
 
 ## Development
 
