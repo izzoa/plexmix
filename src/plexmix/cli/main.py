@@ -71,27 +71,61 @@ def config_init():
     )
     library_name = libraries[lib_choice - 1]
 
-    console.print("\n[bold]Google Gemini API Key (required for default AI and embeddings)[/bold]")
-    google_api_key = typer.prompt("Google API key", hide_input=True)
-    credentials.store_google_api_key(google_api_key)
+    console.print("\n[bold]Provider Configuration[/bold]")
+    console.print("PlexMix supports multiple AI and embedding providers:\n")
+    console.print("  1. Google Gemini (default) - Single API key for both AI and embeddings")
+    console.print("  2. OpenAI - GPT models and embeddings")
+    console.print("  3. Anthropic Claude - Advanced reasoning for playlists")
+    console.print("  4. Local embeddings - Free, offline (no API key needed)\n")
 
-    configure_alternatives = typer.confirm(
-        "\nWould you like to configure alternative providers (OpenAI, Anthropic)?",
-        default=False
-    )
+    use_gemini = typer.confirm("Use Google Gemini? (recommended)", default=True)
 
-    if configure_alternatives:
-        if typer.confirm("Configure OpenAI?", default=False):
-            openai_key = typer.prompt("OpenAI API key", hide_input=True)
-            credentials.store_openai_api_key(openai_key)
+    google_api_key = None
+    if use_gemini:
+        google_api_key = typer.prompt("Google Gemini API key", hide_input=True)
+        credentials.store_google_api_key(google_api_key)
 
-        if typer.confirm("Configure Anthropic Claude?", default=False):
-            anthropic_key = typer.prompt("Anthropic API key", hide_input=True)
-            credentials.store_anthropic_api_key(anthropic_key)
+    embedding_provider = "gemini" if use_gemini else None
+    ai_provider = "gemini" if use_gemini else None
+
+    use_openai = typer.confirm("\nConfigure OpenAI?", default=False)
+    openai_key = None
+    if use_openai:
+        openai_key = typer.prompt("OpenAI API key", hide_input=True)
+        credentials.store_openai_api_key(openai_key)
+
+        if not use_gemini:
+            console.print("\nOpenAI will be used for:")
+            use_openai_embeddings = typer.confirm("  - Embeddings?", default=True)
+            use_openai_ai = typer.confirm("  - Playlist generation?", default=True)
+
+            if use_openai_embeddings:
+                embedding_provider = "openai"
+            if use_openai_ai:
+                ai_provider = "openai"
+
+    use_anthropic = typer.confirm("\nConfigure Anthropic Claude?", default=False)
+    if use_anthropic:
+        anthropic_key = typer.prompt("Anthropic API key", hide_input=True)
+        credentials.store_anthropic_api_key(anthropic_key)
+
+        if not ai_provider:
+            ai_provider = "claude"
+
+    if not embedding_provider:
+        console.print("\n[yellow]No embedding provider selected. Using local embeddings (free, offline).[/yellow]")
+        embedding_provider = "local"
+
+    if not ai_provider:
+        console.print("\n[red]Error: No AI provider configured for playlist generation.[/red]")
+        console.print("You must configure at least one of: Gemini, OpenAI, or Anthropic")
+        raise typer.Exit(1)
 
     settings = Settings()
     settings.plex.url = plex_url
     settings.plex.library_name = library_name
+    settings.embedding.default_provider = embedding_provider
+    settings.ai.default_provider = ai_provider
 
     config_path = get_config_path()
     settings.save_to_file(str(config_path))
