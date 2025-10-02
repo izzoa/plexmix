@@ -1,5 +1,6 @@
 import pytest
-from unittest.mock import Mock, patch
+import sys
+from unittest.mock import Mock, patch, MagicMock
 
 from plexmix.utils.embeddings import create_track_text, EmbeddingGenerator
 
@@ -102,17 +103,31 @@ def test_embedding_generator_openai_dimension():
 
 
 def test_embedding_generator_cohere_dimension():
-    with patch('cohere.ClientV2'):
+    mock_cohere = MagicMock()
+    mock_client = MagicMock()
+    mock_cohere.ClientV2.return_value = mock_client
+    sys.modules['cohere'] = mock_cohere
+
+    try:
         generator = EmbeddingGenerator(provider='cohere', api_key='test-key')
         assert generator.get_dimension() == 1024
         assert generator.provider_name == 'cohere'
+    finally:
+        sys.modules.pop('cohere', None)
 
 
 def test_embedding_generator_cohere_custom_dimension():
-    with patch('cohere.ClientV2'):
+    mock_cohere = MagicMock()
+    mock_client = MagicMock()
+    mock_cohere.ClientV2.return_value = mock_client
+    sys.modules['cohere'] = mock_cohere
+
+    try:
         from plexmix.utils.embeddings import CohereEmbeddingProvider
         provider = CohereEmbeddingProvider(api_key='test-key', output_dimension=512)
         assert provider.get_dimension() == 512
+    finally:
+        sys.modules.pop('cohere', None)
 
 
 def test_embedding_generator_local_generate():
