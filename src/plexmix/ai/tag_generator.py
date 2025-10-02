@@ -25,19 +25,26 @@ class TagGenerator:
     def _generate_batch(self, tracks: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
         prompt = self._prepare_tag_prompt(tracks)
 
-        max_retries = 5
-        base_delay = 2
-        backoff_multiplier = 1.5
+        max_retries = 3
+        base_delay = 1
 
         for attempt in range(max_retries):
             try:
                 response = self._call_ai_provider(prompt)
                 parsed_tags = self._parse_tag_response(response, tracks)
                 return parsed_tags
+            except json.JSONDecodeError as e:
+                if attempt < max_retries - 1:
+                    delay = base_delay * (attempt + 1)
+                    logger.warning(f"JSON parse error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                    time.sleep(delay)
+                    continue
+                else:
+                    logger.error(f"Failed to parse JSON after {max_retries} attempts: {e}")
+                    return {track['id']: {'tags': [], 'environments': [], 'instruments': []} for track in tracks}
             except Exception as e:
                 error_str = str(e)
 
-                # Check if error is retryable (rate limits, timeouts, server errors)
                 is_rate_limit = "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower()
                 is_timeout = "504" in error_str or "timeout" in error_str.lower() or "timed out" in error_str.lower()
                 is_server_error = "500" in error_str or "502" in error_str or "503" in error_str
@@ -47,7 +54,7 @@ class TagGenerator:
                         retry_after = self._extract_retry_delay(error_str)
 
                         if retry_after:
-                            delay = retry_after * backoff_multiplier
+                            delay = retry_after * 1.5
                             logger.warning(f"API error (attempt {attempt + 1}/{max_retries}). Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
                         else:
                             delay = base_delay * (2 ** attempt)
@@ -144,11 +151,23 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
                     model_name=self.ai_provider.model,
                     generation_config={
                         "temperature": 0.3,
-                        "max_output_tokens": 4096,
+                        "max_output_tokens": 8192,
                     }
                 )
                 response = model.generate_content(prompt)
-                return response.text
+
+                if not response:
+                    raise ValueError("Empty response from Gemini")
+
+                try:
+                    response_text = response.text
+                except ValueError:
+                    if response.candidates and response.candidates[0].content.parts:
+                        response_text = "".join(part.text for part in response.candidates[0].content.parts)
+                    else:
+                        raise ValueError("Could not extract text from Gemini response")
+
+                return response_text
 
             elif hasattr(self.ai_provider, 'client'):
                 if hasattr(self.ai_provider.client, 'chat'):
@@ -186,6 +205,13 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
             if response.startswith("```"):
                 lines = response.split("\n")
                 response = "\n".join([line for line in lines if not line.startswith("```")])
+
+            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                response = json_match.group(0)
+
+            response = re.sub(r',\s*}', '}', response)
+            response = re.sub(r',\s*\]', ']', response)
 
             tags_dict = json.loads(response)
 
@@ -241,7 +267,8 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON response: {e}")
-            return {track['id']: {'tags': [], 'environments': [], 'instruments': []} for track in tracks}
+            logger.debug(f"Problematic response (first 500 chars): {response[:500]}")
+            raise
         except Exception as e:
             logger.error(f"Failed to parse tag response: {e}")
-            return {track['id']: {'tags': [], 'environments': [], 'instruments': []} for track in tracks}
+            raise

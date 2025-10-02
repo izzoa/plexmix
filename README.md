@@ -11,11 +11,11 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 ✨ **Simple Setup** - Only requires a Google API key to get started
 🎵 **Smart Sync** - Syncs Plex music library with incremental updates
 🤖 **AI-Powered** - Uses Google Gemini, OpenAI GPT, or Anthropic Claude
-🏷️ **AI Tagging** - Automatically generates descriptive tags (mood, energy, activity) for tracks
+🏷️ **AI Tagging** - Automatically generates tags, environments, and instruments for tracks
 🔍 **Semantic Search** - FAISS vector similarity search for intelligent track matching
 🎨 **Mood-Based** - Generate playlists from natural language descriptions
 ⚡ **Fast** - Local database with optimized indexes and full-text search
-🎯 **Flexible** - Filter by genre, year, rating, and artist
+🎯 **Flexible** - Filter by genre, year, rating, artist, environment, and instrument
 
 ## Quick Start
 
@@ -37,6 +37,9 @@ poetry run plexmix create "upbeat morning energy"
 
 # With filters
 poetry run plexmix create "chill evening vibes" --genre jazz --year-min 2010 --limit 30
+
+# Filter by environment and instrument
+poetry run plexmix create "focus music" --environment study --instrument piano
 
 # Use alternative AI provider
 poetry run plexmix create "workout motivation" --provider openai
@@ -140,14 +143,12 @@ plexmix tags generate --no-regenerate-embeddings
 ```
 
 **What are tags?**
-AI-generated descriptive labels (3-5 per track) that enhance semantic search:
-- **Mood**: energetic, melancholic, upbeat, chill, intense
-- **Energy level**: high-energy, low-energy, moderate
-- **Activity fit**: workout, study, party, sleep, driving
-- **Tempo feel**: fast-paced, slow, mid-tempo
-- **Emotional tone**: happy, sad, angry, romantic, nostalgic
+AI-generated metadata (per track) that enhances semantic search:
+- **Tags** (3-5): Mood descriptors like energetic, melancholic, upbeat, chill, intense
+- **Environments** (1-3): Best-fit contexts like work, study, focus, relax, party, workout, sleep, driving, social
+- **Instruments** (1-3): Most prominent instruments like piano, guitar, saxophone, drums, bass, synth, vocals, strings
 
-Tags are automatically included in embeddings for more accurate mood-based playlist generation.
+All metadata is automatically included in embeddings for more accurate mood-based playlist generation.
 
 ### Playlist Generation
 
@@ -164,6 +165,12 @@ plexmix create "energetic workout" --genre rock --limit 40
 # Filter by year range
 plexmix create "90s nostalgia" --year-min 1990 --year-max 1999
 
+# Filter by environment (work, study, focus, relax, party, workout, sleep, driving, social)
+plexmix create "workout energy" --environment workout
+
+# Filter by instrument (piano, guitar, saxophone, drums, etc.)
+plexmix create "piano jazz" --instrument piano
+
 # Use specific AI provider
 plexmix create "chill study session" --provider claude
 
@@ -178,9 +185,12 @@ plexmix create "test playlist" --no-create-in-plex
 
 PlexMix uses a two-stage retrieval system with AI-enhanced tagging:
 
-1. **AI Tagging** → Tracks receive 3-5 descriptive tags (mood, energy, activity, tempo, emotion)
-2. **SQL Filters** → Filter tracks by genre, year, rating, artist
-3. **FAISS Similarity Search** → Retrieve top-K candidates using semantic embeddings (including tags)
+1. **AI Tagging** → Tracks receive:
+   - 3-5 descriptive tags (mood, energy, tempo, emotion)
+   - 1-3 environments (work, study, focus, relax, party, workout, sleep, driving, social)
+   - 1-3 instruments (piano, guitar, saxophone, drums, bass, synth, vocals, strings, etc.)
+2. **SQL Filters** → Filter tracks by genre, year, rating, artist, environment, instrument
+3. **FAISS Similarity Search** → Retrieve top-K candidates using semantic embeddings (includes all metadata)
 4. **LLM Selection** → AI provider selects final tracks matching the mood
 
 ### Technology Stack
@@ -230,8 +240,8 @@ PlexMix stores all music metadata locally:
 
 - **artists**: Artist information
 - **albums**: Album details with artist relationships
-- **tracks**: Track metadata with full-text search and AI-generated tags (up to 5 per track)
-- **embeddings**: Vector embeddings for semantic search (includes tags)
+- **tracks**: Track metadata with full-text search, AI-generated tags (3-5), environments (1-3), and instruments (1-3)
+- **embeddings**: Vector embeddings for semantic search (includes all AI-generated metadata)
 - **playlists**: Generated playlist metadata
 - **sync_history**: Synchronization audit log
 
