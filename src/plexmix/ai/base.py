@@ -54,9 +54,10 @@ Rules:
 2. Only select from the provided candidate list
 3. Order tracks by relevance to the mood query
 4. Consider the track's title, artist, album, genre, and year
-5. **IMPORTANT: Prioritize artist diversity - avoid selecting multiple tracks from the same artist unless necessary**
-6. **IMPORTANT: Prioritize album diversity - avoid selecting multiple tracks from the same album unless necessary**
-7. Return ONLY a JSON array of track IDs, nothing else
+5. **CRITICAL: Do NOT select the same track title + artist combination more than once (no duplicates)**
+6. **IMPORTANT: Prioritize artist diversity - avoid selecting multiple tracks from the same artist unless necessary**
+7. **IMPORTANT: Prioritize album diversity - avoid selecting multiple tracks from the same album unless necessary**
+8. Return ONLY a JSON array of track IDs, nothing else
 
 Response format: [1, 5, 12, 23, ...]"""
 

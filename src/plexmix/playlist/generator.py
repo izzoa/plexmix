@@ -56,25 +56,36 @@ class PlaylistGenerator:
             selected_ids = [c['id'] for c in candidates[:max_tracks]]
 
         seen_tracks = set()
+        seen_combinations = set()
         playlist_tracks = []
         for track_id in selected_ids:
             if track_id in seen_tracks:
                 continue
-            seen_tracks.add(track_id)
-            track = self.db.get_track_by_id(track_id)
-            if track:
-                artist = self.db.get_artist_by_id(track.artist_id)
-                album = self.db.get_album_by_id(track.album_id)
 
-                playlist_tracks.append({
-                    'id': track.id,
-                    'title': track.title,
-                    'artist': artist.name if artist else 'Unknown',
-                    'album': album.title if album else 'Unknown',
-                    'duration_ms': track.duration_ms,
-                    'genre': track.genre,
-                    'year': track.year
-                })
+            track = self.db.get_track_by_id(track_id)
+            if not track:
+                continue
+
+            artist = self.db.get_artist_by_id(track.artist_id)
+            album = self.db.get_album_by_id(track.album_id)
+
+            track_key = (track.title.lower(), artist.name.lower() if artist else 'unknown')
+            if track_key in seen_combinations:
+                logger.debug(f"Skipping duplicate: {track.title} by {artist.name if artist else 'Unknown'}")
+                continue
+
+            seen_tracks.add(track_id)
+            seen_combinations.add(track_key)
+
+            playlist_tracks.append({
+                'id': track.id,
+                'title': track.title,
+                'artist': artist.name if artist else 'Unknown',
+                'album': album.title if album else 'Unknown',
+                'duration_ms': track.duration_ms,
+                'genre': track.genre,
+                'year': track.year
+            })
 
         logger.info(f"Generated playlist with {len(playlist_tracks)} tracks")
         return playlist_tracks
