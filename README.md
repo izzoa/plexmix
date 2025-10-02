@@ -53,7 +53,7 @@ poetry run plexmix doctor
 ### From Source (Recommended)
 
 ```bash
-git clone https://github.com/yourusername/plexmix.git
+git clone https://github.com/izzoa/plexmix.git
 cd plexmix
 poetry install
 ```
@@ -270,7 +270,7 @@ PlexMix stores all music metadata locally:
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/plexmix.git
+git clone https://github.com/izzoa/plexmix.git
 cd plexmix
 
 # Install with development dependencies
