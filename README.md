@@ -8,14 +8,14 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 
 ## Features
 
-✨ **Simple Setup** - Only requires a Google API key to get started
-🎵 **Smart Sync** - Syncs Plex music library with incremental updates
-🤖 **AI-Powered** - Uses Google Gemini, OpenAI GPT, or Anthropic Claude
-🏷️ **AI Tagging** - Automatically generates tags, environments, and instruments for tracks
-🔍 **Semantic Search** - FAISS vector similarity search for intelligent track matching
-🎨 **Mood-Based** - Generate playlists from natural language descriptions
-⚡ **Fast** - Local database with optimized indexes and full-text search
-🎯 **Flexible** - Filter by genre, year, rating, artist, environment, and instrument
+- ✨ **Simple Setup** - Only requires a Google API key to get started
+- 🎵 **Smart Sync** - Syncs Plex music library with incremental updates
+- 🤖 **AI-Powered** - Uses Google Gemini, OpenAI GPT, or Anthropic Claude
+- 🏷️ **AI Tagging** - Automatically generates tags, environments, and instruments for tracks
+- 🔍 **Semantic Search** - FAISS vector similarity search for intelligent track matching
+- 🎨 **Mood-Based** - Generate playlists from natural language descriptions
+- ⚡ **Fast** - Local database with optimized indexes and full-text search
+- 🎯 **Flexible** - Filter by genre, year, rating, artist, environment, and instrument
 
 ## Quick Start
 
@@ -328,7 +328,7 @@ poetry run pytest --cov=plexmix --cov-report=html
 
 ## Roadmap
 
-- [ ] Incremental sync support
+- [ ] Docker support
 - [ ] Web UI dashboard
 - [ ] Multi-library support
 - [ ] Playlist templates
