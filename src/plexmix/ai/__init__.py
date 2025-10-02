@@ -42,7 +42,7 @@ def get_ai_provider(
         model = model or "claude-sonnet-4-5-20250929"
         return ClaudeProvider(api_key, model, temperature)
     elif provider_name == "cohere":
-        model = model or "command-r-plus-08-2024"
+        model = model or "command-r7b-12-2024"
         return CohereProvider(api_key, model, temperature)
     else:
         raise ValueError(f"Unknown provider: {provider_name}. Choose from: gemini, openai, claude, cohere")

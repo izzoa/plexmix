@@ -183,13 +183,13 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
 
 class CohereEmbeddingProvider(EmbeddingProvider):
-    def __init__(self, api_key: str, model: str = "embed-english-v3.0"):
+    def __init__(self, api_key: str, model: str = "embed-v4", output_dimension: int = 1024):
         try:
             import cohere
             self.client = cohere.ClientV2(api_key=api_key)
             self.model_name = model
-            self.dimension = 1024
-            logger.info(f"Initialized Cohere embedding provider with model {model}")
+            self.dimension = output_dimension
+            logger.info(f"Initialized Cohere embedding provider with model {model} (dim: {output_dimension})")
         except ImportError:
             raise ImportError("cohere not installed. Run: pip install cohere")
 
@@ -199,7 +199,8 @@ class CohereEmbeddingProvider(EmbeddingProvider):
                 model=self.model_name,
                 texts=[text],
                 input_type="search_document",
-                embedding_types=["float"]
+                embedding_types=["float"],
+                output_dimension=self.dimension
             )
             return response.embeddings.float_[0]
         except Exception as e:
@@ -220,7 +221,8 @@ class CohereEmbeddingProvider(EmbeddingProvider):
                     model=self.model_name,
                     texts=batch,
                     input_type="search_document",
-                    embedding_types=["float"]
+                    embedding_types=["float"],
+                    output_dimension=self.dimension
                 )
                 embeddings.extend(response.embeddings.float_)
                 logger.debug(f"Completed Cohere batch {batch_num}/{total_batches}")
@@ -286,8 +288,8 @@ class EmbeddingGenerator:
         elif self.provider_name == "cohere":
             if not api_key:
                 raise ValueError("API key required for Cohere provider")
-            model = model or "embed-english-v3.0"
-            self.provider = CohereEmbeddingProvider(api_key, model)
+            model = model or "embed-v4"
+            self.provider = CohereEmbeddingProvider(api_key, model, output_dimension=1024)
         elif self.provider_name == "local":
             model = model or "all-MiniLM-L6-v2"
             self.provider = LocalEmbeddingProvider(model)

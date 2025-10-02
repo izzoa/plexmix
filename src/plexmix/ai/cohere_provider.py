@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 
 
 class CohereProvider(AIProvider):
-    def __init__(self, api_key: str, model: str = "command-r-plus-08-2024", temperature: float = 0.7):
+    def __init__(self, api_key: str, model: str = "command-r7b-12-2024", temperature: float = 0.3):
         super().__init__(api_key, model, temperature)
         try:
             import cohere
