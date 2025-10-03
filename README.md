@@ -25,6 +25,8 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 
 ## Quick Start
 
+### Option 1: Command Line Interface
+
 ```bash
 # Install from PyPI
 pip install plexmix
@@ -56,6 +58,44 @@ plexmix doctor
 # Force regenerate all tags and embeddings
 plexmix doctor --force
 ```
+
+### Option 2: Web User Interface (NEW!)
+
+```bash
+# Install with UI extras
+pip install "plexmix[ui]"
+
+# Or if using poetry
+poetry install -E ui
+
+# Launch the web UI
+plexmix ui
+
+# Optional: Specify host and port
+plexmix ui --host 0.0.0.0 --port 8000
+```
+
+Then open your browser to `http://localhost:3000`
+
+#### Web UI Features
+
+The web interface provides a modern, intuitive way to interact with PlexMix:
+
+- **📊 Dashboard** - Overview of library stats, configuration status, and quick actions
+- **⚙️ Settings** - Configure Plex, AI providers, and embeddings with real-time validation
+- **📚 Library Manager** - Browse, search, and sync your music library with live progress tracking
+- **🎵 Playlist Generator** - Create mood-based playlists with advanced filters and instant preview
+- **🏷️ AI Tagging** - Batch generate tags for tracks with progress monitoring
+- **📜 Playlist History** - View, export, and manage all generated playlists
+
+#### Key UI Features
+
+- **Real-time Progress** - Live updates for sync, tagging, and generation operations
+- **Form Validation** - Instant feedback on configuration settings
+- **Loading States** - Skeleton screens and spinners for smooth UX
+- **Error Handling** - User-friendly error messages with recovery options
+- **Responsive Design** - Works on desktop and tablet devices
+- **Dark Mode** - Easy on the eyes for late-night playlist creation
 
 ## Installation
 
@@ -258,10 +298,17 @@ plexmix/
 │   │   └── sync.py       # Sync engine
 │   ├── playlist/         # Playlist generation
 │   │   └── generator.py  # Core generation logic
+│   ├── ui/               # Web UI (Reflex)
+│   │   ├── app.py        # Main Reflex app
+│   │   ├── pages/        # UI pages
+│   │   ├── states/       # State management
+│   │   ├── components/   # Reusable components
+│   │   └── utils/        # UI utilities
 │   └── utils/            # Utilities
 │       ├── embeddings.py # Embedding providers
 │       └── logging.py    # Logging setup
 └── tests/                # Test suite
+    └── ui/               # UI tests
 ```
 
 ## Database Schema

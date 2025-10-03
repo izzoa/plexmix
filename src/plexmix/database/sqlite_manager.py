@@ -422,6 +422,78 @@ class SQLiteManager:
         ''', (playlist_id, track_id, position))
         self.get_connection().commit()
 
+    def get_playlists(self) -> List[Playlist]:
+        cursor = self.get_connection().cursor()
+        cursor.execute('''
+            SELECT
+                p.id, p.plex_key, p.name, p.description, p.created_by_ai,
+                p.mood_query, p.created_at,
+                COUNT(pt.track_id) as track_count
+            FROM playlists p
+            LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
+            GROUP BY p.id
+            ORDER BY p.created_at DESC
+        ''')
+        return [Playlist(**dict(row)) for row in cursor.fetchall()]
+
+    def get_playlist_by_id(self, playlist_id: int) -> Optional[Playlist]:
+        cursor = self.get_connection().cursor()
+        cursor.execute('''
+            SELECT id, plex_key, name, description, created_by_ai, mood_query, created_at
+            FROM playlists
+            WHERE id = ?
+        ''', (playlist_id,))
+        row = cursor.fetchone()
+        return Playlist(**dict(row)) if row else None
+
+    def get_playlist_tracks(self, playlist_id: int) -> List[Dict[str, Any]]:
+        cursor = self.get_connection().cursor()
+        cursor.execute('''
+            SELECT
+                t.id,
+                t.title,
+                t.duration_ms,
+                t.genre,
+                t.year,
+                a.name as artist_name,
+                al.title as album_title,
+                pt.position
+            FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            JOIN artists a ON t.artist_id = a.id
+            JOIN albums al ON t.album_id = al.id
+            WHERE pt.playlist_id = ?
+            ORDER BY pt.position
+        ''', (playlist_id,))
+        return [dict(row) for row in cursor.fetchall()]
+
+    def delete_playlist(self, playlist_id: int) -> None:
+        cursor = self.get_connection().cursor()
+        cursor.execute('DELETE FROM playlist_tracks WHERE playlist_id = ?', (playlist_id,))
+        cursor.execute('DELETE FROM playlists WHERE id = ?', (playlist_id,))
+        self.get_connection().commit()
+
+    def update_playlist(self, playlist_id: int, name: Optional[str] = None, description: Optional[str] = None) -> None:
+        cursor = self.get_connection().cursor()
+        updates = []
+        params = []
+
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+
+        if not updates:
+            return
+
+        params.append(playlist_id)
+        query = f"UPDATE playlists SET {', '.join(updates)} WHERE id = ?"
+        cursor.execute(query, params)
+        self.get_connection().commit()
+
     def search_tracks_fts(self, query: str) -> List[Track]:
         cursor = self.get_connection().cursor()
         cursor.execute('''
@@ -431,3 +503,236 @@ class SQLiteManager:
             ORDER BY rank
         ''', (query,))
         return [Track(**dict(row)) for row in cursor.fetchall()]
+
+    def get_tracks(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None,
+        genre: Optional[str] = None,
+        year_min: Optional[int] = None,
+        year_max: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        cursor = self.get_connection().cursor()
+
+        query = '''
+            SELECT
+                t.id,
+                t.plex_key,
+                t.title,
+                t.duration_ms,
+                t.genre,
+                t.year,
+                t.rating,
+                t.play_count,
+                t.tags,
+                a.name as artist_name,
+                al.title as album_title,
+                CASE WHEN e.id IS NOT NULL THEN 1 ELSE 0 END as has_embedding
+            FROM tracks t
+            JOIN artists a ON t.artist_id = a.id
+            JOIN albums al ON t.album_id = al.id
+            LEFT JOIN embeddings e ON t.id = e.track_id
+            WHERE 1=1
+        '''
+        params = []
+
+        if search:
+            query += " AND (t.title LIKE ? OR a.name LIKE ? OR al.title LIKE ?)"
+            search_pattern = f"%{search}%"
+            params.extend([search_pattern, search_pattern, search_pattern])
+
+        if genre:
+            query += " AND t.genre LIKE ?"
+            params.append(f"%{genre}%")
+
+        if year_min is not None:
+            query += " AND t.year >= ?"
+            params.append(year_min)
+
+        if year_max is not None:
+            query += " AND t.year <= ?"
+            params.append(year_max)
+
+        query += " ORDER BY t.title LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def count_tracks(
+        self,
+        search: Optional[str] = None,
+        genre: Optional[str] = None,
+        year_min: Optional[int] = None,
+        year_max: Optional[int] = None
+    ) -> int:
+        cursor = self.get_connection().cursor()
+
+        query = '''
+            SELECT COUNT(*) as count
+            FROM tracks t
+            JOIN artists a ON t.artist_id = a.id
+            JOIN albums al ON t.album_id = al.id
+            WHERE 1=1
+        '''
+        params = []
+
+        if search:
+            query += " AND (t.title LIKE ? OR a.name LIKE ? OR al.title LIKE ?)"
+            search_pattern = f"%{search}%"
+            params.extend([search_pattern, search_pattern, search_pattern])
+
+        if genre:
+            query += " AND t.genre LIKE ?"
+            params.append(f"%{genre}%")
+
+        if year_min is not None:
+            query += " AND t.year >= ?"
+            params.append(year_min)
+
+        if year_max is not None:
+            query += " AND t.year <= ?"
+            params.append(year_max)
+
+        cursor.execute(query, params)
+        result = cursor.fetchone()
+        return result['count'] if result else 0
+
+    def count_tracks_with_embeddings(self) -> int:
+        cursor = self.get_connection().cursor()
+        cursor.execute('''
+            SELECT COUNT(DISTINCT e.track_id) as count
+            FROM embeddings e
+        ''')
+        result = cursor.fetchone()
+        return result['count'] if result else 0
+
+    def get_last_sync_time(self) -> Optional[str]:
+        cursor = self.get_connection().cursor()
+        cursor.execute('''
+            SELECT MAX(sync_date) as last_sync
+            FROM sync_history
+            WHERE status = 'completed'
+        ''')
+        result = cursor.fetchone()
+        return result['last_sync'] if result and result['last_sync'] else None
+
+    def count_untagged_tracks(self) -> int:
+        cursor = self.get_connection().cursor()
+        cursor.execute('''
+            SELECT COUNT(*) as count
+            FROM tracks
+            WHERE tags IS NULL OR tags = ''
+        ''')
+        result = cursor.fetchone()
+        return result['count'] if result else 0
+
+    def get_tracks_by_filter(
+        self,
+        genre: Optional[str] = None,
+        year_min: Optional[int] = None,
+        year_max: Optional[int] = None,
+        artist: Optional[str] = None,
+        has_no_tags: bool = False,
+        limit: Optional[int] = None,
+        offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        cursor = self.get_connection().cursor()
+
+        query = '''
+            SELECT
+                t.id,
+                t.title,
+                t.genre,
+                t.year,
+                t.tags,
+                t.environments,
+                t.instruments,
+                a.name as artist,
+                al.title as album
+            FROM tracks t
+            JOIN artists a ON t.artist_id = a.id
+            JOIN albums al ON t.album_id = al.id
+            WHERE 1=1
+        '''
+        params = []
+
+        if genre:
+            query += " AND t.genre LIKE ?"
+            params.append(f"%{genre}%")
+
+        if year_min is not None:
+            query += " AND t.year >= ?"
+            params.append(year_min)
+
+        if year_max is not None:
+            query += " AND t.year <= ?"
+            params.append(year_max)
+
+        if artist:
+            query += " AND a.name LIKE ?"
+            params.append(f"%{artist}%")
+
+        if has_no_tags:
+            query += " AND (t.tags IS NULL OR t.tags = '')"
+
+        query += " ORDER BY t.id"
+
+        if limit:
+            query += " LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+
+        cursor.execute(query, params)
+        return [dict(row) for row in cursor.fetchall()]
+
+    def update_track_tags(
+        self,
+        track_id: int,
+        tags: Optional[str] = None,
+        environments: Optional[str] = None,
+        instruments: Optional[str] = None
+    ) -> None:
+        cursor = self.get_connection().cursor()
+        updates = []
+        params = []
+
+        if tags is not None:
+            updates.append("tags = ?")
+            params.append(tags)
+
+        if environments is not None:
+            updates.append("environments = ?")
+            params.append(environments)
+
+        if instruments is not None:
+            updates.append("instruments = ?")
+            params.append(instruments)
+
+        if not updates:
+            return
+
+        params.append(track_id)
+        query = f"UPDATE tracks SET {', '.join(updates)} WHERE id = ?"
+        cursor.execute(query, params)
+        self.get_connection().commit()
+
+    def get_recently_tagged_tracks(self, limit: int = 100) -> List[Dict[str, Any]]:
+        cursor = self.get_connection().cursor()
+        cursor.execute('''
+            SELECT
+                t.id,
+                t.title,
+                t.tags,
+                t.environments,
+                t.instruments,
+                a.name as artist,
+                al.title as album
+            FROM tracks t
+            JOIN artists a ON t.artist_id = a.id
+            JOIN albums al ON t.album_id = al.id
+            WHERE t.tags IS NOT NULL AND t.tags != ''
+            ORDER BY t.id DESC
+            LIMIT ?
+        ''', (limit,))
+        return [dict(row) for row in cursor.fetchall()]

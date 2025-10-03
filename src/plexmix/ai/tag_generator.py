@@ -1,8 +1,9 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import json
 import logging
 import time
 import re
+import threading
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from .base import AIProvider
@@ -17,10 +18,40 @@ class TagGenerator:
     def generate_tags_batch(
         self,
         tracks: List[Dict[str, Any]],
-        batch_size: int = 20
+        batch_size: int = 20,
+        progress_callback: Optional[Callable[[int, int, int], None]] = None,
+        cancel_event: Optional[threading.Event] = None
     ) -> Dict[int, Dict[str, Any]]:
         logger.debug(f"Generating tags for {len(tracks)} tracks")
-        return self._generate_batch(tracks)
+
+        total_batches = (len(tracks) + batch_size - 1) // batch_size
+        all_results = {}
+        tracks_tagged = 0
+
+        for batch_num in range(total_batches):
+            # Check for cancellation
+            if cancel_event and cancel_event.is_set():
+                logger.info("Tag generation cancelled by user")
+                break
+
+            start_idx = batch_num * batch_size
+            end_idx = min((batch_num + 1) * batch_size, len(tracks))
+            batch_tracks = tracks[start_idx:end_idx]
+
+            # Report progress
+            if progress_callback:
+                progress_callback(batch_num + 1, total_batches, tracks_tagged)
+
+            # Generate tags for this batch
+            batch_results = self._generate_batch(batch_tracks)
+            all_results.update(batch_results)
+            tracks_tagged += len(batch_tracks)
+
+            # Final progress update for this batch
+            if progress_callback:
+                progress_callback(batch_num + 1, total_batches, tracks_tagged)
+
+        return all_results
 
     def _generate_batch(self, tracks: List[Dict[str, Any]]) -> Dict[int, Dict[str, Any]]:
         prompt = self._prepare_tag_prompt(tracks)

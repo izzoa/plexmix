@@ -157,6 +157,7 @@ class Playlist(BaseModel):
     created_by_ai: bool = False
     mood_query: Optional[str] = None
     created_at: datetime = Field(default_factory=datetime.utcnow)
+    track_count: int = 0  # Number of tracks in the playlist
 
     @field_validator('name')
     @classmethod

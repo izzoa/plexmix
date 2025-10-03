@@ -5,6 +5,7 @@ from rich.console import Console
 from rich.table import Table
 from rich import print as rprint
 import sys
+import os
 
 from ..config.settings import Settings, get_config_path
 from ..config import credentials
@@ -34,6 +35,44 @@ def main(
 ):
     log_level = "DEBUG" if verbose else ("ERROR" if quiet else "INFO")
     setup_logging(level=log_level, log_file="~/.plexmix/plexmix.log")
+
+
+@app.command("ui")
+def launch_ui(
+    host: str = typer.Option("localhost", help="Host address for the UI server"),
+    port: int = typer.Option(3000, help="Port for the UI frontend"),
+    reload: bool = typer.Option(False, "--reload", "-r", help="Enable hot-reloading for development"),
+):
+    try:
+        import sys
+        from pathlib import Path
+
+        sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
+
+        import reflex as rx
+
+        console.print("[bold green]Launching PlexMix Web UI...[/bold green]")
+        console.print(f"Frontend: http://{host}:{port}")
+        console.print("Backend: http://localhost:8000")
+
+        import subprocess
+
+        cmd = [sys.executable, "-m", "reflex", "run", "--frontend-port", str(port), "--backend-host", host]
+        if reload:
+            cmd.append("--reload")
+
+        subprocess.run(cmd, cwd=str(Path(__file__).parent.parent.parent.parent))
+
+    except ImportError:
+        console.print("[red]Reflex is not installed.[/red]")
+        console.print("\nTo use the web UI, install PlexMix with UI extras:")
+        console.print("  [bold]pip install plexmix[ui][/bold]")
+        console.print("or")
+        console.print("  [bold]poetry install -E ui[/bold]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Failed to launch UI: {e}[/red]")
+        raise typer.Exit(1)
 
 
 config_app = typer.Typer(name="config", help="Configuration management")

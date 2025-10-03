@@ -1,6 +1,7 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 import logging
 from datetime import datetime
+from threading import Event
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn
 
 from ..plex.client import PlexClient
@@ -25,7 +26,12 @@ class SyncEngine:
         self.embedding_generator = embedding_generator
         self.vector_index = vector_index
 
-    def full_sync(self, generate_embeddings: bool = True) -> SyncHistory:
+    def full_sync(
+        self,
+        generate_embeddings: bool = True,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None
+    ) -> SyncHistory:
         logger.info("Starting full library sync")
         stats = {
             'tracks_added': 0,
@@ -35,6 +41,9 @@ class SyncEngine:
             'albums_processed': 0
         }
 
+        if progress_callback:
+            progress_callback(0.0, "Starting sync...")
+
         try:
             with Progress(
                 SpinnerColumn(),
@@ -43,21 +52,33 @@ class SyncEngine:
                 TaskProgressColumn(),
                 TimeRemainingColumn(),
             ) as progress:
+                if cancel_event and cancel_event.is_set():
+                    raise KeyboardInterrupt("Sync cancelled by user")
+
                 task = progress.add_task("Syncing artists...", total=None)
-                artist_map = self._sync_artists(progress, task)
+                artist_map = self._sync_artists(progress, task, progress_callback, cancel_event, 0.0, 0.2)
                 stats['artists_processed'] = len(artist_map)
 
+                if cancel_event and cancel_event.is_set():
+                    raise KeyboardInterrupt("Sync cancelled by user")
+
                 task = progress.add_task("Syncing albums...", total=None)
-                album_map = self._sync_albums(progress, task, artist_map)
+                album_map = self._sync_albums(progress, task, artist_map, progress_callback, cancel_event, 0.2, 0.4)
                 stats['albums_processed'] = len(album_map)
 
+                if cancel_event and cancel_event.is_set():
+                    raise KeyboardInterrupt("Sync cancelled by user")
+
                 task = progress.add_task("Syncing tracks...", total=None)
-                track_stats = self._sync_tracks(progress, task, artist_map, album_map)
+                track_stats = self._sync_tracks(progress, task, artist_map, album_map, progress_callback, cancel_event, 0.4, 0.7)
                 stats.update(track_stats)
+
+                if cancel_event and cancel_event.is_set():
+                    raise KeyboardInterrupt("Sync cancelled by user")
 
                 if generate_embeddings and self.embedding_generator and self.vector_index:
                     task = progress.add_task("Generating embeddings...", total=None)
-                    self._generate_embeddings_for_new_tracks(progress, task)
+                    self._generate_embeddings_for_new_tracks(progress, task, progress_callback, cancel_event, 0.7, 1.0)
 
             sync_record = SyncHistory(
                 tracks_added=stats['tracks_added'],
@@ -66,6 +87,9 @@ class SyncEngine:
                 status='success'
             )
             self.db.insert_sync_record(sync_record)
+
+            if progress_callback:
+                progress_callback(1.0, "Sync completed successfully")
 
             logger.info(
                 f"Full sync completed: {stats['tracks_added']} added, "
@@ -94,10 +118,22 @@ class SyncEngine:
             self.db.insert_sync_record(sync_record)
             raise
 
-    def _sync_artists(self, progress: Progress, task) -> Dict[str, int]:
+    def _sync_artists(
+        self,
+        progress: Progress,
+        task,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0
+    ) -> Dict[str, int]:
         artist_map = {}
+        total_artists = 0
 
         for artist_batch in self.plex.get_all_artists(batch_size=100):
+            if cancel_event and cancel_event.is_set():
+                break
+
             for artist in artist_batch:
                 existing = self.db.get_artist_by_plex_key(artist.plex_key)
                 if existing:
@@ -108,15 +144,33 @@ class SyncEngine:
 
                 artist_map[artist.plex_key] = artist_id
 
+            total_artists += len(artist_batch)
             progress.update(task, advance=len(artist_batch))
+
+            if progress_callback and total_artists % 10 == 0:
+                current_progress = progress_start + (progress_end - progress_start) * 0.5
+                progress_callback(current_progress, f"Syncing artists... ({total_artists} processed)")
 
         progress.update(task, description=f"Synced {len(artist_map)} artists")
         return artist_map
 
-    def _sync_albums(self, progress: Progress, task, artist_map: Dict[str, int]) -> Dict[str, int]:
+    def _sync_albums(
+        self,
+        progress: Progress,
+        task,
+        artist_map: Dict[str, int],
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0
+    ) -> Dict[str, int]:
         album_map = {}
+        total_albums = 0
 
         for album_batch in self.plex.get_all_albums(batch_size=100):
+            if cancel_event and cancel_event.is_set():
+                break
+
             for album in album_batch:
                 artist_plex_key = album.plex_key.rsplit('/', 1)[0] if '/' in album.plex_key else None
                 if artist_plex_key and artist_plex_key in artist_map:
@@ -133,7 +187,12 @@ class SyncEngine:
 
                 album_map[album.plex_key] = album_id
 
+            total_albums += len(album_batch)
             progress.update(task, advance=len(album_batch))
+
+            if progress_callback and total_albums % 10 == 0:
+                current_progress = progress_start + (progress_end - progress_start) * 0.5
+                progress_callback(current_progress, f"Syncing albums... ({total_albums} processed)")
 
         progress.update(task, description=f"Synced {len(album_map)} albums")
         return album_map
@@ -143,16 +202,23 @@ class SyncEngine:
         progress: Progress,
         task,
         artist_map: Dict[str, int],
-        album_map: Dict[str, int]
+        album_map: Dict[str, int],
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0
     ) -> Dict[str, int]:
         stats = {'tracks_added': 0, 'tracks_updated': 0, 'tracks_removed': 0}
         plex_track_keys = set()
+        total_processed = 0
 
         for track_batch in self.plex.get_all_tracks(batch_size=100):
+            if cancel_event and cancel_event.is_set():
+                break
+
             for track in track_batch:
                 plex_track_keys.add(track.plex_key)
 
-                # Use the artist/album rating keys stored by extract_track_metadata
                 artist_plex_key = track.__dict__.get('_artist_key')
                 album_plex_key = track.__dict__.get('_album_key')
 
@@ -183,7 +249,12 @@ class SyncEngine:
                             genre = Genre(name=genre_name)
                             self.db.insert_genre(genre)
 
+            total_processed += len(track_batch)
             progress.update(task, advance=len(track_batch))
+
+            if progress_callback and total_processed % 10 == 0:
+                current_progress = progress_start + (progress_end - progress_start) * 0.6
+                progress_callback(current_progress, f"Syncing tracks... ({total_processed} processed)")
 
         existing_tracks = self.db.get_all_tracks()
         for existing_track in existing_tracks:
@@ -194,7 +265,15 @@ class SyncEngine:
         progress.update(task, description=f"Synced {stats['tracks_added'] + stats['tracks_updated']} tracks")
         return stats
 
-    def _generate_embeddings_for_new_tracks(self, progress: Progress, task) -> None:
+    def _generate_embeddings_for_new_tracks(
+        self,
+        progress: Progress,
+        task,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0
+    ) -> None:
         if not self.embedding_generator or not self.vector_index:
             return
 
@@ -221,6 +300,10 @@ class SyncEngine:
 
         try:
             for i in range(0, len(tracks_needing_embeddings), batch_size):
+                if cancel_event and cancel_event.is_set():
+                    logger.warning(f"Embedding generation cancelled. Saved {embeddings_saved} embeddings.")
+                    break
+
                 batch_tracks = tracks_needing_embeddings[i:i + batch_size]
                 batch_num = i // batch_size + 1
 
@@ -257,6 +340,10 @@ class SyncEngine:
                     self.db.insert_embedding(embedding)
                     embeddings_saved += 1
                     progress.update(task, advance=1)
+
+                    if progress_callback and embeddings_saved % 10 == 0:
+                        current_progress = progress_start + (progress_end - progress_start) * (embeddings_saved / len(tracks_needing_embeddings))
+                        progress_callback(current_progress, f"Generating embeddings... ({embeddings_saved}/{len(tracks_needing_embeddings)})")
 
                 logger.debug(f"Completed batch {batch_num}/{total_batches}")
 

@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 import logging
 from datetime import datetime
 
@@ -29,11 +29,18 @@ class PlaylistGenerator:
         mood_query: str,
         max_tracks: int = 50,
         candidate_pool_size: int = 500,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[float, str], None]] = None
     ) -> List[Dict[str, Any]]:
         logger.info(f"Generating playlist for mood: {mood_query}")
 
+        if progress_callback:
+            progress_callback(0.0, "Starting playlist generation...")
+
         filtered_track_ids = self._apply_filters(filters) if filters else None
+
+        if progress_callback:
+            progress_callback(0.1, "Searching for candidate tracks...")
 
         candidates = self._get_candidates(
             mood_query,
@@ -43,7 +50,12 @@ class PlaylistGenerator:
 
         if not candidates:
             logger.warning("No candidate tracks found")
+            if progress_callback:
+                progress_callback(1.0, "No candidate tracks found")
             return []
+
+        if progress_callback:
+            progress_callback(0.4, f"Found {len(candidates)} candidates, generating playlist with AI...")
 
         selected_ids = self.ai_provider.generate_playlist(
             mood_query,
@@ -54,6 +66,9 @@ class PlaylistGenerator:
         if not selected_ids:
             logger.warning("AI provider returned no tracks, using top candidates")
             selected_ids = [c['id'] for c in candidates[:max_tracks]]
+
+        if progress_callback:
+            progress_callback(0.7, "Building final playlist...")
 
         seen_tracks = set()
         seen_combinations = set()
@@ -86,6 +101,9 @@ class PlaylistGenerator:
                 'genre': track.genre,
                 'year': track.year
             })
+
+        if progress_callback:
+            progress_callback(1.0, f"Playlist generated with {len(playlist_tracks)} tracks")
 
         logger.info(f"Generated playlist with {len(playlist_tracks)} tracks")
         return playlist_tracks
