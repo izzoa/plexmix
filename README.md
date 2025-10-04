@@ -90,12 +90,12 @@ The web interface provides a modern, intuitive way to interact with PlexMix:
 
 #### Key UI Features
 
+- **🌓 Dark/Light Mode** - Toggle between themes with automatic logo switching
 - **Real-time Progress** - Live updates for sync, tagging, and generation operations
 - **Form Validation** - Instant feedback on configuration settings
 - **Loading States** - Skeleton screens and spinners for smooth UX
 - **Error Handling** - User-friendly error messages with recovery options
 - **Responsive Design** - Works on desktop and tablet devices
-- **Dark Mode** - Easy on the eyes for late-night playlist creation
 
 ## Installation
 
