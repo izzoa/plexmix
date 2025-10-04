@@ -15,7 +15,6 @@ from plexmix.ui.states.tagging_state import TaggingState
 
 app = rx.App(
     theme=rx.theme(
-        appearance="light",  # Default to light mode to show the light logo
         has_background=True,
         accent_color="purple",
         radius="medium",

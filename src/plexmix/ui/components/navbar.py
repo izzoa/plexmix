@@ -14,13 +14,21 @@ def navbar_link(text: str, href: str) -> rx.Component:
 def navbar() -> rx.Component:
     return rx.box(
         rx.vstack(
-            # Logo
+            # Logo - switch based on theme
             rx.link(
-                rx.image(
-                    src="/logo-light.png",
-                    alt="PlexMix",
-                    width="120px",
-                    height="120px",
+                rx.color_mode_cond(
+                    light=rx.image(
+                        src="/logo-light.png",
+                        alt="PlexMix",
+                        width="120px",
+                        height="120px",
+                    ),
+                    dark=rx.image(
+                        src="/logo-dark.png",
+                        alt="PlexMix",
+                        width="120px",
+                        height="120px",
+                    ),
                 ),
                 href="/dashboard",
                 _hover={"opacity": 0.8},
@@ -32,6 +40,17 @@ def navbar() -> rx.Component:
             navbar_link("Tagging", "/tagging"),
             navbar_link("History", "/history"),
             navbar_link("Settings", "/settings"),
+            rx.spacer(),
+            rx.hstack(
+                rx.icon("sun", size=16),
+                rx.switch(
+                    on_change=rx.toggle_color_mode,
+                    size="2",
+                ),
+                rx.icon("moon", size=16),
+                spacing="2",
+                align="center",
+            ),
             spacing="3",
             align="start",
             padding="4",
