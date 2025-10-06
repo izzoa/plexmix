@@ -52,9 +52,8 @@ def vector_index():
 
 @pytest.fixture
 def playlist_generator(db_manager, vector_index):
-    ai_provider = MockAIProvider()
     embedding_generator = MockEmbeddingGenerator()
-    return PlaylistGenerator(db_manager, vector_index, ai_provider, embedding_generator)
+    return PlaylistGenerator(db_manager, vector_index, embedding_generator)
 
 
 @pytest.fixture
@@ -105,7 +104,6 @@ def sample_tracks(db_manager, vector_index):
 def test_playlist_generator_initialization(playlist_generator):
     assert playlist_generator.db is not None
     assert playlist_generator.vector_index is not None
-    assert playlist_generator.ai_provider is not None
     assert playlist_generator.embedding_generator is not None
 
 
