@@ -16,9 +16,12 @@ from plexmix.ui.states.history_state import HistoryState
 app = rx.App(
     theme=rx.theme(
         appearance="dark",
-        accent_color="purple",
+        accent_color="orange",
         radius="medium",
-    )
+    ),
+    stylesheets=[
+        "/styles.css",
+    ],
 )
 
 app.add_page(index, route="/")

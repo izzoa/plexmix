@@ -12,6 +12,7 @@ class GeneratorState(AppState):
     year_max: Optional[int] = None
     include_artists: str = ""
     exclude_artists: str = ""
+    candidate_pool_multiplier: int = 25
 
     is_generating: bool = False
     generation_progress: int = 0
@@ -35,8 +36,20 @@ class GeneratorState(AppState):
     def use_example(self, example: str):
         self.mood_query = example
 
+    def set_mood_query(self, value: str):
+        self.mood_query = value
+
+    def set_genre_filter(self, value: str):
+        self.genre_filter = value
+
+    def set_playlist_name(self, value: str):
+        self.playlist_name = value
+
     def set_max_tracks(self, value: int):
         self.max_tracks = max(10, min(100, value))
+
+    def set_candidate_pool_multiplier(self, value: int):
+        self.candidate_pool_multiplier = max(1, min(100, value))
 
     def set_year_range(self, year_min: Optional[int], year_max: Optional[int]):
         self.year_min = year_min
@@ -66,8 +79,6 @@ class GeneratorState(AppState):
             from plexmix.database.sqlite_manager import SQLiteManager
             from plexmix.database.vector_index import VectorIndex
             from plexmix.utils.embeddings import EmbeddingGenerator
-            from plexmix.ai.providers.gemini import GeminiProvider
-            from plexmix.ai.providers.openai import OpenAIProvider
             from plexmix.playlist.generator import PlaylistGenerator
 
             settings = Settings.load_from_file()
@@ -82,27 +93,23 @@ class GeneratorState(AppState):
             db = SQLiteManager(str(db_path))
             db.connect()
 
-            vector_index = VectorIndex(db_path.parent / "vector_index.faiss")
-            if not vector_index.index_path.exists():
-                async with self:
-                    self.generation_message = "Vector index not found. Please generate embeddings first."
-                    self.is_generating = False
-                db.close()
-                return
+            # Get the embedding dimension from settings
+            embedding_provider = settings.embedding.default_provider
+            if embedding_provider == "gemini":
+                dimension = 3072
+            elif embedding_provider == "openai":
+                dimension = 1536
+            elif embedding_provider == "cohere":
+                dimension = 1024
+            else:  # local
+                dimension = 384
 
-            vector_index.load_index()
+            index_path = settings.database.faiss_index_path
+            vector_index = VectorIndex(dimension=dimension, index_path=index_path)
 
-            api_key = None
-            ai_provider_name = settings.ai.default_provider
-            if ai_provider_name == "gemini":
-                api_key = get_google_api_key()
-                ai_provider = GeminiProvider(api_key=api_key, model=settings.ai.model)
-            elif ai_provider_name == "openai":
-                api_key = get_openai_api_key()
-                ai_provider = OpenAIProvider(api_key=api_key, model=settings.ai.model)
-            else:
+            if not vector_index.index or vector_index.index.ntotal == 0:
                 async with self:
-                    self.generation_message = f"Unsupported AI provider: {ai_provider_name}"
+                    self.generation_message = "Vector index not found or empty. Please generate embeddings first."
                     self.is_generating = False
                 db.close()
                 return
@@ -123,7 +130,6 @@ class GeneratorState(AppState):
             playlist_generator = PlaylistGenerator(
                 db_manager=db,
                 vector_index=vector_index,
-                ai_provider=ai_provider,
                 embedding_generator=embedding_generator
             )
 
@@ -136,21 +142,41 @@ class GeneratorState(AppState):
                 filters['year_max'] = self.year_max
 
             def progress_callback(progress: float, message: str):
-                async def update_state():
+                import asyncio
+                loop = asyncio.get_event_loop()
+
+                async def update():
                     async with self:
                         self.generation_progress = int(progress * 100)
                         self.generation_message = message
-                asyncio.create_task(update_state())
+
+                asyncio.run_coroutine_threadsafe(update(), loop)
 
             mood_query_text = self.mood_query
             max_tracks_val = self.max_tracks
+            pool_multiplier = self.candidate_pool_multiplier
+
+            print(f"Generating playlist with mood: {mood_query_text}, max_tracks: {max_tracks_val}, pool_multiplier: {pool_multiplier}")
 
             playlist_tracks = playlist_generator.generate(
                 mood_query=mood_query_text,
                 max_tracks=max_tracks_val,
+                candidate_pool_multiplier=pool_multiplier,
                 filters=filters if filters else None,
                 progress_callback=progress_callback
             )
+
+            print(f"Generated {len(playlist_tracks)} tracks")
+
+            # Format durations for display
+            for track in playlist_tracks:
+                duration_ms = track.get('duration_ms', 0)
+                if duration_ms:
+                    minutes = duration_ms // 60000
+                    seconds = (duration_ms // 1000) % 60
+                    track['duration_formatted'] = f"{minutes}:{seconds:02d}"
+                else:
+                    track['duration_formatted'] = "0:00"
 
             total_duration = sum(track.get('duration_ms', 0) for track in playlist_tracks)
 
@@ -161,9 +187,15 @@ class GeneratorState(AppState):
                 self.total_duration_ms = total_duration
                 self.is_generating = False
                 self.generation_progress = 100
-                self.generation_message = f"Generated {len(playlist_tracks)} tracks!"
+                if len(playlist_tracks) > 0:
+                    self.generation_message = f"Generated {len(playlist_tracks)} tracks!"
+                else:
+                    self.generation_message = "No tracks generated. Check console for errors."
 
         except Exception as e:
+            import traceback
+            print(f"Error generating playlist: {e}")
+            print(traceback.format_exc())
             async with self:
                 self.is_generating = False
                 self.generation_message = f"Generation failed: {str(e)}"
@@ -201,9 +233,10 @@ class GeneratorState(AppState):
 
             plex_client = PlexClient(settings.plex.url, plex_token)
             plex_client.connect()
+            plex_client.select_library(settings.plex.library_name)
 
-            track_ids = [track['id'] for track in self.generated_playlist]
-            plex_key = plex_client.create_playlist(self.playlist_name, track_ids)
+            track_plex_keys = [track['plex_key'] for track in self.generated_playlist]
+            plex_key = plex_client.create_playlist(self.playlist_name, track_plex_keys)
 
             async with self:
                 self.is_generating = False
@@ -257,6 +290,16 @@ class GeneratorState(AppState):
             async with self:
                 self.is_generating = False
                 self.generation_message = f"Failed to save locally: {str(e)}"
+
+    def format_duration(self, duration_ms: int) -> str:
+        """Format duration from milliseconds to mm:ss"""
+        if not duration_ms:
+            return "0:00"
+
+        total_seconds = duration_ms // 1000
+        minutes = total_seconds // 60
+        seconds = total_seconds % 60
+        return f"{minutes}:{seconds:02d}"
 
     def export_m3u(self):
         if not self.generated_playlist:

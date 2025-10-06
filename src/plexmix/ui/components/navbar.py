@@ -7,7 +7,7 @@ def navbar_link(text: str, href: str) -> rx.Component:
         href=href,
         underline="none",
         color_scheme="gray",
-        _hover={"color": "purple.10"},
+        _hover={"color": "orange.10"},
     )
 
 

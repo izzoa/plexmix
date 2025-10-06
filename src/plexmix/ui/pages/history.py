@@ -220,8 +220,8 @@ def detail_modal() -> rx.Component:
                             rx.text("•", size="3"),
                             rx.text(
                                 rx.cond(
-                                    HistoryState.selected_playlist['total_duration_ms'],
-                                    HistoryState.selected_playlist['total_duration_ms'],
+                                    HistoryState.selected_playlist['total_duration_formatted'],
+                                    HistoryState.selected_playlist['total_duration_formatted'],
                                     "--",
                                 ),
                                 size="3",
@@ -260,18 +260,12 @@ def detail_modal() -> rx.Component:
                         rx.table.body(
                             rx.foreach(
                                 HistoryState.selected_playlist_tracks,
-                                lambda track, index: rx.table.row(
-                                    rx.table.cell(str(index + 1)),
-                                    rx.table.cell(rx.cond(track['title'], track['title'], 'Unknown')),
-                                    rx.table.cell(rx.cond(track['artist'], track['artist'], 'Unknown')),
-                                    rx.table.cell(rx.cond(track['album'], track['album'], 'Unknown')),
-                                    rx.table.cell(
-                                        rx.cond(
-                                            track['duration_ms'],
-                                            track['duration_ms'],
-                                            '0'
-                                        )
-                                    ),
+                                lambda track: rx.table.row(
+                                    rx.table.cell(track['position']),
+                                    rx.table.cell(track['title']),
+                                    rx.table.cell(track['artist']),
+                                    rx.table.cell(track['album']),
+                                    rx.table.cell(track['duration_formatted']),
                                 ),
                             )
                         ),

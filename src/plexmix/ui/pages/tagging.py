@@ -11,7 +11,7 @@ def selection_panel() -> rx.Component:
         rx.button(
             "Tag All Untagged Tracks",
             on_click=TaggingState.tag_all_untagged,
-            color_scheme="purple",
+            color_scheme="orange",
             size="3",
             width="100%",
         ),

@@ -247,19 +247,19 @@ class PlexClient:
 
         return track
 
-    def create_playlist(self, name: str, track_ids: List[int], description: Optional[str] = None):
+    def create_playlist(self, name: str, track_plex_keys: List[str], description: Optional[str] = None):
         if not self.music_library:
             logger.error("No music library selected")
             return None
 
         try:
             tracks = []
-            for track_id in track_ids:
+            for plex_key in track_plex_keys:
                 try:
-                    track = self.music_library.fetchItem(track_id)
+                    track = self.music_library.fetchItem(plex_key)
                     tracks.append(track)
                 except Exception as e:
-                    logger.warning(f"Failed to fetch track {track_id}: {e}")
+                    logger.warning(f"Failed to fetch track {plex_key}: {e}")
 
             if not tracks:
                 logger.error("No valid tracks found for playlist")

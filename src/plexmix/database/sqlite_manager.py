@@ -451,6 +451,7 @@ class SQLiteManager:
         cursor.execute('''
             SELECT
                 t.id,
+                t.plex_key,
                 t.title,
                 t.duration_ms,
                 t.genre,

@@ -94,7 +94,7 @@ def dashboard() -> rx.Component:
                         size="3",
                         disabled=~(DashboardState.plex_configured & DashboardState.ai_provider_configured),
                     ),
-                    href="/generate",
+                    href="/generator",
                 ),
                 rx.button(
                     "Sync Library",

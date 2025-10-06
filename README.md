@@ -25,7 +25,7 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 
 ## Quick Start
 
-### Option 1: Command Line Interface
+### Option 1: Command Line Interface (Recommended)
 
 ```bash
 # Install from PyPI
@@ -59,7 +59,9 @@ plexmix doctor
 plexmix doctor --force
 ```
 
-### Option 2: Web User Interface (NEW!)
+### Option 2: Web User Interface (Alpha)
+
+> **Note:** The Web UI is currently in Alpha status. The CLI is the recommended way to interact with PlexMix for production use.
 
 ```bash
 # Install with UI extras
@@ -76,6 +78,29 @@ plexmix ui --host 0.0.0.0 --port 8000
 ```
 
 Then open your browser to `http://localhost:3000`
+
+#### Screenshots
+
+<div align="center">
+  <img src="docs/screenshots/dashboard-light.png" alt="Dashboard - Light Mode" width="45%"/>
+  <img src="docs/screenshots/dashboard-dark.png" alt="Dashboard - Dark Mode" width="45%"/>
+  <p><em>Dashboard with configuration status and library statistics</em></p>
+</div>
+
+<div align="center">
+  <img src="docs/screenshots/generator.png" alt="Playlist Generator" width="90%"/>
+  <p><em>AI-powered playlist generator with mood-based queries</em></p>
+</div>
+
+<div align="center">
+  <img src="docs/screenshots/library.png" alt="Library Manager" width="90%"/>
+  <p><em>Browse and manage your music library with advanced filtering</em></p>
+</div>
+
+<div align="center">
+  <img src="docs/screenshots/settings.png" alt="Settings" width="90%"/>
+  <p><em>Configure Plex, AI providers, and embeddings</em></p>
+</div>
 
 #### Web UI Features
 
@@ -247,21 +272,30 @@ plexmix create "chill study session" --provider claude
 # Custom playlist name
 plexmix create "morning coffee" --name "Perfect Morning Mix"
 
+# Adjust candidate pool multiplier (default: 25x playlist length)
+plexmix create "diverse mix" --limit 20 --pool-multiplier 50
+
 # Don't create in Plex (save locally only)
 plexmix create "test playlist" --no-create-in-plex
 ```
 
 ## Architecture
 
-PlexMix uses a two-stage retrieval system with AI-enhanced tagging:
+PlexMix uses a multi-stage pipeline for intelligent playlist generation:
 
-1. **AI Tagging** → Tracks receive:
+1. **AI Tagging** (One-time setup) → Tracks receive:
    - 3-5 descriptive tags (mood, energy, tempo, emotion)
    - 1-3 environments (work, study, focus, relax, party, workout, sleep, driving, social)
    - 1-3 instruments (piano, guitar, saxophone, drums, bass, synth, vocals, strings, etc.)
-2. **SQL Filters** → Filter tracks by genre, year, rating, artist, environment, instrument
-3. **FAISS Similarity Search** → Retrieve top-K candidates using semantic embeddings (includes all metadata)
-4. **LLM Selection** → AI provider selects final tracks matching the mood
+
+2. **Playlist Generation Pipeline**:
+   - **SQL Filters** → Apply optional filters (genre, year, rating, artist, environment, instrument)
+   - **Candidate Pool** → Search using FAISS vector similarity (default: 25x playlist length)
+   - **Diversity Selection** → Apply algorithmic diversity rules:
+     - Max 3 tracks per artist
+     - Max 2 tracks per album
+     - No duplicate track/artist combinations
+   - **Final Playlist** → Return curated, diverse track list
 
 ### Technology Stack
 
@@ -269,7 +303,7 @@ PlexMix uses a two-stage retrieval system with AI-enhanced tagging:
 - **CLI**: Typer with Rich console output
 - **Database**: SQLite with FTS5 full-text search
 - **Vector Search**: FAISS (CPU) with cosine similarity
-- **AI Providers**: Google Gemini (default), OpenAI GPT, Anthropic Claude
+- **AI Providers**: Google Gemini (default), OpenAI GPT, Anthropic Claude, Cohere
 - **Embeddings**: Google Gemini (3072d), OpenAI (1536d), Local (384-768d)
 - **Plex Integration**: PlexAPI
 
@@ -420,7 +454,9 @@ poetry run pytest --cov=plexmix --cov-report=html
 
 - Use local embeddings for faster offline operation
 - Run sync during off-peak hours for large libraries
-- Adjust candidate pool size based on library size
+- Adjust candidate pool multiplier based on library size (default: 25x playlist length)
+  - Smaller libraries: Use lower multiplier (10-15x) for faster generation
+  - Larger libraries: Use higher multiplier (30-50x) for better diversity
 - Use filters to narrow search space
 
 ## FAQ
@@ -516,7 +552,6 @@ Absolutely! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. We welcome bu
 ## Roadmap
 
 - [ ] Docker support
-- [ ] Web UI dashboard
 - [ ] Multi-library support
 - [ ] Playlist templates
 - [ ] Smart shuffle and ordering
@@ -542,7 +577,7 @@ MIT License - see [LICENSE](LICENSE) for details
 - Built with [Typer](https://typer.tiangolo.com/) and [Rich](https://rich.readthedocs.io/)
 - Plex integration via [python-plexapi](https://github.com/pkkid/python-plexapi)
 - Vector search powered by [FAISS](https://github.com/facebookresearch/faiss)
-- AI providers: Google, OpenAI, Anthropic
+- AI providers: Google, OpenAI, Anthropic, Cohere
 
 ---
 

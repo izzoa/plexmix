@@ -105,7 +105,7 @@ class AppState(rx.State):
             if metadata_path.exists():
                 with open(metadata_path, 'rb') as f:
                     metadata = pickle.load(f)
-                    self.embedded_tracks = str(len(metadata))
+                    self.embedded_tracks = str(len(metadata.get('track_ids', [])))
             else:
                 self.embedded_tracks = "0"
 

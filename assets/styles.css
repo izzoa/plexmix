@@ -1,0 +1,32 @@
+/* PlexMix UI Custom Styles */
+
+/* Override Reflex accent color with PlexMix orange */
+:root {
+  --accent-9: #ef8327;
+  --accent-10: #d66f1f;
+  --accent-11: #ef8327;
+  --accent-12: #f5f5f5;
+
+  /* Lighter shades for backgrounds */
+  --accent-3: rgba(239, 131, 39, 0.1);
+  --accent-4: rgba(239, 131, 39, 0.2);
+  --accent-5: rgba(239, 131, 39, 0.3);
+  --accent-6: rgba(239, 131, 39, 0.4);
+  --accent-7: rgba(239, 131, 39, 0.5);
+  --accent-8: rgba(239, 131, 39, 0.7);
+}
+
+/* Button hover states */
+.rt-Button[data-accent-color="orange"]:hover {
+  background-color: #d66f1f;
+}
+
+/* Progress bar color */
+.rt-ProgressRoot[data-accent-color="orange"] .rt-ProgressIndicator {
+  background-color: #ef8327;
+}
+
+/* Spinner color */
+.rt-Spinner[data-accent-color="orange"] {
+  color: #ef8327;
+}

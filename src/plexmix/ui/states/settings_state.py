@@ -70,6 +70,10 @@ class SettingsState(AppState):
             self.plex_library = settings.plex.library_name or ""
             self.plex_token = get_plex_token() or ""
 
+            # If we have a configured library name, add it to the list so it shows in dropdown
+            if self.plex_library:
+                self.plex_libraries = [self.plex_library]
+
             self.ai_provider = settings.ai.default_provider
             self.ai_model = settings.ai.model or ""
             self.ai_temperature = settings.ai.temperature
@@ -78,7 +82,7 @@ class SettingsState(AppState):
                 self.ai_api_key = get_google_api_key() or ""
             elif self.ai_provider == "openai":
                 self.ai_api_key = get_openai_api_key() or ""
-            elif self.ai_provider == "claude":
+            elif self.ai_provider == "anthropic":
                 self.ai_api_key = get_anthropic_api_key() or ""
             elif self.ai_provider == "cohere":
                 self.ai_api_key = get_cohere_api_key() or ""
@@ -103,9 +107,9 @@ class SettingsState(AppState):
 
     def update_model_lists(self):
         ai_model_map = {
-            "gemini": ["gemini-pro", "gemini-1.5-pro", "gemini-1.5-flash"],
-            "openai": ["gpt-4", "gpt-4-turbo", "gpt-3.5-turbo"],
-            "claude": ["claude-3-opus", "claude-3-sonnet", "claude-3-haiku"],
+            "gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash-001"],
+            "openai": ["gpt-5", "gpt-5-mini", "gpt-5-nano"],
+            "anthropic": ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-3-5"],
             "cohere": ["command", "command-light", "command-r"]
         }
         self.ai_models = ai_model_map.get(self.ai_provider, [])
@@ -255,7 +259,7 @@ class SettingsState(AppState):
                     store_google_api_key(self.ai_api_key)
                 elif self.ai_provider == "openai":
                     store_openai_api_key(self.ai_api_key)
-                elif self.ai_provider == "claude":
+                elif self.ai_provider == "anthropic":
                     store_anthropic_api_key(self.ai_api_key)
                 elif self.ai_provider == "cohere":
                     store_cohere_api_key(self.ai_api_key)

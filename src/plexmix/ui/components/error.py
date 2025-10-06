@@ -133,7 +133,7 @@ def empty_state(
             rx.button(
                 action_text,
                 on_click=on_action,
-                color_scheme="purple",
+                color_scheme="orange",
                 size="3",
             ),
             rx.box(),

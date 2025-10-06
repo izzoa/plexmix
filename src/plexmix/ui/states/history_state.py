@@ -33,7 +33,7 @@ class HistoryState(AppState):
 
     def on_load(self):
         super().on_load()
-        self.load_playlists()
+        return HistoryState.load_playlists
 
     @rx.event(background=True)
     async def load_playlists(self):
@@ -97,11 +97,39 @@ class HistoryState(AppState):
                     self.selected_playlist = playlist.model_dump()
 
                     # Get tracks for this playlist
-                    self.selected_playlist_tracks = db.get_playlist_tracks(playlist_id)
+                    tracks = db.get_playlist_tracks(playlist_id)
 
-                    # Calculate total duration
-                    total_duration_ms = sum(t.get('duration_ms', 0) for t in self.selected_playlist_tracks)
+                    # Format track data for display
+                    formatted_tracks = []
+                    for i, track in enumerate(tracks):
+                        duration_ms = track.get('duration_ms', 0)
+                        if duration_ms:
+                            minutes = duration_ms // 60000
+                            seconds = (duration_ms // 1000) % 60
+                            duration_formatted = f"{minutes}:{seconds:02d}"
+                        else:
+                            duration_formatted = "0:00"
+
+                        formatted_tracks.append({
+                            'position': i + 1,
+                            'id': track.get('id'),
+                            'title': track.get('title', 'Unknown'),
+                            'artist': track.get('artist_name', 'Unknown'),
+                            'album': track.get('album_title', 'Unknown'),
+                            'duration_ms': duration_ms,
+                            'duration_formatted': duration_formatted,
+                            'genre': track.get('genre', ''),
+                            'year': track.get('year', '')
+                        })
+
+                    self.selected_playlist_tracks = formatted_tracks
+
+                    # Calculate and format total duration
+                    total_duration_ms = sum(t.get('duration_ms', 0) for t in formatted_tracks)
+                    total_minutes = total_duration_ms // 60000
+                    total_seconds = (total_duration_ms // 1000) % 60
                     self.selected_playlist['total_duration_ms'] = total_duration_ms
+                    self.selected_playlist['total_duration_formatted'] = f"{total_minutes}:{total_seconds:02d}"
 
                     # Open modal
                     self.is_detail_modal_open = True
@@ -213,16 +241,17 @@ class HistoryState(AppState):
 
             # Get playlist tracks
             tracks = db.get_playlist_tracks(playlist_id)
-            track_ids = [t['id'] for t in tracks]
+            track_plex_keys = [t['plex_key'] for t in tracks]
 
             db.close()
 
             # Connect to Plex and create playlist
             plex_client = PlexClient(settings.plex.url, plex_token)
             plex_client.connect()
+            plex_client.select_library(settings.plex.library_name)
 
             playlist_name = playlist.name or f"PlexMix Playlist {playlist_id}"
-            plex_client.create_playlist(playlist_name, track_ids)
+            plex_client.create_playlist(playlist_name, track_plex_keys)
 
             async with self:
                 self.action_message = f"Exported '{playlist_name}' to Plex!"

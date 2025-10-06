@@ -61,6 +61,24 @@ def advanced_options() -> rx.Component:
                         spacing="3",
                         align="center",
                     ),
+                    rx.hstack(
+                        rx.text("Candidate Pool Multiplier:", size="3"),
+                        rx.slider(
+                            default_value=[GeneratorState.candidate_pool_multiplier],
+                            on_change=lambda val: GeneratorState.set_candidate_pool_multiplier(val[0]),
+                            min=5,
+                            max=100,
+                            step=5,
+                            width="200px",
+                        ),
+                        rx.text(f"{GeneratorState.candidate_pool_multiplier}x", size="3", weight="bold"),
+                        rx.tooltip(
+                            rx.icon("info", size=16),
+                            content="Multiplier for the candidate pool size. Higher values search more tracks for better matches."
+                        ),
+                        spacing="3",
+                        align="center",
+                    ),
                     rx.input(
                         placeholder="Genre filter (e.g., rock, jazz)",
                         value=GeneratorState.genre_filter,
@@ -107,7 +125,7 @@ def input_section() -> rx.Component:
             on_click=GeneratorState.generate_playlist,
             disabled=GeneratorState.is_generating | (GeneratorState.mood_query == ""),
             loading=GeneratorState.is_generating,
-            color_scheme="purple",
+            color_scheme="orange",
             size="4",
             width="100%",
         ),
@@ -148,15 +166,15 @@ def playlist_table() -> rx.Component:
             rx.foreach(
                 GeneratorState.generated_playlist,
                 lambda track, index: rx.table.row(
-                    rx.table.cell(str(index + 1)),
+                    rx.table.cell(index + 1),
                     rx.table.cell(track["title"]),
                     rx.table.cell(track["artist"]),
                     rx.table.cell(track["album"]),
-                    rx.table.cell(track["duration_ms"]),  # TODO: Format as mm:ss
+                    rx.table.cell(track["duration_formatted"]),
                     rx.table.cell(
                         rx.button(
                             "Remove",
-                            on_click=lambda: GeneratorState.remove_track(track["id"]),
+                            on_click=lambda t=track: GeneratorState.remove_track(t["id"]),
                             variant="soft",
                             color_scheme="red",
                             size="1",
@@ -219,14 +237,24 @@ def playlist_actions() -> rx.Component:
 
 def loading_state() -> rx.Component:
     return rx.vstack(
-        rx.spinner(size="3"),
+        rx.spinner(size="3", color="orange"),
         rx.text("Generating your playlist...", size="5", weight="bold"),
-        rx.progress(value=GeneratorState.generation_progress, width="100%"),
-        rx.text(GeneratorState.generation_message, size="3", color_scheme="gray"),
+        rx.progress(
+            value=GeneratorState.generation_progress,
+            max=100,
+            width="100%",
+            color_scheme="orange",
+        ),
+        rx.text(
+            f"{GeneratorState.generation_progress}% - {GeneratorState.generation_message}",
+            size="3",
+            color_scheme="gray",
+        ),
         spacing="4",
         align="center",
         justify="center",
-        height="400px",
+        min_height="400px",
+        width="100%",
     )
 
 

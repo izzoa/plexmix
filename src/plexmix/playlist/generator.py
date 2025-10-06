@@ -4,7 +4,6 @@ from datetime import datetime
 
 from ..database.sqlite_manager import SQLiteManager
 from ..database.vector_index import VectorIndex
-from ..ai.base import AIProvider
 from ..utils.embeddings import EmbeddingGenerator
 from ..database.models import Playlist
 
@@ -16,19 +15,18 @@ class PlaylistGenerator:
         self,
         db_manager: SQLiteManager,
         vector_index: VectorIndex,
-        ai_provider: AIProvider,
         embedding_generator: EmbeddingGenerator
     ):
         self.db = db_manager
         self.vector_index = vector_index
-        self.ai_provider = ai_provider
         self.embedding_generator = embedding_generator
 
     def generate(
         self,
         mood_query: str,
         max_tracks: int = 50,
-        candidate_pool_size: int = 500,
+        candidate_pool_size: Optional[int] = None,
+        candidate_pool_multiplier: int = 25,
         filters: Optional[Dict[str, Any]] = None,
         progress_callback: Optional[Callable[[float, str], None]] = None
     ) -> List[Dict[str, Any]]:
@@ -36,6 +34,12 @@ class PlaylistGenerator:
 
         if progress_callback:
             progress_callback(0.0, "Starting playlist generation...")
+
+        # Calculate effective candidate pool size
+        if candidate_pool_size is None:
+            candidate_pool_size = max_tracks * candidate_pool_multiplier
+
+        logger.info(f"Using candidate pool size: {candidate_pool_size} (max_tracks: {max_tracks}, multiplier: {candidate_pool_multiplier})")
 
         filtered_track_ids = self._apply_filters(filters) if filters else None
 
@@ -55,17 +59,9 @@ class PlaylistGenerator:
             return []
 
         if progress_callback:
-            progress_callback(0.4, f"Found {len(candidates)} candidates, generating playlist with AI...")
+            progress_callback(0.4, f"Found {len(candidates)} candidates, selecting tracks with diversity...")
 
-        selected_ids = self.ai_provider.generate_playlist(
-            mood_query,
-            candidates,
-            max_tracks
-        )
-
-        if not selected_ids:
-            logger.warning("AI provider returned no tracks, using top candidates")
-            selected_ids = [c['id'] for c in candidates[:max_tracks]]
+        selected_ids = self._select_diverse_tracks(candidates, max_tracks)
 
         if progress_callback:
             progress_callback(0.7, "Building final playlist...")
@@ -94,6 +90,7 @@ class PlaylistGenerator:
 
             playlist_tracks.append({
                 'id': track.id,
+                'plex_key': track.plex_key,
                 'title': track.title,
                 'artist': artist.name if artist else 'Unknown',
                 'album': album.title if album else 'Unknown',
@@ -187,6 +184,46 @@ class PlaylistGenerator:
 
         logger.info(f"Retrieved {len(candidates)} candidate tracks")
         return candidates
+
+    def _select_diverse_tracks(
+        self,
+        candidates: List[Dict[str, Any]],
+        max_tracks: int
+    ) -> List[int]:
+        """Select tracks with artist and album diversity."""
+        selected_ids = []
+        artist_counts = {}
+        album_counts = {}
+        seen_combinations = set()
+
+        for candidate in candidates:
+            if len(selected_ids) >= max_tracks:
+                break
+
+            track_id = candidate['id']
+            artist = candidate['artist']
+            album = candidate['album']
+            title = candidate['title']
+
+            track_key = (title.lower(), artist.lower())
+            if track_key in seen_combinations:
+                continue
+
+            artist_count = artist_counts.get(artist, 0)
+            album_count = album_counts.get(album, 0)
+
+            if artist_count >= 3:
+                continue
+            if album_count >= 2:
+                continue
+
+            selected_ids.append(track_id)
+            seen_combinations.add(track_key)
+            artist_counts[artist] = artist_count + 1
+            album_counts[album] = album_count + 1
+
+        logger.info(f"Selected {len(selected_ids)} diverse tracks from {len(candidates)} candidates")
+        return selected_ids
 
     def save_playlist(
         self,

@@ -24,7 +24,7 @@ class AIProvider(ABC):
     def get_max_candidates(self) -> int:
         """Return maximum candidate pool size based on model context window."""
         context_limits = {
-            'gemini-2.5-flash': 1000,
+            'gemini-2.5-flash': 1000, 
             'gpt-5-mini': 500,
             'gpt-5-nano': 500,
             'claude-sonnet-4-5': 300,
@@ -62,7 +62,8 @@ Rules:
 
 Response format: [1, 5, 12, 23, ...]"""
 
-        tracks_json = json.dumps(candidate_tracks, indent=2)
+        # Use compact JSON (no indent) to reduce tokens while keeping all fields
+        tracks_json = json.dumps(candidate_tracks)
 
         user_prompt = f"""Mood Query: "{mood_query}"
 

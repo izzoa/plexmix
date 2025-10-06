@@ -63,7 +63,8 @@ class EmbeddingSettings(BaseSettings):
 
 class PlaylistSettings(BaseSettings):
     default_length: int = Field(default=50, description="Default playlist length")
-    candidate_pool_size: int = Field(default=100, description="Candidate pool size for AI selection")
+    candidate_pool_size: Optional[int] = Field(default=None, description="Explicit candidate pool size (overrides multiplier)")
+    candidate_pool_multiplier: int = Field(default=25, description="Multiplier for candidate pool size relative to playlist length")
 
     class Config:
         env_prefix = "PLAYLIST_"

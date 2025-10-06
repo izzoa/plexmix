@@ -63,8 +63,14 @@ def ai_provider_tab() -> rx.Component:
         rx.heading("AI Provider", size="6", margin_bottom="4"),
         rx.vstack(
             rx.text("Provider", size="3", weight="bold"),
-            rx.select(
-                ["gemini", "openai", "claude", "cohere"],
+            rx.select.root(
+                rx.select.trigger(placeholder="Select provider"),
+                rx.select.content(
+                    rx.select.item("Google", value="gemini"),
+                    rx.select.item("OpenAI", value="openai"),
+                    rx.select.item("Anthropic", value="anthropic"),
+                    rx.select.item("Cohere", value="cohere"),
+                ),
                 value=SettingsState.ai_provider,
                 on_change=SettingsState.set_ai_provider,
                 width="100%",

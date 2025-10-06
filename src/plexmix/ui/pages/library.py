@@ -47,7 +47,7 @@ def action_bar() -> rx.Component:
                 on_click=LibraryState.generate_embeddings,
                 disabled=LibraryState.selected_tracks.length() == 0,
                 loading=LibraryState.is_embedding,
-                color_scheme="purple",
+                color_scheme="orange",
                 size="3",
             ),
             spacing="3",

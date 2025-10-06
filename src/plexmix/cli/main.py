@@ -844,6 +844,7 @@ def create_playlist(
     year: Optional[int] = typer.Option(None, help="Filter by year"),
     environment: Optional[str] = typer.Option(None, help="Filter by environment (work, study, focus, relax, party, workout, sleep, driving, social)"),
     instrument: Optional[str] = typer.Option(None, help="Filter by instrument (piano, guitar, saxophone, trumpet, drums, bass, synth, vocals, strings, orchestra)"),
+    pool_multiplier: Optional[int] = typer.Option(None, help="Candidate pool multiplier (default: 25x playlist length)"),
     create_in_plex: bool = typer.Option(True, help="Create playlist in Plex"),
 ):
     console.print(f"[bold]Creating playlist for mood: {mood}[/bold]")
@@ -887,9 +888,7 @@ def create_playlist(
             index_path=str(index_path)
         )
 
-        ai_provider = get_ai_provider(provider, api_key=api_key)
-
-        generator = PlaylistGenerator(db, vector_index, ai_provider, embedding_generator)
+        generator = PlaylistGenerator(db, vector_index, embedding_generator)
 
         filters = {}
         if genre:
@@ -905,6 +904,7 @@ def create_playlist(
             mood,
             max_tracks=limit,
             candidate_pool_size=settings.playlist.candidate_pool_size,
+            candidate_pool_multiplier=pool_multiplier if pool_multiplier is not None else settings.playlist.candidate_pool_multiplier,
             filters=filters if filters else None
         )
 
