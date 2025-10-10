@@ -178,6 +178,8 @@ class LibraryState(AppState):
             db.connect()
 
             from plexmix.plex.sync import SyncEngine
+            from plexmix.ai import get_ai_provider
+            from plexmix.config.credentials import get_google_api_key
 
             def progress_callback(progress: float, message: str):
                 async def update_state():
@@ -186,7 +188,16 @@ class LibraryState(AppState):
                         self.sync_message = message
                 asyncio.create_task(update_state())
 
-            sync_engine = SyncEngine(plex_client, db)
+            ai_provider = None
+            google_key = get_google_api_key()
+            if google_key:
+                ai_provider = get_ai_provider(
+                    provider_name=settings.ai.default_provider,
+                    api_key=google_key,
+                    model=settings.ai.model,
+                    temperature=settings.ai.temperature
+                )
+            sync_engine = SyncEngine(plex_client, db, ai_provider=ai_provider)
             sync_engine.full_sync(
                 generate_embeddings=False,
                 progress_callback=progress_callback,

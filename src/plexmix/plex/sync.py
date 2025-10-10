@@ -9,6 +9,8 @@ from ..database.sqlite_manager import SQLiteManager
 from ..database.models import Artist, Album, Track, Genre, SyncHistory
 from ..database.vector_index import VectorIndex
 from ..utils.embeddings import EmbeddingGenerator, create_track_text
+from ..ai.tag_generator import TagGenerator
+from ..ai.base import AIProvider
 
 logger = logging.getLogger(__name__)
 
@@ -19,12 +21,15 @@ class SyncEngine:
         plex_client: PlexClient,
         db_manager: SQLiteManager,
         embedding_generator: Optional[EmbeddingGenerator] = None,
-        vector_index: Optional[VectorIndex] = None
+        vector_index: Optional[VectorIndex] = None,
+        ai_provider: Optional[AIProvider] = None
     ):
         self.plex = plex_client
         self.db = db_manager
         self.embedding_generator = embedding_generator
         self.vector_index = vector_index
+        self.ai_provider = ai_provider
+        self.tag_generator = TagGenerator(ai_provider) if ai_provider else None
 
     def full_sync(
         self,
@@ -76,9 +81,16 @@ class SyncEngine:
                 if cancel_event and cancel_event.is_set():
                     raise KeyboardInterrupt("Sync cancelled by user")
 
+                if self.tag_generator and self.ai_provider:
+                    task = progress.add_task("Generating AI tags...", total=None)
+                    self._generate_tags_for_untagged_tracks(progress, task, progress_callback, cancel_event, 0.7, 0.85)
+
+                if cancel_event and cancel_event.is_set():
+                    raise KeyboardInterrupt("Sync cancelled by user")
+
                 if generate_embeddings and self.embedding_generator and self.vector_index:
                     task = progress.add_task("Generating embeddings...", total=None)
-                    self._generate_embeddings_for_new_tracks(progress, task, progress_callback, cancel_event, 0.7, 1.0)
+                    self._generate_embeddings_for_new_tracks(progress, task, progress_callback, cancel_event, 0.85, 1.0)
 
             sync_record = SyncHistory(
                 tracks_added=stats['tracks_added'],
@@ -360,3 +372,77 @@ class SyncEngine:
 
         progress.update(task, description=f"Generated {embeddings_saved} embeddings")
         logger.info(f"Generated embeddings for {embeddings_saved} tracks")
+
+    def _generate_tags_for_untagged_tracks(
+        self,
+        progress: Progress,
+        task,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0
+    ) -> None:
+        if not self.tag_generator:
+            return
+
+        all_tracks = self.db.get_all_tracks()
+        tracks_needing_tags = []
+
+        for track in all_tracks:
+            if not track.tags and not track.environments and not track.instruments:
+                tracks_needing_tags.append(track)
+
+        if not tracks_needing_tags:
+            progress.update(task, description="No tracks need AI tags")
+            return
+
+        progress.update(task, total=len(tracks_needing_tags))
+        logger.info(f"Generating AI tags for {len(tracks_needing_tags)} tracks")
+
+        track_data_list = []
+        for track in tracks_needing_tags:
+            artist = self.db.get_artist_by_id(track.artist_id)
+            album = self.db.get_album_by_id(track.album_id)
+
+            track_data = {
+                'id': track.id,
+                'title': track.title,
+                'artist': artist.name if artist else 'Unknown',
+                'album': album.title if album else 'Unknown',
+                'genre': track.genre or ''
+            }
+            track_data_list.append(track_data)
+
+        def tag_progress_callback(batch_num: int, total_batches: int, tracks_tagged: int):
+            current_progress = progress_start + (progress_end - progress_start) * (tracks_tagged / len(tracks_needing_tags))
+            if progress_callback:
+                progress_callback(current_progress, f"Generating AI tags... ({tracks_tagged}/{len(tracks_needing_tags)})")
+            progress.update(task, completed=tracks_tagged)
+
+        try:
+            tag_results = self.tag_generator.generate_tags_batch(
+                track_data_list,
+                batch_size=20,
+                progress_callback=tag_progress_callback,
+                cancel_event=cancel_event
+            )
+
+            tags_saved = 0
+            for track in tracks_needing_tags:
+                if track.id in tag_results:
+                    result = tag_results[track.id]
+                    track.tags = ','.join(result.get('tags', []))
+                    track.environments = ','.join(result.get('environments', []))
+                    track.instruments = ','.join(result.get('instruments', []))
+                    self.db.insert_track(track)
+                    tags_saved += 1
+
+            progress.update(task, description=f"Generated tags for {tags_saved} tracks")
+            logger.info(f"Generated AI tags for {tags_saved} tracks")
+
+        except KeyboardInterrupt:
+            logger.warning("Tag generation interrupted by user")
+            raise
+        except Exception as e:
+            logger.error(f"Tag generation failed: {e}")
+            progress.update(task, description="Tag generation failed")

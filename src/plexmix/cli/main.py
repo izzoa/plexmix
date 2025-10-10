@@ -401,6 +401,7 @@ def sync_full(
 
         embedding_generator = None
         vector_index = None
+        ai_provider = None
 
         if embeddings:
             google_key = credentials.get_google_api_key()
@@ -415,8 +416,14 @@ def sync_full(
                     dimension=embedding_generator.get_dimension(),
                     index_path=str(index_path)
                 )
+                ai_provider = get_ai_provider(
+                    provider_name=settings.ai.default_provider,
+                    api_key=google_key,
+                    model=settings.ai.model,
+                    temperature=settings.ai.temperature
+                )
 
-        sync_engine = SyncEngine(plex_client, db, embedding_generator, vector_index)
+        sync_engine = SyncEngine(plex_client, db, embedding_generator, vector_index, ai_provider)
 
         try:
             sync_result = sync_engine.full_sync(generate_embeddings=embeddings)
