@@ -4,6 +4,9 @@ from typing import List, Dict, Any, Optional
 from threading import Event
 from plexmix.ui.states.app_state import AppState
 
+_sync_cancel_events: Dict[str, Event] = {}
+_search_tasks: Dict[str, asyncio.Task] = {}
+
 
 class LibraryState(AppState):
     tracks: List[Dict[str, Any]] = []
@@ -26,10 +29,6 @@ class LibraryState(AppState):
     selected_tracks: List[int] = []
     sort_column: str = "title"
     sort_ascending: bool = True
-
-    # Internal state vars (not exposed to frontend)
-    _sync_cancel_event: Optional[Event] = None
-    _search_task: Optional[asyncio.Task] = None
 
     def on_load(self):
         super().on_load()
@@ -74,9 +73,10 @@ class LibraryState(AppState):
 
     @rx.event(background=True)
     async def set_search_query(self, query: str):
+        token = self.router.session.client_token
         async with self:
-            if self._search_task and not self._search_task.done():
-                self._search_task.cancel()
+            if token in _search_tasks and not _search_tasks[token].done():
+                _search_tasks[token].cancel()
             self.search_query = query
             self.current_page = 1
 
@@ -85,8 +85,7 @@ class LibraryState(AppState):
             async with self:
                 self.load_tracks()
 
-        async with self:
-            self._search_task = asyncio.create_task(debounced_load())
+        _search_tasks[token] = asyncio.create_task(debounced_load())
 
     def set_genre_filter(self, genre: str):
         self.genre_filter = genre
@@ -148,11 +147,13 @@ class LibraryState(AppState):
 
     @rx.event(background=True)
     async def start_sync(self):
+        token = self.router.session.client_token
         async with self:
             self.is_syncing = True
             self.sync_progress = 0
             self.sync_message = "Starting sync..."
-            self._sync_cancel_event = Event()
+
+        _sync_cancel_events[token] = Event()
 
         try:
             from plexmix.config.settings import Settings
@@ -189,7 +190,7 @@ class LibraryState(AppState):
             sync_engine.full_sync(
                 generate_embeddings=False,
                 progress_callback=progress_callback,
-                cancel_event=self._sync_cancel_event
+                cancel_event=_sync_cancel_events.get(token)
             )
 
             db.close()
@@ -202,20 +203,30 @@ class LibraryState(AppState):
                 self.check_configuration_status()
                 self.load_library_stats()
 
+            if token in _sync_cancel_events:
+                del _sync_cancel_events[token]
+
         except KeyboardInterrupt:
             async with self:
                 self.is_syncing = False
                 self.sync_message = "Sync cancelled"
                 self.load_tracks()
 
+            if token in _sync_cancel_events:
+                del _sync_cancel_events[token]
+
         except Exception as e:
             async with self:
                 self.is_syncing = False
                 self.sync_message = f"Sync failed: {str(e)}"
 
+            if token in _sync_cancel_events:
+                del _sync_cancel_events[token]
+
     def cancel_sync(self):
-        if self._sync_cancel_event:
-            self._sync_cancel_event.set()
+        token = self.router.session.client_token
+        if token in _sync_cancel_events:
+            _sync_cancel_events[token].set()
 
     @rx.event(background=True)
     async def generate_embeddings(self):
