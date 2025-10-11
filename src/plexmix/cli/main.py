@@ -223,7 +223,13 @@ def config_init():
     console.print(f"\n[green]Configuration saved to {config_path}[/green]")
 
     if typer.confirm("\nRun initial sync now? (May take 10-30 minutes for large libraries)", default=True):
-        sync_full()
+        try:
+            sync_full()
+        except typer.Exit as e:
+            if e.exit_code == 130:  # KeyboardInterrupt
+                console.print("\n[yellow]You can resume the sync later with:[/yellow]")
+                console.print("  plexmix sync full")
+            raise
     else:
         console.print("\nYou can run sync later with: plexmix sync full")
 

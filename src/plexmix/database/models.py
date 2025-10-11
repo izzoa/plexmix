@@ -143,7 +143,7 @@ class SyncHistory(BaseModel):
     @field_validator('status')
     @classmethod
     def status_must_be_valid(cls, v: str) -> str:
-        valid_statuses = ['success', 'failed', 'partial']
+        valid_statuses = ['success', 'failed', 'partial', 'interrupted']
         if v not in valid_statuses:
             raise ValueError(f'Status must be one of {valid_statuses}')
         return v
