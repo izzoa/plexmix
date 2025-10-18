@@ -34,8 +34,8 @@ pip install plexmix
 # Run setup wizard
 plexmix config init
 
-# Sync your Plex library (generates embeddings automatically)
-plexmix sync full
+# Sync your Plex library (incremental, generates embeddings automatically)
+plexmix sync
 
 # Generate AI tags for tracks (enhances search quality)
 plexmix tags generate
@@ -55,8 +55,8 @@ plexmix create "workout motivation" --provider openai
 # If you encounter issues (e.g., "0 candidate tracks")
 plexmix doctor
 
-# Force regenerate all tags and embeddings
-plexmix doctor --force
+# Regenerate all tags and embeddings from scratch (WARNING: destructive)
+plexmix sync regenerate
 ```
 
 ### Option 2: Web User Interface (Alpha)
@@ -176,13 +176,36 @@ plexmix config show
 
 ### Sync Commands
 
+PlexMix offers three sync modes:
+
 ```bash
-# Full sync with embedding generation
+# Incremental sync (default) - Only syncs new/changed/deleted tracks
+plexmix sync
+
+# Same as above, but explicit
+plexmix sync incremental
+
+# Regenerate everything from scratch (WARNING: Deletes ALL tags and embeddings)
+plexmix sync regenerate
+
+# Legacy alias for incremental sync
 plexmix sync full
 
-# Sync without embeddings
-plexmix sync full --no-embeddings
+# Sync without embeddings (faster, but you'll need to generate them later)
+plexmix sync --no-embeddings
 ```
+
+**Sync Mode Comparison:**
+
+| Mode | Tracks | Tags | Embeddings | Use Case |
+|------|--------|------|------------|----------|
+| `incremental` (default) | ✅ Syncs changes only | ✅ Preserves existing | ✅ Preserves existing | Regular updates, new tracks added |
+| `full` (alias) | ✅ Syncs changes only | ✅ Preserves existing | ✅ Preserves existing | Same as incremental (kept for compatibility) |
+| `regenerate` | ✅ Syncs everything | ⚠️ **DELETES ALL** | ⚠️ **DELETES ALL** | Starting fresh, fixing corrupt data |
+
+**When to use each:**
+- **`plexmix sync`** → Default for daily use, adding new music
+- **`plexmix sync regenerate`** → When you want to completely regenerate all AI data (tags, embeddings)
 
 ### Database Health Check
 
@@ -190,29 +213,24 @@ plexmix sync full --no-embeddings
 # Diagnose and fix database issues
 plexmix doctor
 
-# Force regenerate all tags and embeddings
+# Force regenerate all tags and embeddings (DEPRECATED: use 'plexmix sync regenerate' instead)
 plexmix doctor --force
 ```
 
-**What does doctor do?**
+**What does `plexmix doctor` do?**
 - Detects orphaned embeddings (embeddings that reference deleted tracks)
 - Shows database health status (track count, embeddings, orphans)
 - Interactively removes orphaned data
 - Regenerates missing embeddings
 - Rebuilds vector index
 
-**What does --force do?**
-- Deletes ALL tags, environments, instruments, and embeddings
-- Regenerates tags for all tracks using Gemini AI
-- Regenerates embeddings with the new tags
-- Rebuilds the complete vector index from scratch
-
 **When to use:**
 - After "No tracks found matching criteria" errors
 - When playlist generation finds 0 candidates
 - After database corruption or manual track deletion
 - Periodic maintenance to keep database healthy
-- Use `--force` when you want to start completely fresh with AI-generated data
+
+**Note:** For complete regeneration of all tags and embeddings, use `plexmix sync regenerate` instead of `doctor --force`
 
 ### Tag Generation
 
@@ -441,7 +459,7 @@ poetry run pytest --cov=plexmix --cov-report=html
 
 ### "No tracks found matching criteria"
 - **First, try:** `plexmix doctor` to check for database issues
-- Ensure library is synced: `plexmix sync full`
+- Ensure library is synced: `plexmix sync`
 - Check filters aren't too restrictive
 - Verify embeddings were generated
 
@@ -510,7 +528,7 @@ This usually means:
 1. **No embeddings generated**: Run `plexmix embeddings generate`
 2. **Database out of sync**: Run `plexmix doctor` to fix
 3. **Filters too restrictive**: Remove some filters and try again
-4. **Empty library**: Ensure `plexmix sync full` completed successfully
+4. **Empty library**: Ensure `plexmix sync` completed successfully
 
 ### Can I use multiple Plex libraries?
 
@@ -526,8 +544,9 @@ Only when creating playlists. PlexMix:
 
 ### What happens if I delete tracks from Plex?
 
-Run `plexmix sync full` to update your local database. The sync will:
-- Remove deleted tracks from the database
+Run `plexmix sync` to update your local database. The incremental sync will:
+- Detect deleted tracks from Plex
+- Remove them from the database
 - Clean up orphaned embeddings
 - Update the vector index
 
@@ -543,7 +562,7 @@ Yes! Your database is stored at `~/.plexmix/plexmix.db`. Simply copy this file a
 pip install --upgrade plexmix
 ```
 
-After updating, run `plexmix sync full --no-embeddings` to apply any database migrations.
+After updating, run `plexmix sync --no-embeddings` to apply any database migrations.
 
 ### Can I contribute?
 

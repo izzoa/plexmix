@@ -31,13 +31,13 @@ class SyncEngine:
         self.ai_provider = ai_provider
         self.tag_generator = TagGenerator(ai_provider) if ai_provider else None
 
-    def full_sync(
+    def incremental_sync(
         self,
         generate_embeddings: bool = True,
         progress_callback: Optional[Callable[[float, str], None]] = None,
         cancel_event: Optional[Event] = None
     ) -> SyncHistory:
-        logger.info("Starting full library sync")
+        logger.info("Starting incremental library sync")
         stats = {
             'tracks_added': 0,
             'tracks_updated': 0,
@@ -47,7 +47,7 @@ class SyncEngine:
         }
 
         if progress_callback:
-            progress_callback(0.0, "Starting sync...")
+            progress_callback(0.0, "Starting incremental sync...")
 
         try:
             with Progress(
@@ -60,37 +60,29 @@ class SyncEngine:
                 if cancel_event and cancel_event.is_set():
                     raise KeyboardInterrupt("Sync cancelled by user")
 
-                task = progress.add_task("Syncing artists...", total=None)
-                artist_map = self._sync_artists(progress, task, progress_callback, cancel_event, 0.0, 0.2)
-                stats['artists_processed'] = len(artist_map)
+                task = progress.add_task("Building Plex library index...", total=None)
+                plex_library = self._build_plex_library_index(progress, task, progress_callback, cancel_event, 0.0, 0.3)
 
                 if cancel_event and cancel_event.is_set():
                     raise KeyboardInterrupt("Sync cancelled by user")
 
-                task = progress.add_task("Syncing albums...", total=None)
-                album_map = self._sync_albums(progress, task, artist_map, progress_callback, cancel_event, 0.2, 0.4)
-                stats['albums_processed'] = len(album_map)
-
-                if cancel_event and cancel_event.is_set():
-                    raise KeyboardInterrupt("Sync cancelled by user")
-
-                task = progress.add_task("Syncing tracks...", total=None)
-                track_stats = self._sync_tracks(progress, task, artist_map, album_map, progress_callback, cancel_event, 0.4, 0.7)
-                stats.update(track_stats)
+                task = progress.add_task("Comparing with database...", total=None)
+                changes = self._detect_library_changes(plex_library, progress, task, progress_callback, cancel_event, 0.3, 0.5)
+                stats.update(changes)
 
                 if cancel_event and cancel_event.is_set():
                     raise KeyboardInterrupt("Sync cancelled by user")
 
                 if self.tag_generator and self.ai_provider:
                     task = progress.add_task("Generating AI tags...", total=None)
-                    self._generate_tags_for_untagged_tracks(progress, task, progress_callback, cancel_event, 0.7, 0.85)
+                    self._generate_tags_for_untagged_tracks(progress, task, progress_callback, cancel_event, 0.5, 0.7)
 
                 if cancel_event and cancel_event.is_set():
                     raise KeyboardInterrupt("Sync cancelled by user")
 
                 if generate_embeddings and self.embedding_generator and self.vector_index:
                     task = progress.add_task("Generating embeddings...", total=None)
-                    self._generate_embeddings_for_new_tracks(progress, task, progress_callback, cancel_event, 0.85, 1.0)
+                    self._generate_embeddings_for_new_tracks(progress, task, progress_callback, cancel_event, 0.7, 1.0)
 
             sync_record = SyncHistory(
                 tracks_added=stats['tracks_added'],
@@ -101,10 +93,10 @@ class SyncEngine:
             self.db.insert_sync_record(sync_record)
 
             if progress_callback:
-                progress_callback(1.0, "Sync completed successfully")
+                progress_callback(1.0, "Incremental sync completed successfully")
 
             logger.info(
-                f"Full sync completed: {stats['tracks_added']} added, "
+                f"Incremental sync completed: {stats['tracks_added']} added, "
                 f"{stats['tracks_updated']} updated, {stats['tracks_removed']} removed"
             )
             return sync_record
@@ -122,13 +114,204 @@ class SyncEngine:
             raise
 
         except Exception as e:
-            logger.error(f"Full sync failed: {e}")
+            logger.error(f"Incremental sync failed: {e}")
             sync_record = SyncHistory(
                 status='failed',
                 error_message=str(e)
             )
             self.db.insert_sync_record(sync_record)
             raise
+
+    def regenerate_sync(
+        self,
+        generate_embeddings: bool = True,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None
+    ) -> SyncHistory:
+        logger.info("Starting regenerate sync - will clear and regenerate all tags and embeddings")
+
+        if progress_callback:
+            progress_callback(0.0, "Clearing existing tags and embeddings...")
+
+        cursor = self.db.get_connection().cursor()
+        cursor.execute('UPDATE tracks SET tags = NULL, environments = NULL, instruments = NULL')
+        cursor.execute('DELETE FROM embeddings')
+        self.db.get_connection().commit()
+        logger.info("Cleared all existing tags and embeddings")
+
+        return self.incremental_sync(
+            generate_embeddings=generate_embeddings,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event
+        )
+
+    def full_sync(
+        self,
+        generate_embeddings: bool = True,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None
+    ) -> SyncHistory:
+        logger.info("Starting full library sync (alias for incremental_sync)")
+        return self.incremental_sync(
+            generate_embeddings=generate_embeddings,
+            progress_callback=progress_callback,
+            cancel_event=cancel_event
+        )
+
+    def _build_plex_library_index(
+        self,
+        progress: Progress,
+        task,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0
+    ) -> Dict[str, Any]:
+        plex_library = {
+            'artists': {},
+            'albums': {},
+            'tracks': {}
+        }
+
+        total_items = 0
+        for artist_batch in self.plex.get_all_artists(batch_size=100):
+            if cancel_event and cancel_event.is_set():
+                break
+
+            for artist in artist_batch:
+                plex_library['artists'][artist.plex_key] = artist
+
+            total_items += len(artist_batch)
+            progress.update(task, advance=len(artist_batch))
+
+        for album_batch in self.plex.get_all_albums(batch_size=100):
+            if cancel_event and cancel_event.is_set():
+                break
+
+            for album in album_batch:
+                plex_library['albums'][album.plex_key] = album
+
+            total_items += len(album_batch)
+            progress.update(task, advance=len(album_batch))
+
+        for track_batch in self.plex.get_all_tracks(batch_size=100):
+            if cancel_event and cancel_event.is_set():
+                break
+
+            for track in track_batch:
+                plex_library['tracks'][track.plex_key] = track
+
+            total_items += len(track_batch)
+            progress.update(task, advance=len(track_batch))
+
+            if progress_callback and total_items % 100 == 0:
+                current_progress = progress_start + (progress_end - progress_start) * 0.5
+                progress_callback(current_progress, f"Indexed {total_items} items from Plex...")
+
+        progress.update(task, description=f"Indexed {len(plex_library['artists'])} artists, {len(plex_library['albums'])} albums, {len(plex_library['tracks'])} tracks")
+        return plex_library
+
+    def _detect_library_changes(
+        self,
+        plex_library: Dict[str, Any],
+        progress: Progress,
+        task,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0
+    ) -> Dict[str, int]:
+        stats = {'tracks_added': 0, 'tracks_updated': 0, 'tracks_removed': 0}
+
+        db_artists = {a.plex_key: a for a in self.db.get_all_artists()}
+        db_albums = {a.plex_key: a for a in self.db.get_all_albums()}
+        db_tracks = {t.plex_key: t for t in self.db.get_all_tracks()}
+
+        artist_map = {}
+        for plex_key, plex_artist in plex_library['artists'].items():
+            if plex_key in db_artists:
+                artist_map[plex_key] = db_artists[plex_key].id
+            else:
+                artist_id = self.db.insert_artist(plex_artist)
+                artist_map[plex_key] = artist_id
+
+        album_map = {}
+        for plex_key, plex_album in plex_library['albums'].items():
+            artist_plex_key = plex_key.rsplit('/', 1)[0] if '/' in plex_key else None
+            if artist_plex_key and artist_plex_key in artist_map:
+                plex_album.artist_id = artist_map[artist_plex_key]
+            else:
+                plex_album.artist_id = 1
+
+            if plex_key in db_albums:
+                album_map[plex_key] = db_albums[plex_key].id
+            else:
+                album_id = self.db.insert_album(plex_album)
+                album_map[plex_key] = album_id
+
+        total_tracks = len(plex_library['tracks'])
+        processed = 0
+
+        for plex_key, plex_track in plex_library['tracks'].items():
+            if cancel_event and cancel_event.is_set():
+                break
+
+            artist_plex_key = plex_track.__dict__.get('_artist_key')
+            album_plex_key = plex_track.__dict__.get('_album_key')
+
+            if artist_plex_key and artist_plex_key in artist_map:
+                plex_track.artist_id = artist_map[artist_plex_key]
+            else:
+                plex_track.artist_id = 1
+
+            if album_plex_key and album_plex_key in album_map:
+                plex_track.album_id = album_map[album_plex_key]
+            else:
+                plex_track.album_id = 1
+
+            if plex_key in db_tracks:
+                existing = db_tracks[plex_key]
+                if self._track_needs_update(existing, plex_track):
+                    plex_track.id = existing.id
+                    plex_track.tags = existing.tags
+                    plex_track.environments = existing.environments
+                    plex_track.instruments = existing.instruments
+                    self.db.insert_track(plex_track)
+                    stats['tracks_updated'] += 1
+            else:
+                self.db.insert_track(plex_track)
+                stats['tracks_added'] += 1
+
+            if plex_track.genre:
+                for genre_name in plex_track.genre.split(','):
+                    genre_name = genre_name.strip().lower()
+                    genre = self.db.get_genre_by_name(genre_name)
+                    if not genre:
+                        genre = Genre(name=genre_name)
+                        self.db.insert_genre(genre)
+
+            processed += 1
+            if processed % 10 == 0:
+                progress.update(task, advance=10)
+                if progress_callback:
+                    current_progress = progress_start + (progress_end - progress_start) * (processed / total_tracks)
+                    progress_callback(current_progress, f"Processing tracks... ({processed}/{total_tracks})")
+
+        for db_plex_key in db_tracks.keys():
+            if db_plex_key not in plex_library['tracks']:
+                self.db.delete_track(db_tracks[db_plex_key].id)
+                stats['tracks_removed'] += 1
+
+        progress.update(task, description=f"Changes: +{stats['tracks_added']} ~{stats['tracks_updated']} -{stats['tracks_removed']}")
+        return stats
+
+    def _track_needs_update(self, db_track: Track, plex_track: Track) -> bool:
+        return (
+            db_track.title != plex_track.title or
+            db_track.year != plex_track.year or
+            db_track.genre != plex_track.genre or
+            db_track.duration != plex_track.duration
+        )
 
     def _sync_artists(
         self,

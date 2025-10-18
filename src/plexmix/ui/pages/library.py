@@ -8,13 +8,31 @@ from plexmix.ui.states.library_state import LibraryState
 def action_bar() -> rx.Component:
     return rx.hstack(
         rx.hstack(
-            rx.button(
-                "Sync Library",
-                on_click=LibraryState.start_sync,
-                disabled=LibraryState.is_syncing | ~LibraryState.plex_configured,
-                loading=LibraryState.is_syncing,
-                color_scheme="blue",
+            rx.select(
+                ["incremental", "regenerate"],
+                value=LibraryState.sync_mode,
+                on_change=LibraryState.set_sync_mode,
+                placeholder="Sync Mode",
                 size="3",
+            ),
+            rx.cond(
+                LibraryState.sync_mode == "regenerate",
+                rx.button(
+                    "⚠️ Regenerate (Destructive)",
+                    on_click=LibraryState.confirm_regenerate_sync,
+                    disabled=LibraryState.is_syncing | ~LibraryState.plex_configured,
+                    loading=LibraryState.is_syncing,
+                    color_scheme="red",
+                    size="3",
+                ),
+                rx.button(
+                    "Sync Library",
+                    on_click=LibraryState.start_sync,
+                    disabled=LibraryState.is_syncing | ~LibraryState.plex_configured,
+                    loading=LibraryState.is_syncing,
+                    color_scheme="blue",
+                    size="3",
+                ),
             ),
             rx.button(
                 "Clear Filters",
@@ -181,4 +199,39 @@ def library() -> rx.Component:
         on_cancel=None,
     )
 
-    return layout(rx.fragment(content, sync_modal, embedding_modal))
+    confirm_regenerate_dialog = rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("⚠️ Confirm Regenerate Sync"),
+            rx.alert_dialog.description(
+                rx.vstack(
+                    rx.text("This will DELETE ALL existing tags and embeddings!", color="red", weight="bold"),
+                    rx.text("This operation will:"),
+                    rx.unordered_list(
+                        rx.list_item("Clear all AI-generated tags"),
+                        rx.list_item("Delete all embeddings"),
+                        rx.list_item("Regenerate everything from scratch"),
+                    ),
+                    rx.text("Are you sure you want to continue?", weight="bold"),
+                    spacing="2",
+                    align_items="start",
+                )
+            ),
+            rx.hstack(
+                rx.alert_dialog.cancel(
+                    rx.button("Cancel", variant="soft"),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        "Yes, Regenerate",
+                        on_click=LibraryState.start_sync,
+                        color_scheme="red",
+                    ),
+                ),
+                spacing="3",
+                justify="end",
+            ),
+        ),
+        open=LibraryState.show_regenerate_confirm,
+    )
+
+    return layout(rx.fragment(content, sync_modal, embedding_modal, confirm_regenerate_dialog))

@@ -21,6 +21,8 @@ class LibraryState(AppState):
     is_syncing: bool = False
     sync_progress: int = 0
     sync_message: str = ""
+    sync_mode: str = "incremental"
+    show_regenerate_confirm: bool = False
 
     is_embedding: bool = False
     embedding_progress: int = 0
@@ -29,6 +31,15 @@ class LibraryState(AppState):
     selected_tracks: List[int] = []
     sort_column: str = "title"
     sort_ascending: bool = True
+
+    def set_sync_mode(self, mode: str):
+        self.sync_mode = mode
+
+    def confirm_regenerate_sync(self):
+        self.show_regenerate_confirm = True
+
+    def cancel_regenerate_confirm(self):
+        self.show_regenerate_confirm = False
 
     def on_load(self):
         super().on_load()
@@ -152,6 +163,7 @@ class LibraryState(AppState):
             self.is_syncing = True
             self.sync_progress = 0
             self.sync_message = "Starting sync..."
+            self.show_regenerate_confirm = False
 
         _sync_cancel_events[token] = Event()
 
@@ -198,11 +210,23 @@ class LibraryState(AppState):
                     temperature=settings.ai.temperature
                 )
             sync_engine = SyncEngine(plex_client, db, ai_provider=ai_provider)
-            sync_engine.full_sync(
-                generate_embeddings=False,
-                progress_callback=progress_callback,
-                cancel_event=_sync_cancel_events.get(token)
-            )
+
+            sync_mode = None
+            async with self:
+                sync_mode = self.sync_mode
+
+            if sync_mode == "regenerate":
+                sync_engine.regenerate_sync(
+                    generate_embeddings=False,
+                    progress_callback=progress_callback,
+                    cancel_event=_sync_cancel_events.get(token)
+                )
+            else:
+                sync_engine.incremental_sync(
+                    generate_embeddings=False,
+                    progress_callback=progress_callback,
+                    cancel_event=_sync_cancel_events.get(token)
+                )
 
             db.close()
 

@@ -336,6 +336,16 @@ class SQLiteManager:
             return Track(**dict(row))
         return None
 
+    def get_all_artists(self) -> List[Artist]:
+        cursor = self.get_connection().cursor()
+        cursor.execute('SELECT * FROM artists')
+        return [Artist(**dict(row)) for row in cursor.fetchall()]
+
+    def get_all_albums(self) -> List[Album]:
+        cursor = self.get_connection().cursor()
+        cursor.execute('SELECT * FROM albums')
+        return [Album(**dict(row)) for row in cursor.fetchall()]
+
     def get_all_tracks(self) -> List[Track]:
         cursor = self.get_connection().cursor()
         cursor.execute('SELECT * FROM tracks')

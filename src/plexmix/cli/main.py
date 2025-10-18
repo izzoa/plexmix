@@ -224,14 +224,14 @@ def config_init():
 
     if typer.confirm("\nRun initial sync now? (May take 10-30 minutes for large libraries)", default=True):
         try:
-            sync_full()
+            sync_incremental()
         except typer.Exit as e:
             if e.exit_code == 130:  # KeyboardInterrupt
                 console.print("\n[yellow]You can resume the sync later with:[/yellow]")
-                console.print("  plexmix sync full")
+                console.print("  plexmix sync")
             raise
     else:
-        console.print("\nYou can run sync later with: plexmix sync full")
+        console.print("\nYou can run sync later with: plexmix sync")
 
 
 @config_app.command("show")
@@ -257,7 +257,7 @@ def config_show():
     console.print(table)
 
 
-sync_app = typer.Typer(name="sync", help="Library synchronization")
+sync_app = typer.Typer(name="sync", help="Library synchronization", invoke_without_command=True)
 app.add_typer(sync_app)
 
 tags_app = typer.Typer(name="tags", help="AI-based tag generation")
@@ -265,6 +265,15 @@ app.add_typer(tags_app)
 
 embeddings_app = typer.Typer(name="embeddings", help="Embedding generation")
 app.add_typer(embeddings_app)
+
+
+@sync_app.callback()
+def sync_callback(
+    ctx: typer.Context,
+    embeddings: bool = typer.Option(True, help="Generate embeddings during sync")
+):
+    if ctx.invoked_subcommand is None:
+        sync_incremental(embeddings=embeddings)
 
 
 @embeddings_app.command("generate")
@@ -380,11 +389,11 @@ def embeddings_generate(
             raise typer.Exit(130)
 
 
-@sync_app.command("full")
-def sync_full(
+@sync_app.command("incremental")
+def sync_incremental(
     embeddings: bool = typer.Option(True, help="Generate embeddings during sync")
 ):
-    console.print("[bold]Starting full library sync...[/bold]")
+    console.print("[bold]Starting incremental library sync...[/bold]")
 
     settings = Settings.load_from_file()
 
@@ -432,9 +441,9 @@ def sync_full(
         sync_engine = SyncEngine(plex_client, db, embedding_generator, vector_index, ai_provider)
 
         try:
-            sync_result = sync_engine.full_sync(generate_embeddings=embeddings)
+            sync_result = sync_engine.incremental_sync(generate_embeddings=embeddings)
 
-            console.print(f"\n[green]Sync completed successfully![/green]")
+            console.print(f"\n[green]Incremental sync completed successfully![/green]")
             console.print(f"  Tracks added: {sync_result.tracks_added}")
             console.print(f"  Tracks updated: {sync_result.tracks_updated}")
             console.print(f"  Tracks removed: {sync_result.tracks_removed}")
@@ -442,8 +451,92 @@ def sync_full(
         except KeyboardInterrupt:
             console.print(f"\n[yellow]Sync interrupted by user.[/yellow]")
             console.print("[green]Progress has been saved to database.[/green]")
-            console.print("[yellow]Tip: Run 'plexmix sync full' again to continue from where you left off.[/yellow]")
+            console.print("[yellow]Tip: Run 'plexmix sync' again to continue from where you left off.[/yellow]")
             raise typer.Exit(130)
+
+
+@sync_app.command("regenerate")
+def sync_regenerate(
+    embeddings: bool = typer.Option(True, help="Generate embeddings during sync")
+):
+    console.print("[bold red]⚠️  WARNING: This will delete ALL existing tags and embeddings![/bold red]")
+    console.print("This operation will:")
+    console.print("  - Clear all AI-generated tags")
+    console.print("  - Delete all embeddings")
+    console.print("  - Regenerate everything from scratch")
+
+    if not typer.confirm("\nAre you sure you want to continue?", default=False):
+        console.print("[yellow]Operation cancelled.[/yellow]")
+        raise typer.Exit(0)
+
+    console.print("\n[bold]Starting regenerate sync...[/bold]")
+
+    settings = Settings.load_from_file()
+
+    plex_token = credentials.get_plex_token()
+    if not plex_token or not settings.plex.url:
+        console.print("[red]Plex not configured. Run 'plexmix config init' first.[/red]")
+        raise typer.Exit(1)
+
+    plex_client = PlexClient(settings.plex.url, plex_token)
+    if not plex_client.connect():
+        console.print("[red]Failed to connect to Plex server.[/red]")
+        raise typer.Exit(1)
+
+    if settings.plex.library_name:
+        plex_client.select_library(settings.plex.library_name)
+
+    db_path = settings.database.get_db_path()
+    with SQLiteManager(str(db_path)) as db:
+        db.create_tables()
+
+        embedding_generator = None
+        vector_index = None
+        ai_provider = None
+
+        if embeddings:
+            google_key = credentials.get_google_api_key()
+            if google_key:
+                embedding_generator = EmbeddingGenerator(
+                    provider=settings.embedding.default_provider,
+                    api_key=google_key,
+                    model=settings.embedding.model
+                )
+                index_path = settings.database.get_index_path()
+                vector_index = VectorIndex(
+                    dimension=embedding_generator.get_dimension(),
+                    index_path=str(index_path)
+                )
+                ai_provider = get_ai_provider(
+                    provider_name=settings.ai.default_provider,
+                    api_key=google_key,
+                    model=settings.ai.model,
+                    temperature=settings.ai.temperature
+                )
+
+        sync_engine = SyncEngine(plex_client, db, embedding_generator, vector_index, ai_provider)
+
+        try:
+            sync_result = sync_engine.regenerate_sync(generate_embeddings=embeddings)
+
+            console.print(f"\n[green]Regenerate sync completed successfully![/green]")
+            console.print(f"  Tracks added: {sync_result.tracks_added}")
+            console.print(f"  Tracks updated: {sync_result.tracks_updated}")
+            console.print(f"  Tracks removed: {sync_result.tracks_removed}")
+
+        except KeyboardInterrupt:
+            console.print(f"\n[yellow]Sync interrupted by user.[/yellow]")
+            console.print("[green]Progress has been saved to database.[/green]")
+            console.print("[yellow]Tip: Run 'plexmix sync regenerate' again to continue.[/yellow]")
+            raise typer.Exit(130)
+
+
+@sync_app.command("full")
+def sync_full(
+    embeddings: bool = typer.Option(True, help="Generate embeddings during sync")
+):
+    console.print("[bold]Starting library sync (full is now an alias for incremental)...[/bold]")
+    sync_incremental(embeddings=embeddings)
 
 
 @app.command("doctor")
@@ -514,9 +607,9 @@ def doctor(
         if orphaned_count == 0 and missing_embeddings == 0:
             console.print("\n[green]✓ No orphaned embeddings found. All tracks have embeddings. Database is healthy![/green]")
 
-            if typer.confirm("\nRun a full sync to check for deleted tracks in Plex?", default=False):
-                console.print("\n[bold]Running full sync...[/bold]")
-                sync_full(embeddings=False)
+            if typer.confirm("\nRun a sync to check for deleted tracks in Plex?", default=False):
+                console.print("\n[bold]Running sync...[/bold]")
+                sync_incremental(embeddings=False)
                 console.print("\n[green]✓ Sync completed![/green]")
             return
 
@@ -640,12 +733,12 @@ def doctor(
                     console.print("[yellow]Run 'plexmix doctor' again to continue.[/yellow]")
                     raise typer.Exit(130)
             else:
-                console.print("\n[yellow]Run 'plexmix sync full' later to generate embeddings.[/yellow]")
+                console.print("\n[yellow]Run 'plexmix sync' later to generate embeddings.[/yellow]")
 
         console.print("\n[cyan]Checking for deleted tracks in Plex...[/cyan]")
-        if typer.confirm("\nRun a full sync to remove deleted tracks from database?", default=True):
-            console.print("\n[bold]Running full sync...[/bold]")
-            sync_full(embeddings=False)
+        if typer.confirm("\nRun a sync to remove deleted tracks from database?", default=True):
+            console.print("\n[bold]Running sync...[/bold]")
+            sync_incremental(embeddings=False)
             console.print("\n[green]✓ Sync completed![/green]")
 
     # Generate tags outside the database context
