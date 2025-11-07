@@ -22,6 +22,7 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 - 🎨 **Mood-Based** - Generate playlists from natural language descriptions
 - ⚡ **Fast** - Local database with optimized indexes and full-text search
 - 🎯 **Flexible** - Filter by genre, year, rating, artist, environment, and instrument
+- 🛡️ **Resilient** - Automatic database recovery if deleted or corrupted
 
 ## Quick Start
 
@@ -231,6 +232,58 @@ plexmix doctor --force
 - Periodic maintenance to keep database healthy
 
 **Note:** For complete regeneration of all tags and embeddings, use `plexmix sync regenerate` instead of `doctor --force`
+
+### Database Management
+
+```bash
+# Show database information and statistics
+plexmix db info
+
+# Reset database and embeddings (with automatic backup)
+plexmix db reset
+
+# Reset without backup (not recommended)
+plexmix db reset --no-backup
+
+# Skip confirmation prompt
+plexmix db reset --force
+```
+
+**What gets deleted:**
+- SQLite database (`~/.plexmix/plexmix.db`)
+- FAISS embeddings index (`~/.plexmix/embeddings.index`)
+- All synced music metadata
+- User-applied tags (moods, environments, instruments)
+- Playlist history
+- AI-generated embeddings
+
+**What gets preserved:**
+- Your music files on Plex server (unchanged)
+- Plex server metadata (unchanged)
+- PlexMix configuration (`.env`, `config.yaml`)
+- API keys
+
+**When to use:**
+- Complete fresh start
+- Switching embedding providers
+- Database corruption that `doctor` can't fix
+- Testing or development
+
+**After reset:**
+1. Run `plexmix sync` to re-sync your library
+2. (Optional) Run `plexmix tags generate` to re-tag tracks
+
+By default, a timestamped backup is created in `~/.plexmix/backups/` before deletion.
+
+**Database Command Reference:**
+
+| Command | Purpose | When to Use |
+|---------|---------|-------------|
+| `plexmix db info` | Show database stats | Check database health, view track/embedding counts |
+| `plexmix db reset` | Delete and reset database | Fresh start, switching providers, unfixable corruption |
+| `plexmix sync` | Incremental sync | Regular updates, new tracks |
+| `plexmix sync regenerate` | Regenerate all data | Regenerate tags/embeddings, fix data quality |
+| `plexmix doctor` | Fix orphaned data | After errors, periodic maintenance |
 
 ### Tag Generation
 

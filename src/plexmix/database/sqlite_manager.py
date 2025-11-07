@@ -24,10 +24,23 @@ class SQLiteManager:
         self.close()
 
     def connect(self) -> None:
+        db_existed = self.db_path.exists()
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
-        logger.info(f"Connected to database at {self.db_path}")
-        self._run_migrations(self.conn.cursor())
+        
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
+        has_tables = cursor.fetchone() is not None
+        
+        if not db_existed or not has_tables:
+            if db_existed and not has_tables:
+                logger.warning(f"Database exists but is empty. Initializing schema at {self.db_path}")
+            else:
+                logger.warning(f"Database did not exist. Creating new database at {self.db_path}")
+            self.create_tables()
+        else:
+            logger.info(f"Connected to database at {self.db_path}")
+            self._run_migrations(cursor)
 
     def get_connection(self) -> sqlite3.Connection:
         if not self.conn:

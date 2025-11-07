@@ -310,7 +310,7 @@ class SyncEngine:
             db_track.title != plex_track.title or
             db_track.year != plex_track.year or
             db_track.genre != plex_track.genre or
-            db_track.duration != plex_track.duration
+            db_track.duration_ms != plex_track.duration_ms
         )
 
     def _sync_artists(
