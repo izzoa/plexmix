@@ -94,7 +94,14 @@ def config_init():
 
     plex_client = PlexClient(plex_url, plex_token)
     if not plex_client.connect():
-        console.print("[red]Failed to connect to Plex server. Please check your URL and token.[/red]")
+        console.print("[red]Failed to connect to Plex server.[/red]\n")
+        console.print("[yellow]Troubleshooting tips:[/yellow]")
+        console.print("  1. Verify your Plex token is correct (no extra spaces)")
+        console.print("  2. Check if your Plex server URL is accessible")
+        console.print("  3. Try using https:// instead of http://")
+        console.print("  4. If using a remote server, ensure the port is correct")
+        console.print("  5. Check Plex server settings for 'Require authentication'")
+        console.print("\n[dim]See logs above for detailed error information[/dim]")
         raise typer.Exit(1)
 
     libraries = plex_client.get_music_libraries()
@@ -235,6 +242,54 @@ def config_init():
             raise
     else:
         console.print("\nYou can run sync later with: plexmix sync")
+
+
+@config_app.command("test")
+def config_test():
+    """Test Plex server connection."""
+    settings = Settings()
+    
+    console.print("\n[bold cyan]Testing Plex Connection[/bold cyan]\n")
+    
+    if not settings.plex.url:
+        console.print("[red]No Plex URL configured.[/red]")
+        console.print("Run 'plexmix config init' to set up your configuration.")
+        raise typer.Exit(1)
+    
+    plex_token = credentials.get_plex_token()
+    if not plex_token:
+        console.print("[red]No Plex token found.[/red]")
+        console.print("Run 'plexmix config init' to set up your configuration.")
+        raise typer.Exit(1)
+    
+    console.print(f"[dim]Server URL:[/dim] {settings.plex.url}")
+    console.print(f"[dim]Token length:[/dim] {len(plex_token)} characters")
+    console.print()
+    
+    plex_client = PlexClient(settings.plex.url, plex_token)
+    
+    console.print("Attempting to connect...")
+    if plex_client.connect():
+        console.print(f"[green]✓ Successfully connected to: {plex_client.server.friendlyName}[/green]")
+        console.print(f"  Version: {plex_client.server.version}")
+        console.print(f"  Platform: {plex_client.server.platform}")
+        
+        if settings.plex.library_name:
+            console.print(f"\nTesting library access: {settings.plex.library_name}")
+            if plex_client.select_library(settings.plex.library_name):
+                console.print(f"[green]✓ Library '{settings.plex.library_name}' is accessible[/green]")
+            else:
+                console.print(f"[red]✗ Library '{settings.plex.library_name}' not found[/red]")
+        
+        console.print("\n[green]Connection test passed![/green]")
+    else:
+        console.print("[red]✗ Connection failed[/red]")
+        console.print("\n[yellow]Troubleshooting:[/yellow]")
+        console.print("  • Double-check your Plex token")
+        console.print("  • Try using https:// instead of http://")
+        console.print("  • Verify the server URL and port")
+        console.print("  • Check if Plex server is running")
+        raise typer.Exit(1)
 
 
 @config_app.command("show")

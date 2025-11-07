@@ -20,14 +20,26 @@ class PlexClient:
     def connect(self) -> bool:
         max_retries = 3
         retry_delay = 1
+        
+        # Clean the token (remove any whitespace)
+        cleaned_token = self.token.strip() if self.token else ""
 
         for attempt in range(max_retries):
             try:
-                self.server = PlexServer(self.url, self.token)
+                self.server = PlexServer(self.url, cleaned_token)
                 logger.info(f"Connected to Plex server: {self.server.friendlyName}")
                 return True
             except Unauthorized:
                 logger.error("Plex authentication failed: Invalid token")
+                return False
+            except BadRequest as e:
+                logger.error(f"Bad request to Plex server: {e}")
+                logger.error("This usually means:")
+                logger.error("  1. The Plex token may be invalid or incorrectly formatted")
+                logger.error("  2. The server URL may be incorrect")
+                logger.error("  3. Your Plex server may require secure connections (try https://)")
+                logger.error(f"Server URL used: {self.url}")
+                logger.error(f"Token length: {len(cleaned_token)} characters")
                 return False
             except Exception as e:
                 if attempt < max_retries - 1:

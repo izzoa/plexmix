@@ -171,9 +171,27 @@ PlexMix uses **Google Gemini by default** for both AI playlist generation and em
 # Interactive setup wizard
 plexmix config init
 
+# Test Plex server connection
+plexmix config test
+
 # Show current configuration
 plexmix config show
 ```
+
+**Troubleshooting Connection Issues:**
+
+If you get a "400 Bad Request" error when connecting to Plex:
+
+1. **Check your Plex token** - Make sure there are no extra spaces when copying
+2. **Try HTTPS** - Use `https://` instead of `http://` if your server requires secure connections
+3. **Verify the URL** - Ensure the server address and port (default: 32400) are correct
+4. **Check server settings** - In Plex Server settings, look for network/authentication requirements
+5. **Test the connection** - Run `plexmix config test` to diagnose the issue
+
+**Common Plex Server URLs:**
+- Local: `http://localhost:32400`
+- Remote: `http://192.168.1.X:32400` (replace X with your server's IP)
+- Secure: `https://your-server:32400`
 
 ### Sync Commands
 
