@@ -131,10 +131,7 @@ class TaggingState(AppState):
 
         try:
             from plexmix.config.settings import Settings
-            from plexmix.config.credentials import get_google_api_key, get_openai_api_key
             from plexmix.database.sqlite_manager import SQLiteManager
-            from plexmix.ai.providers.gemini import GeminiProvider
-            from plexmix.ai.providers.openai import OpenAIProvider
             from plexmix.ai.tag_generator import TagGenerator
 
             settings = Settings.load_from_file()
@@ -166,17 +163,30 @@ class TaggingState(AppState):
                 return
 
             # Set up AI provider
-            api_key = None
+            from plexmix.ai import get_ai_provider
+            from plexmix.config.credentials import get_google_api_key, get_openai_api_key, get_anthropic_api_key, get_cohere_api_key
+            
             ai_provider_name = settings.ai.default_provider
+            api_key = None
+            
             if ai_provider_name == "gemini":
                 api_key = get_google_api_key()
-                ai_provider = GeminiProvider(api_key=api_key, model=settings.ai.model)
             elif ai_provider_name == "openai":
                 api_key = get_openai_api_key()
-                ai_provider = OpenAIProvider(api_key=api_key, model=settings.ai.model)
-            else:
+            elif ai_provider_name == "anthropic":
+                api_key = get_anthropic_api_key()
+            elif ai_provider_name == "cohere":
+                api_key = get_cohere_api_key()
+            
+            try:
+                ai_provider = get_ai_provider(
+                    provider_name=ai_provider_name,
+                    api_key=api_key,
+                    model=settings.ai.model
+                )
+            except Exception as e:
                 async with self:
-                    self.tagging_message = f"Unsupported AI provider: {ai_provider_name}"
+                    self.tagging_message = f"Error initializing AI provider: {str(e)}"
                     self.is_tagging = False
                 db.close()
                 return

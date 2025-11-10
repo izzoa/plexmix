@@ -39,6 +39,7 @@ def navbar() -> rx.Component:
             navbar_link("Library", "/library"),
             navbar_link("Tagging", "/tagging"),
             navbar_link("History", "/history"),
+            navbar_link("Doctor", "/doctor"),
             navbar_link("Settings", "/settings"),
             rx.spacer(),
             rx.hstack(

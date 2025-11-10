@@ -7,10 +7,20 @@ class AppState(rx.State):
     plex_configured: bool = False
     ai_provider_configured: bool = False
     embedding_provider_configured: bool = False
+    
+    # Configuration details
+    plex_library_name: str = ""
+    plex_server_url: str = ""
+    ai_provider_name: str = ""
+    ai_model_name: str = ""
+    embedding_provider_name: str = ""
+    embedding_model_name: str = ""
 
     total_tracks: str = "0"
     embedded_tracks: str = "0"
     last_sync: Optional[str] = None
+    
+    embedding_dimension_warning: str = ""
 
     current_task: Optional[str] = None
     task_progress: int = 0
@@ -39,6 +49,8 @@ class AppState(rx.State):
                 plex_token and
                 settings.plex.library_name
             )
+            self.plex_library_name = settings.plex.library_name or ""
+            self.plex_server_url = settings.plex.url or ""
 
             # Check AI provider configuration
             # Check both the credentials module and environment variables
@@ -66,10 +78,14 @@ class AppState(rx.State):
 
             ai_keys = [google_key, openai_key, anthropic_key, cohere_key]
             self.ai_provider_configured = any(ai_keys)
+            self.ai_provider_name = settings.ai.default_provider.title() if settings.ai.default_provider else ""
+            self.ai_model_name = settings.ai.model or ""
 
             # Check embedding provider configuration
             embedding_keys = [google_key, openai_key, cohere_key]
             self.embedding_provider_configured = any(embedding_keys) or settings.embedding.default_provider == "local"
+            self.embedding_provider_name = settings.embedding.default_provider.title() if settings.embedding.default_provider else ""
+            self.embedding_model_name = settings.embedding.model or ""
 
         except Exception as e:
             print(f"Error checking configuration: {e}")
@@ -106,8 +122,23 @@ class AppState(rx.State):
                 with open(metadata_path, 'rb') as f:
                     metadata = pickle.load(f)
                     self.embedded_tracks = str(len(metadata.get('track_ids', [])))
+                    
+                    # Check for dimension mismatch
+                    loaded_dimension = metadata.get('dimension', 0)
+                    expected_dimension = settings.embedding.get_dimension_for_provider(
+                        settings.embedding.default_provider
+                    )
+                    if loaded_dimension != expected_dimension:
+                        self.embedding_dimension_warning = (
+                            f"⚠️ Embedding dimension mismatch: Existing embeddings are {loaded_dimension}D "
+                            f"but current provider '{settings.embedding.default_provider}' uses {expected_dimension}D. "
+                            f"Please regenerate embeddings."
+                        )
+                    else:
+                        self.embedding_dimension_warning = ""
             else:
                 self.embedded_tracks = "0"
+                self.embedding_dimension_warning = ""
 
             # Use last_played as a proxy for last sync since updated_at doesn't exist
             cursor.execute("SELECT MAX(last_played) FROM tracks")

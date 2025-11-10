@@ -14,11 +14,15 @@ class VectorIndex:
         self.index_path = Path(index_path).expanduser() if index_path else None
         self.index: Optional[faiss.IndexFlatIP] = None
         self.track_ids: List[int] = []
+        self.dimension_mismatch: bool = False
+        self.loaded_dimension: Optional[int] = None
 
         if self.index_path and self.index_path.exists():
             self.load_index(str(self.index_path))
         else:
             self._create_index()
+            self.dimension_mismatch = False
+            self.loaded_dimension = None
 
     def _create_index(self) -> None:
         self.index = faiss.IndexFlatIP(self.dimension)
@@ -151,8 +155,15 @@ class VectorIndex:
 
                     if loaded_dimension != self.dimension:
                         logger.warning(
-                            f"Loaded index dimension {loaded_dimension} does not match expected {self.dimension}"
+                            f"Dimension mismatch: Existing embeddings have dimension {loaded_dimension}, "
+                            f"but current provider expects {self.dimension}. "
+                            f"You must regenerate embeddings to use the new provider."
                         )
+                        self.dimension_mismatch = True
+                        self.loaded_dimension = loaded_dimension
+                    else:
+                        self.dimension_mismatch = False
+                        self.loaded_dimension = None
 
             logger.info(f"Loaded FAISS index from {load_path} with {len(self.track_ids)} vectors")
         except Exception as e:

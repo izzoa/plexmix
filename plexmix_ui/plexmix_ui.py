@@ -6,12 +6,14 @@ from plexmix.ui.pages.library import library
 from plexmix.ui.pages.generator import generator
 from plexmix.ui.pages.history import history
 from plexmix.ui.pages.tagging import tagging
+from plexmix.ui.pages.doctor import doctor
 from plexmix.ui.states.dashboard_state import DashboardState
 from plexmix.ui.states.settings_state import SettingsState
 from plexmix.ui.states.library_state import LibraryState
 from plexmix.ui.states.generator_state import GeneratorState
 from plexmix.ui.states.history_state import HistoryState
 from plexmix.ui.states.tagging_state import TaggingState
+from plexmix.ui.states.doctor_state import DoctorState
 
 app = rx.App(
     theme=rx.theme(
@@ -28,3 +30,4 @@ app.add_page(library, route="/library", on_load=LibraryState.on_load)
 app.add_page(generator, route="/generator", on_load=GeneratorState.on_load)
 app.add_page(history, route="/history", on_load=HistoryState.on_load)
 app.add_page(tagging, route="/tagging", on_load=TaggingState.on_load)
+app.add_page(doctor, route="/doctor", on_load=DoctorState.on_load)

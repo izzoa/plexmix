@@ -11,6 +11,7 @@ class AIProvider(ABC):
         self.api_key = api_key
         self.model = model
         self.temperature = temperature
+        self.provider_name = self.__class__.__name__.replace("Provider", "")
 
     @abstractmethod
     def generate_playlist(
@@ -45,7 +46,7 @@ class AIProvider(ABC):
     ) -> str:
         max_candidates = self.get_max_candidates()
         if len(candidate_tracks) > max_candidates:
-            logger.warning(f"Truncating {len(candidate_tracks)} candidates to {max_candidates} for model {self.model}")
+            logger.warning(f"[{self.provider_name}] Truncating {len(candidate_tracks)} candidates to {max_candidates} for model {self.model}")
             candidate_tracks = candidate_tracks[:max_candidates]
         system_prompt = """You are an expert music curator helping create the perfect playlist.
 Your task is to select tracks from the provided candidate list that best match the user's mood query.
@@ -87,16 +88,16 @@ Select {max_tracks} tracks that best match the mood "{mood_query}". Return only 
             track_ids = json.loads(response)
 
             if not isinstance(track_ids, list):
-                logger.error("Response is not a list")
+                logger.error(f"[{self.provider_name}] Response is not a list")
                 return []
 
             return [int(tid) for tid in track_ids]
 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response: {e}")
+            logger.error(f"[{self.provider_name}] Failed to parse JSON response: {e}")
             return []
         except Exception as e:
-            logger.error(f"Failed to parse response: {e}")
+            logger.error(f"[{self.provider_name}] Failed to parse response: {e}")
             return []
 
     def _validate_selections(
@@ -109,7 +110,7 @@ Select {max_tracks} tracks that best match the mood "{mood_query}". Return only 
 
         if len(validated) < len(selections):
             logger.warning(
-                f"Filtered out {len(selections) - len(validated)} invalid track IDs"
+                f"[{self.provider_name}] Filtered out {len(selections) - len(validated)} invalid track IDs"
             )
 
         return validated

@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 
 
 class EmbeddingProvider(ABC):
+    def __init__(self):
+        self.provider_name = self.__class__.__name__.replace("EmbeddingProvider", "")
+    
     @abstractmethod
     def generate_embedding(self, text: str) -> List[float]:
         pass
@@ -25,12 +28,13 @@ class EmbeddingProvider(ABC):
 
 class GeminiEmbeddingProvider(EmbeddingProvider):
     def __init__(self, api_key: str, model: str = "gemini-embedding-001"):
+        super().__init__()
         try:
             import google.generativeai as genai
             genai.configure(api_key=api_key)
             self.model_name = model
             self.dimension = 3072
-            logger.info(f"Initialized Gemini embedding provider with model {model}")
+            logger.info(f"[{self.provider_name}] Initialized embedding provider with model {model}")
         except ImportError:
             raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
 
@@ -58,18 +62,18 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
                         if retry_after:
                             delay = retry_after * backoff_multiplier
-                            logger.warning(f"Rate limit hit. Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
+                            logger.warning(f"[{self.provider_name}] Rate limit hit. Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
                         else:
                             delay = base_delay * (2 ** attempt)
-                            logger.warning(f"Rate limit hit. Retrying in {delay}s...")
+                            logger.warning(f"[{self.provider_name}] Rate limit hit. Retrying in {delay}s...")
 
                         time.sleep(delay)
                         continue
                     else:
-                        logger.error(f"Rate limit exceeded after {max_retries} attempts: {e}")
+                        logger.error(f"[{self.provider_name}] Rate limit exceeded after {max_retries} attempts: {e}")
                         raise
                 else:
-                    logger.error(f"Failed to generate Gemini embedding: {e}")
+                    logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
                     raise
 
         raise Exception("Max retries exceeded")
@@ -100,14 +104,14 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
             for attempt in range(max_retries):
                 try:
-                    logger.debug(f"Generating Gemini embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
+                    logger.debug(f"[{self.provider_name}] Generating embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
 
                     for text in batch:
                         embedding = self.generate_embedding(text)
                         embeddings.append(embedding)
                         time.sleep(0.1)
 
-                    logger.debug(f"Completed Gemini batch {batch_num}/{total_batches}")
+                    logger.debug(f"[{self.provider_name}] Completed batch {batch_num}/{total_batches}")
                     break
                 except Exception as e:
                     error_str = str(e)
@@ -118,18 +122,18 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
                             if retry_after:
                                 delay = retry_after * backoff_multiplier
-                                logger.warning(f"Rate limit hit on batch {batch_num}. Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
+                                logger.warning(f"[{self.provider_name}] Rate limit hit on batch {batch_num}. Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
                             else:
                                 delay = base_delay * (2 ** attempt)
-                                logger.warning(f"Rate limit hit on batch {batch_num} (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                                logger.warning(f"[{self.provider_name}] Rate limit hit on batch {batch_num} (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
 
                             time.sleep(delay)
                             continue
                         else:
-                            logger.error(f"Rate limit exceeded for batch {batch_num} after {max_retries} attempts: {e}")
+                            logger.error(f"[{self.provider_name}] Rate limit exceeded for batch {batch_num} after {max_retries} attempts: {e}")
                             raise
                     else:
-                        logger.error(f"Failed to generate batch embeddings (batch {batch_num}): {e}")
+                        logger.error(f"[{self.provider_name}] Failed to generate batch embeddings (batch {batch_num}): {e}")
                         raise
 
         return embeddings
@@ -140,12 +144,13 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
 
 class OpenAIEmbeddingProvider(EmbeddingProvider):
     def __init__(self, api_key: str, model: str = "text-embedding-3-small"):
+        super().__init__()
         try:
             from openai import OpenAI
             self.client = OpenAI(api_key=api_key)
             self.model_name = model
             self.dimension = 1536
-            logger.info(f"Initialized OpenAI embedding provider with model {model}")
+            logger.info(f"[{self.provider_name}] Initialized embedding provider with model {model}")
         except ImportError:
             raise ImportError("openai not installed. Run: pip install openai")
 
@@ -157,7 +162,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
             )
             return response.data[0].embedding
         except Exception as e:
-            logger.error(f"Failed to generate OpenAI embedding: {e}")
+            logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
             raise
 
     def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
@@ -171,9 +176,9 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
                 )
                 batch_embeddings = [item.embedding for item in response.data]
                 embeddings.extend(batch_embeddings)
-                logger.debug(f"Generated {len(batch)} embeddings (batch {i//batch_size + 1})")
+                logger.debug(f"[{self.provider_name}] Generated {len(batch)} embeddings (batch {i//batch_size + 1})")
             except Exception as e:
-                logger.error(f"Failed to generate batch embeddings: {e}")
+                logger.error(f"[{self.provider_name}] Failed to generate batch embeddings: {e}")
                 raise
 
         return embeddings
@@ -184,12 +189,13 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
 class CohereEmbeddingProvider(EmbeddingProvider):
     def __init__(self, api_key: str, model: str = "embed-v4", output_dimension: int = 1024):
+        super().__init__()
         try:
             import cohere
             self.client = cohere.ClientV2(api_key=api_key)
             self.model_name = model
             self.dimension = output_dimension
-            logger.info(f"Initialized Cohere embedding provider with model {model} (dim: {output_dimension})")
+            logger.info(f"[{self.provider_name}] Initialized embedding provider with model {model} (dim: {output_dimension})")
         except ImportError:
             raise ImportError("cohere not installed. Run: pip install cohere")
 
@@ -204,7 +210,7 @@ class CohereEmbeddingProvider(EmbeddingProvider):
             )
             return response.embeddings.float_[0]
         except Exception as e:
-            logger.error(f"Failed to generate Cohere embedding: {e}")
+            logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
             raise
 
     def generate_batch_embeddings(self, texts: List[str], batch_size: int = 96) -> List[List[float]]:
@@ -216,7 +222,7 @@ class CohereEmbeddingProvider(EmbeddingProvider):
             batch_num = i // batch_size + 1
 
             try:
-                logger.debug(f"Generating Cohere embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
+                logger.debug(f"[{self.provider_name}] Generating embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
                 response = self.client.embed(
                     model=self.model_name,
                     texts=batch,
@@ -225,9 +231,9 @@ class CohereEmbeddingProvider(EmbeddingProvider):
                     output_dimension=self.dimension
                 )
                 embeddings.extend(response.embeddings.float_)
-                logger.debug(f"Completed Cohere batch {batch_num}/{total_batches}")
+                logger.debug(f"[{self.provider_name}] Completed batch {batch_num}/{total_batches}")
             except Exception as e:
-                logger.error(f"Failed to generate batch embeddings (batch {batch_num}): {e}")
+                logger.error(f"[{self.provider_name}] Failed to generate batch embeddings (batch {batch_num}): {e}")
                 raise
 
         return embeddings
@@ -238,11 +244,12 @@ class CohereEmbeddingProvider(EmbeddingProvider):
 
 class LocalEmbeddingProvider(EmbeddingProvider):
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        super().__init__()
         try:
             from sentence_transformers import SentenceTransformer
             self.model = SentenceTransformer(model_name)
             self.dimension = self.model.get_sentence_embedding_dimension()
-            logger.info(f"Initialized local embedding provider with model {model_name} (dim: {self.dimension})")
+            logger.info(f"[{self.provider_name}] Initialized embedding provider with model {model_name} (dim: {self.dimension})")
         except ImportError:
             raise ImportError("sentence-transformers not installed. Run: pip install sentence-transformers")
 
@@ -251,7 +258,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             embedding = self.model.encode(text, convert_to_numpy=True)
             return embedding.tolist()
         except Exception as e:
-            logger.error(f"Failed to generate local embedding: {e}")
+            logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
             raise
 
     def generate_batch_embeddings(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
@@ -264,7 +271,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             )
             return embeddings.tolist()
         except Exception as e:
-            logger.error(f"Failed to generate batch embeddings: {e}")
+            logger.error(f"[{self.provider_name}] Failed to generate batch embeddings: {e}")
             raise
 
     def get_dimension(self) -> int:

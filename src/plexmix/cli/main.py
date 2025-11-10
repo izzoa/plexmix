@@ -1051,6 +1051,15 @@ def create_playlist(
             dimension=embedding_generator.get_dimension(),
             index_path=str(index_path)
         )
+        
+        # Check for dimension mismatch
+        if vector_index.dimension_mismatch:
+            console.print(f"[red]⚠️ Embedding dimension mismatch![/red]")
+            console.print(f"[yellow]Existing embeddings are {vector_index.loaded_dimension}D but")
+            console.print(f"current provider '{settings.embedding.default_provider}' uses {embedding_generator.get_dimension()}D.[/yellow]")
+            console.print(f"\n[cyan]You must regenerate embeddings to use the new provider:[/cyan]")
+            console.print(f"  plexmix sync incremental --embeddings")
+            raise typer.Exit(1)
 
         generator = PlaylistGenerator(db, vector_index, embedding_generator)
 

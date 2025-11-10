@@ -113,6 +113,19 @@ class GeneratorState(AppState):
                     self.is_generating = False
                 db.close()
                 return
+            
+            # Check for dimension mismatch
+            if vector_index.dimension_mismatch:
+                async with self:
+                    self.generation_message = (
+                        f"⚠️ Embedding dimension mismatch! "
+                        f"Existing embeddings are {vector_index.loaded_dimension}D but "
+                        f"current provider '{embedding_provider}' uses {dimension}D. "
+                        f"Please regenerate embeddings with the new provider."
+                    )
+                    self.is_generating = False
+                db.close()
+                return
 
             embedding_api_key = None
             embedding_provider = settings.embedding.default_provider
