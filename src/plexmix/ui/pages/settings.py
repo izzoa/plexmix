@@ -1,6 +1,7 @@
 import reflex as rx
 from plexmix.ui.components.navbar import layout
 from plexmix.ui.states.settings_state import SettingsState
+from plexmix.ai.local_provider import LOCAL_LLM_MODELS
 
 
 def plex_tab() -> rx.Component:
@@ -70,26 +71,95 @@ def ai_provider_tab() -> rx.Component:
                     rx.select.item("OpenAI", value="openai"),
                     rx.select.item("Anthropic", value="anthropic"),
                     rx.select.item("Cohere", value="cohere"),
+                    rx.select.item("Local (Offline)", value="local"),
                 ),
                 value=SettingsState.ai_provider,
                 on_change=SettingsState.set_ai_provider,
                 width="100%",
             ),
-            rx.text("API Key", size="3", weight="bold", margin_top="3"),
-            rx.input(
-                type="password",
-                placeholder="Enter API key",
-                value=SettingsState.ai_api_key,
-                on_change=SettingsState.set_ai_api_key,
-                width="100%",
+            rx.cond(
+                SettingsState.ai_provider != "local",
+                rx.vstack(
+                    rx.text("API Key", size="3", weight="bold", margin_top="3"),
+                    rx.input(
+                        type="password",
+                        placeholder="Enter API key",
+                        value=SettingsState.ai_api_key,
+                        on_change=SettingsState.set_ai_api_key,
+                        width="100%",
+                    ),
+                    spacing="2",
+                    width="100%",
+                ),
+                rx.box(),
             ),
             rx.text("Model", size="3", weight="bold", margin_top="3"),
-            rx.select(
-                SettingsState.ai_models,
-                value=SettingsState.ai_model,
-                on_change=SettingsState.set_ai_model,
-                placeholder="Select model...",
-                width="100%",
+            rx.cond(
+                SettingsState.ai_provider == "local",
+                rx.select.root(
+                    rx.select.trigger(
+                        placeholder="Select local model",
+                        # Keep the trigger compact and prevent overflow
+                        style={
+                            "white_space": "nowrap",
+                            "text_overflow": "ellipsis",
+                            "overflow": "hidden",
+                            "max_width": "100%",
+                        },
+                    ),
+                    rx.select.content(
+                        *[
+                            rx.select.item(
+                                rx.text(
+                                    meta["display_name"],
+                                    size="2",
+                                    weight="bold",
+                                    style={
+                                        "white_space": "nowrap",
+                                        "text_overflow": "ellipsis",
+                                        "overflow": "hidden",
+                                        "max_width": "340px",
+                                        "display": "block",
+                                    },
+                                ),
+                                value=model_id,
+                                key=model_id,
+                            )
+                            for model_id, meta in sorted(
+                                LOCAL_LLM_MODELS.items(),
+                                key=lambda kv: kv[1]["display_name"].lower(),
+                            )
+                        ],
+                        # Make the dropdown menu scroll when long, and keep width in bounds
+                        style={
+                            "max_width": "380px",
+                            "max_height": "280px",
+                            "overflow_y": "auto",
+                        },
+                    ),
+                    value=SettingsState.ai_model,
+                    on_change=SettingsState.set_ai_model,
+                    width="100%",
+                    style={"max_width": "420px"},
+                ),
+                rx.select(
+                    SettingsState.ai_models,
+                    value=SettingsState.ai_model,
+                    on_change=SettingsState.set_ai_model,
+                    placeholder="Select model...",
+                    width="100%",
+                ),
+            ),
+            rx.cond(
+                SettingsState.ai_provider == "local",
+                rx.text(
+                    SettingsState.local_model_capabilities,
+                    size="1",
+                    color_scheme="gray",
+                    margin_top="1",
+                    style={"white_space": "normal", "line_height": "1.2"},
+                ),
+                rx.box(),
             ),
             rx.text("Temperature", size="3", weight="bold", margin_top="3"),
             rx.hstack(
@@ -103,6 +173,96 @@ def ai_provider_tab() -> rx.Component:
                 ),
                 rx.text(SettingsState.ai_temperature, size="3"),
                 width="100%",
+            ),
+            rx.cond(
+                SettingsState.ai_provider == "local",
+                rx.vstack(
+                    rx.text("Local Execution Mode", size="3", weight="bold", margin_top="3"),
+                    rx.select.root(
+                        rx.select.trigger(placeholder="Choose mode"),
+                        rx.select.content(
+                            rx.select.item("Managed (Downloaded)", value="builtin"),
+                            rx.select.item("Custom Endpoint", value="endpoint"),
+                        ),
+                        value=SettingsState.ai_local_mode,
+                        on_change=SettingsState.set_ai_local_mode,
+                        width="100%",
+                    ),
+                    rx.cond(
+                        SettingsState.ai_local_mode == "builtin",
+                        rx.vstack(
+                            rx.callout(
+                                "Download a pre-set Hugging Face model once and run entirely offline.",
+                                icon="cpu",
+                                color_scheme="green",
+                                size="2",
+                            ),
+                            rx.button(
+                                "Download / Warm Up Model",
+                                on_click=SettingsState.download_local_llm_model,
+                                loading=SettingsState.is_downloading_local_llm,
+                                variant="soft",
+                                align_self="start",
+                            ),
+                            rx.cond(
+                                SettingsState.local_llm_download_status != "",
+                                rx.vstack(
+                                    rx.text(
+                                        SettingsState.local_llm_download_status,
+                                        size="2",
+                                        color_scheme="gray",
+                                    ),
+                                    rx.progress(
+                                        value=SettingsState.local_llm_download_progress,
+                                        max=100,
+                                    ),
+                                    spacing="2",
+                                    width="100%",
+                                ),
+                                rx.box(),
+                            ),
+                            spacing="3",
+                            width="100%",
+                        ),
+                        rx.vstack(
+                            rx.callout(
+                                "Point PlexMix at a running OpenAI-compatible HTTP endpoint on your LAN (Ollama, LM Studio, etc).",
+                                icon="globe",
+                                color_scheme="blue",
+                                size="2",
+                            ),
+                            rx.text("Endpoint URL", size="3", weight="bold"),
+                            rx.input(
+                                placeholder="http://localhost:11434/v1/chat/completions",
+                                value=SettingsState.ai_local_endpoint,
+                                on_change=SettingsState.validate_local_endpoint,
+                                width="100%",
+                            ),
+                            rx.cond(
+                                SettingsState.local_endpoint_error != "",
+                                rx.text(
+                                    SettingsState.local_endpoint_error,
+                                    size="1",
+                                    color_scheme="red",
+                                ),
+                                rx.box(),
+                            ),
+                            rx.text("Endpoint Token", size="3", weight="bold", margin_top="2"),
+                            rx.input(
+                                type="password",
+                                placeholder="Optional bearer token",
+                                value=SettingsState.ai_local_auth_token,
+                                on_change=SettingsState.set_ai_local_auth_token,
+                                width="100%",
+                            ),
+                            spacing="3",
+                            width="100%",
+                        ),
+                    ),
+                    spacing="3",
+                    width="100%",
+                ),
+                rx.box(),
             ),
             rx.hstack(
                 rx.button(

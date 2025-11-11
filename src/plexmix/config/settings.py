@@ -38,6 +38,22 @@ class AISettings(BaseSettings):
     default_provider: str = Field(default="gemini", description="Default AI provider")
     model: Optional[str] = Field(default=None, description="Model name")
     temperature: float = Field(default=0.7, description="LLM temperature")
+    local_mode: str = Field(
+        default="builtin",
+        description="Local LLM mode: builtin (managed) or endpoint",
+    )
+    local_endpoint: Optional[str] = Field(
+        default=None,
+        description="Custom URL for a self-hosted local LLM server",
+    )
+    local_auth_token: Optional[str] = Field(
+        default=None,
+        description="Optional auth token for the custom local endpoint",
+    )
+    local_max_output_tokens: int = Field(
+        default=800,
+        description="Max new tokens to request from local LLM responses",
+    )
 
     class Config:
         env_prefix = "AI_"

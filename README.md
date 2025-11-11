@@ -16,7 +16,8 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 
 - ✨ **Simple Setup** - Only requires a Google API key to get started
 - 🎵 **Smart Sync** - Syncs Plex music library with incremental updates
-- 🤖 **AI-Powered** - Uses Google Gemini, OpenAI GPT, or Anthropic Claude
+- 🤖 **AI-Powered** - Uses Google Gemini, OpenAI GPT, Anthropic Claude, Cohere Command, or fully local Gemma/Mistral models
+- 🔌 **Bring-Your-Own LLM** - Point PlexMix at any OpenAI-compatible local endpoint (Ollama, LM Studio, llama.cpp)
 - 🏷️ **AI Tagging** - Automatically generates tags, environments, and instruments for tracks
 - 🔍 **Semantic Search** - FAISS vector similarity search for intelligent track matching
 - 🎨 **Mood-Based** - Generate playlists from natural language descriptions
@@ -154,6 +155,7 @@ PlexMix uses **Google Gemini by default** for both AI playlist generation and em
 - **Anthropic API Key**: For Claude models (AI only, no embeddings)
 - **Cohere API Key**: For Command R7B and Embed v4 models
 - **Local Embeddings**: sentence-transformers (free, offline, no API key needed)
+- **Local LLM**: Run Gemma 3 1B/4B, Liquid LFM 1.2B, Yarn-Mistral 7B-128K, or hook into an Ollama/LM Studio endpoint
 
 ### Getting a Plex Token
 
@@ -312,6 +314,9 @@ plexmix tags generate
 # Use alternative AI provider
 plexmix tags generate --provider openai
 
+# Use the offline/local provider
+plexmix tags generate --provider local
+
 # Skip embedding regeneration (faster, but tags won't be in search)
 plexmix tags generate --no-regenerate-embeddings
 ```
@@ -358,6 +363,9 @@ plexmix create "piano jazz" --instrument piano
 # Use specific AI provider
 plexmix create "chill study session" --provider claude
 
+# Force the offline/local provider
+plexmix create "ambient focus" --provider local
+
 # Custom playlist name
 plexmix create "morning coffee" --name "Perfect Morning Mix"
 
@@ -392,7 +400,7 @@ PlexMix uses a multi-stage pipeline for intelligent playlist generation:
 - **CLI**: Typer with Rich console output
 - **Database**: SQLite with FTS5 full-text search
 - **Vector Search**: FAISS (CPU) with cosine similarity
-- **AI Providers**: Google Gemini (default), OpenAI GPT, Anthropic Claude, Cohere
+- **AI Providers**: Google Gemini (default), OpenAI GPT, Anthropic Claude, Cohere, Local Gemma/Yarn presets or any OpenAI-compatible endpoint
 - **Embeddings**: Google Gemini (3072d), OpenAI (1536d), Local (384-768d)
 - **Plex Integration**: PlexAPI
 
@@ -406,6 +414,8 @@ plexmix/
 │   │   ├── gemini_provider.py
 │   │   ├── openai_provider.py
 │   │   ├── claude_provider.py
+│   │   ├── cohere_provider.py
+│   │   ├── local_provider.py   # Managed Hugging Face + custom endpoint support
 │   │   └── tag_generator.py  # AI-based tag generation
 │   ├── cli/              # Command-line interface
 │   │   └── main.py       # Typer CLI app
@@ -489,6 +499,41 @@ PlexMix stores all music metadata locally:
 When you choose `local` on the Settings page, PlexMix instantiates the selected Hugging Face `sentence-transformers` model directly in-process—no HTTP endpoints, API keys, or port configuration are needed. The model weights download once into your Hugging Face cache (e.g., `~/.cache/huggingface`) and subsequent embedding calls run entirely on your machine, which keeps everything offline and private.
 
 Set `PLEXMIX_LOCAL_EMBEDDING_DEVICE` (default `cpu`) if you want to force a specific device (e.g., `cpu` to avoid macOS MPS instability, or `cuda` when running on a GPU server). The UI and CLI will reuse that cached model/device combination whenever local embeddings are needed.
+
+### Local LLM Presets & Custom Endpoints
+
+You can now generate playlists with fully local LLMs—no outbound network traffic required. The AI tab in the UI (or `plexmix config init`) lets you choose between:
+
+- **Managed downloads** (same workflow as local embeddings) with curated Hugging Face repos:
+  - `google/gemma-3-1b` — fast, CPU-friendly drafts (8K context / ~768 new tokens)
+  - `liquid/lfm2-1.2b` — lightweight music-focused reasoning (32K context)
+  - `google/gemma-3-4b` — higher-quality 4B param model (32K context)
+  - `NousResearch/Yarn-Mistral-7b-128k` — 7B param 128K context for huge playlists (GPU recommended)
+- **Custom endpoints** that speak the OpenAI Chat Completions API (Ollama, LM Studio, llama.cpp server, OpenRouter running on your LAN, etc.)
+
+When you select "Local (Offline)" as the AI provider you can toggle between **Managed (Downloaded)** and **Custom Endpoint** modes:
+
+1. **Managed (Downloaded)**
+   - Click *Download / Warm Up Model* to prefetch weights into your Hugging Face cache
+   - Models are loaded in a background worker and reused across tagging/playlist runs
+   - Set `PLEXMIX_LOCAL_LLM_DEVICE` to `cpu`, `cuda`, or `mps` to force device placement (defaults to `auto`)
+
+2. **Custom Endpoint**
+   - Point PlexMix at any OpenAI-compatible URL (e.g., `http://localhost:11434/v1/chat/completions` for Ollama)
+   - Optionally provide a bearer token; PlexMix will include it as `Authorization: Bearer <token>`
+   - Responses must return a JSON payload with `choices[0].message.content`
+
+From the CLI you can force the local provider as well:
+
+```bash
+# Use the configured local model for tagging
+plexmix tags generate --provider local
+
+# Run the playlist doctor flow with your offline LLM
+plexmix doctor --force
+```
+
+If you ever want to nuke cached weights, delete the relevant directories under `~/.cache/huggingface`.
 
 **Dimension Trade-offs:**
 - Higher dimensions = Better semantic understanding but larger storage

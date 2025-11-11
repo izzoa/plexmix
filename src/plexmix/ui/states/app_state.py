@@ -77,7 +77,10 @@ class AppState(rx.State):
                 cohere_key = os.environ.get("COHERE_API_KEY")
 
             ai_keys = [google_key, openai_key, anthropic_key, cohere_key]
-            self.ai_provider_configured = any(ai_keys)
+            if settings.ai.default_provider == "local":
+                self.ai_provider_configured = True
+            else:
+                self.ai_provider_configured = any(ai_keys)
             self.ai_provider_name = settings.ai.default_provider.title() if settings.ai.default_provider else ""
             self.ai_model_name = settings.ai.model or ""
 

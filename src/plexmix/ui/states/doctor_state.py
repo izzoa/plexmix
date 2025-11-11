@@ -308,28 +308,35 @@ class DoctorState(AppState):
                 return
 
             ai_provider_name = settings.ai.default_provider or "gemini"
+            provider_alias = "claude" if ai_provider_name == "anthropic" else ai_provider_name
             api_key = None
-            if ai_provider_name == "gemini":
+            if provider_alias == "gemini":
                 api_key = get_google_api_key()
-            elif ai_provider_name == "openai":
+            elif provider_alias == "openai":
                 api_key = get_openai_api_key()
-            elif ai_provider_name == "anthropic":
+            elif provider_alias == "claude":
                 api_key = get_anthropic_api_key()
-            elif ai_provider_name == "cohere":
+            elif provider_alias == "cohere":
                 api_key = get_cohere_api_key()
 
-            if not api_key:
+            try:
+                ai_provider = get_ai_provider(
+                    provider_name=ai_provider_name,
+                    api_key=api_key,
+                    model=settings.ai.model,
+                    temperature=settings.ai.temperature,
+                    local_mode=settings.ai.local_mode,
+                    local_endpoint=settings.ai.local_endpoint,
+                    local_auth_token=settings.ai.local_auth_token,
+                    local_max_output_tokens=settings.ai.local_max_output_tokens,
+                )
+            except ValueError:
                 async with self:
-                    self.fix_message = f"API key required for {ai_provider_name} tagging."
+                    self.fix_message = f"AI provider '{ai_provider_name}' is not fully configured."
                     self.is_fixing = False
                     self.current_fix_target = ""
                 return
 
-            ai_provider = get_ai_provider(
-                provider_name=ai_provider_name,
-                api_key=api_key,
-                model=settings.ai.model,
-            )
             tag_generator = TagGenerator(ai_provider)
 
             with SQLiteManager(str(db_path)) as db:

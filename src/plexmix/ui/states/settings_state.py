@@ -7,6 +7,7 @@ from plexmix.ui.utils.validation import (
     validate_temperature, validate_batch_size
 )
 from plexmix.utils.embeddings import LOCAL_EMBEDDING_MODELS
+from plexmix.ai.local_provider import LOCAL_LLM_MODELS, LOCAL_LLM_DEFAULT_MODEL
 
 
 class SettingsState(AppState):
@@ -21,6 +22,12 @@ class SettingsState(AppState):
     ai_model: str = ""
     ai_temperature: float = 0.7
     ai_models: List[str] = []
+    ai_local_mode: str = "builtin"
+    ai_local_endpoint: str = ""
+    ai_local_auth_token: str = ""
+    is_downloading_local_llm: bool = False
+    local_llm_download_status: str = ""
+    local_llm_download_progress: int = 0
 
     embedding_provider: str = "gemini"
     embedding_api_key: str = ""
@@ -51,6 +58,7 @@ class SettingsState(AppState):
     embedding_api_key_error: str = ""
     temperature_error: str = ""
     batch_size_error: str = ""
+    local_endpoint_error: str = ""
 
     def on_load(self):
         super().on_load()
@@ -81,6 +89,12 @@ class SettingsState(AppState):
             self.ai_provider = settings.ai.default_provider
             self.ai_model = settings.ai.model or ""
             self.ai_temperature = settings.ai.temperature
+            self.ai_local_mode = settings.ai.local_mode
+            self.ai_local_endpoint = settings.ai.local_endpoint or ""
+            self.ai_local_auth_token = settings.ai.local_auth_token or ""
+            self.local_llm_download_status = ""
+            self.local_llm_download_progress = 0
+            self.is_downloading_local_llm = False
 
             if self.ai_provider == "gemini":
                 self.ai_api_key = get_google_api_key() or ""
@@ -90,6 +104,8 @@ class SettingsState(AppState):
                 self.ai_api_key = get_anthropic_api_key() or ""
             elif self.ai_provider == "cohere":
                 self.ai_api_key = get_cohere_api_key() or ""
+            else:
+                self.ai_api_key = ""
 
             self.embedding_provider = settings.embedding.default_provider
             self.embedding_model = settings.embedding.model
@@ -113,18 +129,50 @@ class SettingsState(AppState):
 
     def update_model_lists(self):
         ai_model_map = {
-            "gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash-001"],
-            "openai": ["gpt-5", "gpt-5-mini", "gpt-5-nano"],
-            "anthropic": ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"],
-            "cohere": ["command", "command-light", "command-r"]
+            # Sort all provider model lists alphabetically for a consistent UX
+            "gemini": sorted(
+                ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash-001"],
+                key=str.lower,
+            ),
+            "openai": sorted(
+                ["gpt-5", "gpt-5-mini", "gpt-5-nano"],
+                key=str.lower,
+            ),
+            "anthropic": sorted(
+                ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"],
+                key=str.lower,
+            ),
+            "cohere": sorted(
+                ["command", "command-light", "command-r"],
+                key=str.lower,
+            ),
+            # Sort local models alphabetically by display name for UI
+            "local": sorted(
+                LOCAL_LLM_MODELS.keys(),
+                key=lambda k: LOCAL_LLM_MODELS[k]["display_name"].lower(),
+            ),
         }
-        self.ai_models = ai_model_map.get(self.ai_provider, [])
+        models = ai_model_map.get(self.ai_provider, [])
+        self.ai_models = models
+        if models and self.ai_model not in models:
+            self.ai_model = models[0]
 
         embedding_model_map = {
-            "gemini": ["gemini-embedding-001"],
-            "openai": ["text-embedding-3-large", "text-embedding-3-small", "text-embedding-ada-002"],
-            "cohere": ["embed-english-v3.0", "embed-multilingual-v3.0"],
-            "local": list(LOCAL_EMBEDDING_MODELS.keys()),
+            "gemini": sorted(["gemini-embedding-001"], key=str.lower),
+            "openai": sorted(
+                [
+                    "text-embedding-3-large",
+                    "text-embedding-3-small",
+                    "text-embedding-ada-002",
+                ],
+                key=str.lower,
+            ),
+            "cohere": sorted(
+                ["embed-english-v3.0", "embed-multilingual-v3.0"],
+                key=str.lower,
+            ),
+            # Sort local embedding model ids alphabetically by key name
+            "local": sorted(list(LOCAL_EMBEDDING_MODELS.keys()), key=str.lower),
         }
         models = embedding_model_map.get(self.embedding_provider, [])
         self.embedding_models = models
@@ -137,6 +185,15 @@ class SettingsState(AppState):
         self.update_model_lists()
         if self.ai_models:
             self.ai_model = self.ai_models[0]
+        if provider == "local" and not self.ai_model:
+            self.ai_model = LOCAL_LLM_DEFAULT_MODEL
+        if provider != "local":
+            self.ai_local_mode = "builtin"
+            self.ai_local_endpoint = ""
+            self.ai_local_auth_token = ""
+            self.local_llm_download_status = ""
+            self.local_llm_download_progress = 0
+        self.ai_api_key = ""
 
     def set_embedding_provider(self, provider: str):
         self.embedding_provider = provider
@@ -166,6 +223,17 @@ class SettingsState(AppState):
 
     def set_ai_model(self, model: str):
         self.ai_model = model
+
+    def set_ai_local_mode(self, mode: str):
+        self.ai_local_mode = mode
+        if mode != "endpoint":
+            self.local_endpoint_error = ""
+
+    def set_ai_local_endpoint(self, endpoint: str):
+        self.ai_local_endpoint = endpoint
+
+    def set_ai_local_auth_token(self, token: str):
+        self.ai_local_auth_token = token
 
     def set_ai_temperature(self, temperature: float):
         self.ai_temperature = temperature
@@ -261,6 +329,9 @@ class SettingsState(AppState):
             settings.ai.default_provider = self.ai_provider
             settings.ai.model = self.ai_model
             settings.ai.temperature = self.ai_temperature
+            settings.ai.local_mode = self.ai_local_mode
+            settings.ai.local_endpoint = self.ai_local_endpoint or None
+            settings.ai.local_auth_token = self.ai_local_auth_token or None
 
             if self.ai_api_key:
                 if self.ai_provider == "gemini":
@@ -306,7 +377,13 @@ class SettingsState(AppState):
 
     def validate_ai_api_key(self, key: str):
         self.ai_api_key = key
-        is_valid, error = validate_api_key(key, self.ai_provider)
+        if self.ai_provider == "local":
+            self.ai_api_key_error = ""
+            return
+        provider_key = self.ai_provider
+        if provider_key == "anthropic":
+            provider_key = "claude"
+        is_valid, error = validate_api_key(key, provider_key)
         self.ai_api_key_error = error if error else ""
 
     def validate_embedding_api_key(self, key: str):
@@ -317,6 +394,63 @@ class SettingsState(AppState):
         else:
             self.embedding_api_key_error = ""
 
+    @rx.event(background=True)
+    async def download_local_llm_model(self):
+        if self.ai_provider != "local" or self.ai_local_mode != "builtin":
+            return
+
+        model_name = self.ai_model or LOCAL_LLM_DEFAULT_MODEL
+        model_info = LOCAL_LLM_MODELS.get(model_name, {})
+
+        async with self:
+            self.is_downloading_local_llm = True
+            self.local_llm_download_status = f"Preparing download for {model_name}..."
+            self.local_llm_download_progress = 5
+
+        async def update_status(message: str, progress: int):
+            async with self:
+                self.local_llm_download_status = message
+                self.local_llm_download_progress = progress
+
+        try:
+            await update_status("Checking local cache...", 10)
+            loop = asyncio.get_running_loop()
+
+            def snapshot_download_model():
+                from huggingface_hub import snapshot_download
+
+                snapshot_download(model_name, local_files_only=False, resume_download=True)
+
+            await loop.run_in_executor(None, snapshot_download_model)
+            await update_status("Initializing model (first warmup may take a while)...", 55)
+
+            def warmup_model():
+                from transformers import AutoTokenizer, AutoModelForCausalLM
+                import torch
+
+                trust_remote_code = bool(model_info.get("trust_remote_code", False))
+                tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=trust_remote_code)
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    trust_remote_code=trust_remote_code,
+                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+                )
+                if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+                    tokenizer.pad_token = tokenizer.eos_token
+                inputs = tokenizer("Warm up playlist curation", return_tensors="pt")
+                _ = model.generate(**inputs, max_new_tokens=8)
+
+            await loop.run_in_executor(None, warmup_model)
+            await update_status("✓ Model cached and ready for offline use", 100)
+
+        except ImportError as e:
+            await update_status(f"Missing dependency: {e}", 0)
+        except Exception as e:
+            await update_status(f"Error downloading {model_name}: {str(e)}", 0)
+        finally:
+            async with self:
+                self.is_downloading_local_llm = False
+
     def validate_temperature(self, temp: float):
         self.ai_temperature = temp
         is_valid, error = validate_temperature(temp)
@@ -326,6 +460,14 @@ class SettingsState(AppState):
         self.sync_batch_size = size
         is_valid, error = validate_batch_size(size)
         self.batch_size_error = error if error else ""
+
+    def validate_local_endpoint(self, endpoint: str):
+        self.ai_local_endpoint = endpoint
+        if self.ai_provider != "local" or self.ai_local_mode != "endpoint":
+            self.local_endpoint_error = ""
+            return
+        is_valid, error = validate_url(endpoint)
+        self.local_endpoint_error = error if error else ""
 
     @rx.event(background=True)
     async def download_local_embedding_model(self):
@@ -395,6 +537,16 @@ class SettingsState(AppState):
             not self.embedding_api_key_error,
             not self.temperature_error,
             not self.batch_size_error,
+            not self.local_endpoint_error,
             self.plex_url,
             self.plex_token,
         ])
+
+    @rx.var
+    def local_model_capabilities(self) -> str:
+        if self.ai_provider != "local":
+            return ""
+        model_info = LOCAL_LLM_MODELS.get(self.ai_model or "")
+        if not model_info:
+            return ""
+        return model_info.get("capabilities", "")

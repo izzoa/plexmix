@@ -1,5 +1,5 @@
 import typer
-from typing import Optional
+from typing import Optional, Dict, Any
 from pathlib import Path
 from rich.console import Console
 from rich.table import Table
@@ -14,7 +14,7 @@ from ..database.vector_index import VectorIndex
 from ..plex.client import PlexClient
 from ..plex.sync import SyncEngine
 from ..utils.embeddings import EmbeddingGenerator
-from ..ai import get_ai_provider
+from ..ai import get_ai_provider, LOCAL_LLM_MODELS, LOCAL_LLM_DEFAULT_MODEL
 from ..ai.tag_generator import TagGenerator
 from ..playlist.generator import PlaylistGenerator
 from ..utils.logging import setup_logging
@@ -25,6 +25,57 @@ app = typer.Typer(
     add_completion=False
 )
 console = Console()
+
+
+def _canonical_ai_provider(name: Optional[str]) -> str:
+    if not name:
+        return "gemini"
+    name = name.lower()
+    return "claude" if name == "anthropic" else name
+
+
+def _resolve_ai_api_key(provider_name: Optional[str]) -> Optional[str]:
+    provider = _canonical_ai_provider(provider_name)
+    if provider == "gemini":
+        return credentials.get_google_api_key()
+    if provider == "openai":
+        return credentials.get_openai_api_key()
+    if provider == "claude":
+        return credentials.get_anthropic_api_key()
+    if provider == "cohere":
+        return credentials.get_cohere_api_key()
+    return None
+
+
+def _local_provider_kwargs(settings: Settings) -> Dict[str, Any]:
+    return {
+        "local_mode": settings.ai.local_mode,
+        "local_endpoint": settings.ai.local_endpoint,
+        "local_auth_token": settings.ai.local_auth_token,
+        "local_max_output_tokens": settings.ai.local_max_output_tokens,
+    }
+
+
+def _build_ai_provider(
+    settings: Settings,
+    provider_name: Optional[str] = None,
+    api_key_override: Optional[str] = None,
+    silent: bool = False,
+):
+    name = provider_name or settings.ai.default_provider or "gemini"
+    api_key = api_key_override if api_key_override is not None else _resolve_ai_api_key(name)
+    try:
+        return get_ai_provider(
+            provider_name=name,
+            api_key=api_key,
+            model=settings.ai.model,
+            temperature=settings.ai.temperature,
+            **_local_provider_kwargs(settings),
+        )
+    except ValueError as exc:
+        if not silent:
+            console.print(f"[yellow]{exc}[/yellow]")
+        return None
 
 
 @app.callback()
@@ -120,13 +171,19 @@ def config_init():
     )
     library_name = libraries[lib_choice - 1]
 
+    ai_model = None
+    local_mode = "builtin"
+    local_endpoint: Optional[str] = None
+    local_auth_token: Optional[str] = None
+
     console.print("\n[bold]Provider Configuration[/bold]")
     console.print("PlexMix supports multiple AI and embedding providers:\n")
     console.print("  1. Google Gemini (default) - Single API key for both AI and embeddings")
     console.print("  2. OpenAI - GPT models and embeddings")
     console.print("  3. Anthropic Claude - AI playlist generation only (no embeddings)")
     console.print("  4. Cohere - Command R models and embeddings")
-    console.print("  5. Local embeddings - Free, offline (no API key needed)\n")
+    console.print("  5. Local embeddings - Free, offline (no API key needed)")
+    console.print("  6. Local LLM - Offline playlist generation via Gemma/Yarn presets or your own endpoint\n")
     console.print("[dim]Note: Anthropic does not provide embeddings, so you'll need Gemini, OpenAI, Cohere, or local.[/dim]\n")
 
     use_gemini = typer.confirm("Use Google Gemini? (recommended)", default=True)
@@ -212,13 +269,43 @@ def config_init():
             else:
                 embedding_provider = "local"
 
+    use_local_llm = typer.confirm("\nUse Local LLM (offline or custom endpoint)?", default=False)
+    if use_local_llm:
+        ai_provider = "local"
+        console.print("\nLocal LLM presets:")
+        preset_items = list(LOCAL_LLM_MODELS.items())
+        for idx, (model_id, meta) in enumerate(preset_items, start=1):
+            console.print(f"  {idx}. {meta['display_name']} [{model_id}] - {meta['capabilities']}")
+        model_prompt = "Enter local model (or number)"
+        model_choice = typer.prompt(model_prompt, default=LOCAL_LLM_DEFAULT_MODEL)
+        if model_choice.isdigit():
+            idx = int(model_choice)
+            if 1 <= idx <= len(preset_items):
+                model_choice = preset_items[idx - 1][0]
+        ai_model = model_choice
+
+        use_endpoint = typer.confirm("Point to a custom local API endpoint instead?", default=False)
+        if use_endpoint:
+            local_mode = "endpoint"
+            local_endpoint = typer.prompt(
+                "Endpoint URL",
+                default="http://localhost:11434/v1/chat/completions"
+            )
+            token_input = typer.prompt("Endpoint auth token (optional)", hide_input=True, default="")
+            local_auth_token = token_input or None
+        else:
+            local_mode = "builtin"
+            local_endpoint = None
+            local_auth_token = None
+            console.print("[dim]Models are cached on-demand. Use the UI settings page to pre-download if needed.[/dim]")
+
     if not embedding_provider:
         console.print("\n[yellow]No embedding provider selected. Using local embeddings (free, offline).[/yellow]")
         embedding_provider = "local"
 
     if not ai_provider:
         console.print("\n[red]Error: No AI provider configured for playlist generation.[/red]")
-        console.print("You must configure at least one of: Gemini, OpenAI, Cohere, or Anthropic")
+        console.print("You must configure at least one of: Gemini, OpenAI, Cohere, Anthropic, or Local LLM")
         raise typer.Exit(1)
 
     settings = Settings()
@@ -226,6 +313,10 @@ def config_init():
     settings.plex.library_name = library_name
     settings.embedding.default_provider = embedding_provider
     settings.ai.default_provider = ai_provider
+    settings.ai.model = ai_model
+    settings.ai.local_mode = local_mode
+    settings.ai.local_endpoint = local_endpoint
+    settings.ai.local_auth_token = local_auth_token
 
     config_path = get_config_path()
     settings.save_to_file(str(config_path))
@@ -474,7 +565,11 @@ def sync_incremental(
 
         embedding_generator = None
         vector_index = None
-        ai_provider = None
+        ai_provider = _build_ai_provider(settings, silent=True)
+        if not ai_provider and settings.ai.default_provider:
+            console.print(
+                f"[yellow]AI provider '{settings.ai.default_provider}' unavailable. Continuing without AI assistance.[/yellow]"
+            )
 
         if embeddings:
             google_key = credentials.get_google_api_key()
@@ -488,12 +583,6 @@ def sync_incremental(
                 vector_index = VectorIndex(
                     dimension=embedding_generator.get_dimension(),
                     index_path=str(index_path)
-                )
-                ai_provider = get_ai_provider(
-                    provider_name=settings.ai.default_provider,
-                    api_key=google_key,
-                    model=settings.ai.model,
-                    temperature=settings.ai.temperature
                 )
 
         sync_engine = SyncEngine(plex_client, db, embedding_generator, vector_index, ai_provider)
@@ -550,7 +639,11 @@ def sync_regenerate(
 
         embedding_generator = None
         vector_index = None
-        ai_provider = None
+        ai_provider = _build_ai_provider(settings, silent=True)
+        if not ai_provider and settings.ai.default_provider:
+            console.print(
+                f"[yellow]AI provider '{settings.ai.default_provider}' unavailable. Continuing without AI assistance.[/yellow]"
+            )
 
         if embeddings:
             google_key = credentials.get_google_api_key()
@@ -564,12 +657,6 @@ def sync_regenerate(
                 vector_index = VectorIndex(
                     dimension=embedding_generator.get_dimension(),
                     index_path=str(index_path)
-                )
-                ai_provider = get_ai_provider(
-                    provider_name=settings.ai.default_provider,
-                    api_key=google_key,
-                    model=settings.ai.model,
-                    temperature=settings.ai.temperature
                 )
 
         sync_engine = SyncEngine(plex_client, db, embedding_generator, vector_index, ai_provider)
@@ -604,6 +691,7 @@ def doctor(
     console.print("[bold]🩺 PlexMix Doctor - Database Health Check[/bold]")
 
     settings = Settings.load_from_file()
+    preferred_provider = settings.ai.default_provider or "gemini"
     db_path = settings.database.get_db_path()
 
     if force:
@@ -632,7 +720,7 @@ def doctor(
             console.print("[green]✓ Deleted all tags and embeddings[/green]")
 
         console.print("\n[bold]Step 1: Generating tags for all tracks...[/bold]")
-        tags_generate(provider="gemini", regenerate_embeddings=False)
+        tags_generate(provider=preferred_provider, regenerate_embeddings=False)
 
         console.print("\n[bold]Step 2: Generating embeddings for all tracks...[/bold]")
         embeddings_generate(regenerate=False)
@@ -801,34 +889,25 @@ def doctor(
 
     # Generate tags outside the database context
     if should_generate_tags:
-        tags_generate(provider="gemini", regenerate_embeddings=True)
+        tags_generate(provider=preferred_provider, regenerate_embeddings=True)
         console.print("\n[green]✓ Tags generated![/green]")
 
 
 @tags_app.command("generate")
 def tags_generate(
-    provider: str = typer.Option("gemini", help="AI provider (gemini, openai, claude)"),
+    provider: str = typer.Option("gemini", help="AI provider (gemini, openai, claude, local)"),
     regenerate_embeddings: bool = typer.Option(True, help="Regenerate embeddings after tagging")
 ):
     console.print("[bold]Generating tags for tracks...[/bold]")
 
     settings = Settings.load_from_file()
+    provider = provider.lower()
+    canonical = _canonical_ai_provider(provider)
 
-    google_key = credentials.get_google_api_key()
-    openai_key = credentials.get_openai_api_key()
-    anthropic_key = credentials.get_anthropic_api_key()
-
-    if provider == "gemini" and not google_key:
-        console.print("[red]Google API key not configured.[/red]")
+    api_key = _resolve_ai_api_key(canonical)
+    if canonical != "local" and not api_key:
+        console.print(f"[red]{canonical.title()} API key not configured.[/red]")
         raise typer.Exit(1)
-    elif provider == "openai" and not openai_key:
-        console.print("[red]OpenAI API key not configured.[/red]")
-        raise typer.Exit(1)
-    elif provider == "claude" and not anthropic_key:
-        console.print("[red]Anthropic API key not configured.[/red]")
-        raise typer.Exit(1)
-
-    api_key = google_key if provider == "gemini" else (openai_key if provider == "openai" else anthropic_key)
 
     db_path = settings.database.get_db_path()
     with SQLiteManager(str(db_path)) as db:
@@ -842,7 +921,17 @@ def tags_generate(
 
         console.print(f"Found {len(tracks_needing_tags)} tracks without tags")
 
-        ai_provider = get_ai_provider(provider, api_key=api_key)
+        ai_provider = _build_ai_provider(
+            settings,
+            provider_name=canonical,
+            api_key_override=api_key,
+            silent=True,
+        )
+        if not ai_provider:
+            console.print(
+                f"[red]AI provider '{provider}' is not ready. Configure credentials or endpoint first.[/red]"
+            )
+            raise typer.Exit(1)
         tag_generator = TagGenerator(ai_provider)
 
         track_data_list = []

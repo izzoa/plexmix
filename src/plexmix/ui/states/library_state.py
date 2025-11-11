@@ -1,8 +1,11 @@
 import reflex as rx
 import asyncio
+import logging
 from typing import List, Dict, Any, Optional
 from threading import Event
 from plexmix.ui.states.app_state import AppState
+
+logger = logging.getLogger(__name__)
 
 _sync_cancel_events: Dict[str, Event] = {}
 _search_tasks: Dict[str, asyncio.Task] = {}
@@ -191,7 +194,12 @@ class LibraryState(AppState):
 
             from plexmix.plex.sync import SyncEngine
             from plexmix.ai import get_ai_provider
-            from plexmix.config.credentials import get_google_api_key
+            from plexmix.config.credentials import (
+                get_google_api_key,
+                get_openai_api_key,
+                get_anthropic_api_key,
+                get_cohere_api_key,
+            )
 
             def progress_callback(progress: float, message: str):
                 async def update_state():
@@ -201,14 +209,33 @@ class LibraryState(AppState):
                 asyncio.create_task(update_state())
 
             ai_provider = None
-            google_key = get_google_api_key()
-            if google_key:
+            provider_name = settings.ai.default_provider or "gemini"
+            provider_alias = "claude" if provider_name == "anthropic" else provider_name
+
+            api_key = None
+            if provider_alias == "gemini":
+                api_key = get_google_api_key()
+            elif provider_alias == "openai":
+                api_key = get_openai_api_key()
+            elif provider_alias == "claude":
+                api_key = get_anthropic_api_key()
+            elif provider_alias == "cohere":
+                api_key = get_cohere_api_key()
+
+            try:
                 ai_provider = get_ai_provider(
-                    provider_name=settings.ai.default_provider,
-                    api_key=google_key,
+                    provider_name=provider_name,
+                    api_key=api_key,
                     model=settings.ai.model,
-                    temperature=settings.ai.temperature
+                    temperature=settings.ai.temperature,
+                    local_mode=settings.ai.local_mode,
+                    local_endpoint=settings.ai.local_endpoint,
+                    local_auth_token=settings.ai.local_auth_token,
+                    local_max_output_tokens=settings.ai.local_max_output_tokens,
                 )
+            except ValueError as exc:
+                logger.warning(f"AI provider unavailable: {exc}")
+                ai_provider = None
             sync_engine = SyncEngine(plex_client, db, ai_provider=ai_provider)
 
             sync_mode = None
