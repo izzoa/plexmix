@@ -168,6 +168,42 @@ def embedding_tab() -> rx.Component:
                 width="100%",
             ),
             rx.text(f"Embedding Dimension: {SettingsState.embedding_dimension}", size="2", color_scheme="gray", margin_top="2"),
+            rx.cond(
+                SettingsState.embedding_provider == "local",
+                rx.vstack(
+                    rx.callout(
+                        "Local models download via Hugging Face when first used. Use the button below to pre-cache them for offline use and watch progress as files download/extract.",
+                        icon="info",
+                        color_scheme="blue",
+                        size="2",
+                    ),
+                    rx.hstack(
+                        rx.button(
+                            "Download / Cache Model",
+                            on_click=SettingsState.download_local_embedding_model,
+                            loading=SettingsState.is_downloading_local_model,
+                            variant="soft",
+                        ),
+                        align="start",
+                    ),
+                    rx.cond(
+                        SettingsState.local_download_status != "",
+                        rx.vstack(
+                            rx.text(SettingsState.local_download_status, size="2", color_scheme="gray"),
+                            rx.progress(
+                                value=SettingsState.local_download_progress,
+                                max=100,
+                            ),
+                            spacing="2",
+                            width="100%",
+                        ),
+                        rx.box(),
+                    ),
+                    spacing="3",
+                    width="100%",
+                ),
+                rx.box(),
+            ),
             rx.hstack(
                 rx.button(
                     "Test Embeddings",

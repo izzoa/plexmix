@@ -1,7 +1,11 @@
 import reflex as rx
 import asyncio
+import logging
 from typing import List, Dict, Any, Optional
 from plexmix.ui.states.app_state import AppState
+
+
+logger = logging.getLogger(__name__)
 
 
 class GeneratorState(AppState):
@@ -17,6 +21,7 @@ class GeneratorState(AppState):
     is_generating: bool = False
     generation_progress: int = 0
     generation_message: str = ""
+    generation_log: List[str] = []
 
     generated_playlist: List[Dict[str, Any]] = []
     playlist_name: str = ""
@@ -70,6 +75,7 @@ class GeneratorState(AppState):
             self.is_generating = True
             self.generation_progress = 0
             self.generation_message = "Starting playlist generation..."
+            self.generation_log = ["Starting playlist generation..."]
             self.generated_playlist = []
             self.total_duration_ms = 0
 
@@ -90,45 +96,11 @@ class GeneratorState(AppState):
                     self.is_generating = False
                 return
 
-            db = SQLiteManager(str(db_path))
-            db.connect()
-
             # Get the embedding dimension from settings
             embedding_provider = settings.embedding.default_provider
-            if embedding_provider == "gemini":
-                dimension = 3072
-            elif embedding_provider == "openai":
-                dimension = 1536
-            elif embedding_provider == "cohere":
-                dimension = 1024
-            else:  # local
-                dimension = 384
-
-            index_path = settings.database.faiss_index_path
-            vector_index = VectorIndex(dimension=dimension, index_path=index_path)
-
-            if not vector_index.index or vector_index.index.ntotal == 0:
-                async with self:
-                    self.generation_message = "Vector index not found or empty. Please generate embeddings first."
-                    self.is_generating = False
-                db.close()
-                return
-            
-            # Check for dimension mismatch
-            if vector_index.dimension_mismatch:
-                async with self:
-                    self.generation_message = (
-                        f"⚠️ Embedding dimension mismatch! "
-                        f"Existing embeddings are {vector_index.loaded_dimension}D but "
-                        f"current provider '{embedding_provider}' uses {dimension}D. "
-                        f"Please regenerate embeddings with the new provider."
-                    )
-                    self.is_generating = False
-                db.close()
-                return
+            embedding_model = settings.embedding.model
 
             embedding_api_key = None
-            embedding_provider = settings.embedding.default_provider
             if embedding_provider == "gemini":
                 embedding_api_key = get_google_api_key()
             elif embedding_provider == "openai":
@@ -137,14 +109,11 @@ class GeneratorState(AppState):
             embedding_generator = EmbeddingGenerator(
                 provider=embedding_provider,
                 api_key=embedding_api_key,
-                model=settings.embedding.model
+                model=embedding_model,
             )
 
-            playlist_generator = PlaylistGenerator(
-                db_manager=db,
-                vector_index=vector_index,
-                embedding_generator=embedding_generator
-            )
+            dimension = embedding_generator.get_dimension()
+            index_path = settings.database.faiss_index_path
 
             filters = {}
             if self.genre_filter:
@@ -154,14 +123,15 @@ class GeneratorState(AppState):
             if self.year_max is not None:
                 filters['year_max'] = self.year_max
 
-            def progress_callback(progress: float, message: str):
-                import asyncio
-                loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
+            def progress_callback(progress: float, message: str):
                 async def update():
                     async with self:
-                        self.generation_progress = int(progress * 100)
+                        progress_value = max(0, min(100, int(progress * 100)))
+                        self.generation_progress = progress_value
                         self.generation_message = message
+                        self.generation_log = (self.generation_log + [message])[-25:]
 
                 asyncio.run_coroutine_threadsafe(update(), loop)
 
@@ -169,17 +139,76 @@ class GeneratorState(AppState):
             max_tracks_val = self.max_tracks
             pool_multiplier = self.candidate_pool_multiplier
 
-            print(f"Generating playlist with mood: {mood_query_text}, max_tracks: {max_tracks_val}, pool_multiplier: {pool_multiplier}")
-
-            playlist_tracks = playlist_generator.generate(
-                mood_query=mood_query_text,
-                max_tracks=max_tracks_val,
-                candidate_pool_multiplier=pool_multiplier,
-                filters=filters if filters else None,
-                progress_callback=progress_callback
+            logger.info(
+                "Playlist generation started | mood='%s' max_tracks=%s multiplier=%s",
+                mood_query_text,
+                max_tracks_val,
+                pool_multiplier,
             )
 
-            print(f"Generated {len(playlist_tracks)} tracks")
+            def run_generation():
+                local_db = SQLiteManager(str(db_path))
+                local_db.connect()
+                try:
+                    local_vector_index = VectorIndex(dimension=dimension, index_path=index_path)
+
+                    if not local_vector_index.index or local_vector_index.index.ntotal == 0:
+                        return {
+                            "tracks": [],
+                            "total_duration": 0,
+                            "error": "Vector index not found or empty. Please generate embeddings first.",
+                        }
+
+                    if local_vector_index.dimension_mismatch:
+                        mismatch_msg = (
+                            f"⚠️ Embedding dimension mismatch! Existing embeddings are {local_vector_index.loaded_dimension}D "
+                            f"but current provider '{embedding_provider}' uses {dimension}D. Please regenerate embeddings."
+                        )
+                        return {
+                            "tracks": [],
+                            "total_duration": 0,
+                            "error": mismatch_msg,
+                        }
+
+                    playlist_generator = PlaylistGenerator(
+                        db_manager=local_db,
+                        vector_index=local_vector_index,
+                        embedding_generator=embedding_generator,
+                    )
+
+                    tracks = playlist_generator.generate(
+                        mood_query=mood_query_text,
+                        max_tracks=max_tracks_val,
+                        candidate_pool_multiplier=pool_multiplier,
+                        filters=filters if filters else None,
+                        progress_callback=progress_callback,
+                    )
+
+                    total_duration = sum(track.get('duration_ms', 0) for track in tracks)
+
+                    return {
+                        "tracks": tracks,
+                        "total_duration": total_duration,
+                        "error": None,
+                    }
+                finally:
+                    local_db.close()
+
+            generation_result = await loop.run_in_executor(None, run_generation)
+
+            if generation_result.get("error"):
+                error_message = generation_result["error"]
+                logger.warning("Playlist generation aborted: %s", error_message)
+                async with self:
+                    self.is_generating = False
+                    self.generation_message = error_message
+                    self.generation_log = (self.generation_log + [error_message])[-25:]
+                return
+
+            playlist_tracks = generation_result["tracks"]
+            total_duration = generation_result["total_duration"]
+
+            logger.info("Playlist generation finished with %s tracks", len(playlist_tracks))
 
             # Format durations for display
             for track in playlist_tracks:
@@ -191,27 +220,26 @@ class GeneratorState(AppState):
                 else:
                     track['duration_formatted'] = "0:00"
 
-            total_duration = sum(track.get('duration_ms', 0) for track in playlist_tracks)
-
-            db.close()
-
             async with self:
                 self.generated_playlist = playlist_tracks
                 self.total_duration_ms = total_duration
                 self.is_generating = False
                 self.generation_progress = 100
                 if len(playlist_tracks) > 0:
-                    self.generation_message = f"Generated {len(playlist_tracks)} tracks!"
+                    final_msg = f"Generated {len(playlist_tracks)} tracks!"
                 else:
-                    self.generation_message = "No tracks generated. Check console for errors."
+                    final_msg = "No tracks generated. Check logs for details."
+                self.generation_message = final_msg
+                self.generation_log = (self.generation_log + [final_msg])[-25:]
 
         except Exception as e:
             import traceback
-            print(f"Error generating playlist: {e}")
-            print(traceback.format_exc())
+            logger.error("Playlist generation failed: %s", e, exc_info=True)
             async with self:
                 self.is_generating = False
-                self.generation_message = f"Generation failed: {str(e)}"
+                error_msg = f"Generation failed: {str(e)}"
+                self.generation_message = error_msg
+                self.generation_log = (self.generation_log + [error_msg, traceback.format_exc()])[-25:]
 
     @rx.event(background=True)
     async def regenerate(self):

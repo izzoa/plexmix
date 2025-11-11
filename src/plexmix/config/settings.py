@@ -56,8 +56,17 @@ class EmbeddingSettings(BaseSettings):
             "gemini": 3072,
             "openai": 1536,
             "cohere": 1024,
-            "local": 768
         }
+
+        if provider == "local":
+            local_dimensions = {
+                "all-MiniLM-L6-v2": 384,
+                "mixedbread-ai/mxbai-embed-large-v1": 1024,
+                "google/embeddinggemma-300m": 768,
+                "nomic-ai/nomic-embed-text-v1.5": 768,
+            }
+            return local_dimensions.get(self.model, self.dimension or 768)
+
         return dimension_map.get(provider, self.dimension)
 
 

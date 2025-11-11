@@ -123,7 +123,7 @@ class DoctorState(AppState):
                     self.is_fixing = False
                     self.current_fix_target = ""
                     
-            await self.run_health_check()
+            return DoctorState.run_health_check
         
         except Exception as e:
             async with self:
@@ -191,7 +191,7 @@ class DoctorState(AppState):
                     empty_message="All tracks already have embeddings."
                 )
         
-            await self.run_health_check()
+            return DoctorState.run_health_check
         
         except Exception as e:
             async with self:
@@ -269,7 +269,7 @@ class DoctorState(AppState):
                     empty_message="No tracks available to embed.",
                 )
 
-            await self.run_health_check()
+            return DoctorState.run_health_check
 
         except Exception as e:
             async with self:
@@ -381,7 +381,7 @@ class DoctorState(AppState):
                     self.fix_total = 0
                     self.current_fix_target = ""
 
-            await self.run_health_check()
+            return DoctorState.run_health_check
 
         except Exception as e:
             async with self:

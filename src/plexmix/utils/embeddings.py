@@ -1,12 +1,25 @@
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 import logging
 import time
 import re
+import os
+import multiprocessing as mp
+import threading
+import atexit
 from abc import ABC, abstractmethod
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
+
+LOCAL_EMBEDDING_MODELS: Dict[str, Dict[str, Union[int, bool]]] = {
+    "all-MiniLM-L6-v2": {"dimension": 384, "trust_remote_code": False},
+    "mixedbread-ai/mxbai-embed-large-v1": {"dimension": 1024, "trust_remote_code": False},
+    "google/embeddinggemma-300m": {"dimension": 768, "trust_remote_code": False},
+    "nomic-ai/nomic-embed-text-v1.5": {"dimension": 768, "trust_remote_code": True},
+}
+
+LOCAL_EMBEDDING_DEVICE = os.getenv("PLEXMIX_LOCAL_EMBEDDING_DEVICE", "cpu")
 
 
 class EmbeddingProvider(ABC):
@@ -243,32 +256,92 @@ class CohereEmbeddingProvider(EmbeddingProvider):
 
 
 class LocalEmbeddingProvider(EmbeddingProvider):
+    worker_cache: Dict[str, Dict[str, any]] = {}
+
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         super().__init__()
         try:
-            from sentence_transformers import SentenceTransformer
-            self.model = SentenceTransformer(model_name)
-            self.dimension = self.model.get_sentence_embedding_dimension()
-            logger.info(f"[{self.provider_name}] Initialized embedding provider with model {model_name} (dim: {self.dimension})")
+            from sentence_transformers import SentenceTransformer  # noqa: F401
         except ImportError:
             raise ImportError("sentence-transformers not installed. Run: pip install sentence-transformers")
 
+        model_config = LOCAL_EMBEDDING_MODELS.get(model_name, {})
+        trust_remote_code = bool(model_config.get("trust_remote_code", False))
+        device = LOCAL_EMBEDDING_DEVICE
+        cache_key = f"{model_name}-{trust_remote_code}-{device}"
+
+        cached = self.worker_cache.get(cache_key)
+        if cached and cached["process"].is_alive():
+            logger.info(f"[{self.provider_name}] Reusing cached local worker for {model_name} on {device}")
+            self.worker_conn = cached["conn"]
+            self.worker_process = cached["process"]
+            self.dimension = cached["dimension"]
+            self.worker_lock = cached["lock"]
+        else:
+            if cached:
+                logger.warning(f"[{self.provider_name}] Cached worker for {model_name} is not alive. Restarting...")
+
+            ctx = mp.get_context("spawn")
+            parent_conn, child_conn = ctx.Pipe()
+            worker = ctx.Process(
+                target=_local_embedding_worker,
+                args=(model_name, trust_remote_code, device, child_conn),
+                daemon=True,
+            )
+            worker.start()
+
+            try:
+                handshake = parent_conn.recv()
+            except EOFError:
+                raise RuntimeError(
+                    f"Failed to start local embedding worker for {model_name}. "
+                    "See logs for details."
+                )
+
+            if handshake.get("status") != "ready":
+                error = handshake.get("error", "Unknown error")
+                raise RuntimeError(f"Failed to load local model {model_name}: {error}")
+
+            self.worker_conn = parent_conn
+            self.worker_process = worker
+            self.dimension = int(handshake.get("dimension", 0)) or int(model_config.get("dimension", 384))
+            self.worker_lock = threading.Lock()
+            self.worker_cache[cache_key] = {
+                "conn": self.worker_conn,
+                "process": self.worker_process,
+                "dimension": self.dimension,
+                "lock": self.worker_lock,
+            }
+
+            logger.info(
+                f"[{self.provider_name}] Local embedding worker ready for {model_name} "
+                f"(dim: {self.dimension}, device={device})"
+            )
+
+            atexit.register(self._shutdown_worker, cache_key)
+
     def generate_embedding(self, text: str) -> List[float]:
         try:
-            embedding = self.model.encode(text, convert_to_numpy=True)
-            return embedding.tolist()
+            with self.worker_lock:
+                self.worker_conn.send({"cmd": "embed", "texts": [text]})
+                result = self.worker_conn.recv()
+            if result.get("status") != "ok":
+                raise RuntimeError(result.get("error", "Unknown error generating embedding"))
+            embedding = np.array(result["embeddings"][0], dtype=np.float32)
+            return self._truncate_vector(embedding).tolist()
         except Exception as e:
             logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
             raise
 
     def generate_batch_embeddings(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
         try:
-            embeddings = self.model.encode(
-                texts,
-                batch_size=batch_size,
-                show_progress_bar=True,
-                convert_to_numpy=True
-            )
+            with self.worker_lock:
+                self.worker_conn.send({"cmd": "embed", "texts": texts, "batch_size": batch_size})
+                result = self.worker_conn.recv()
+            if result.get("status") != "ok":
+                raise RuntimeError(result.get("error", "Unknown error generating batch embeddings"))
+            embeddings = np.array(result["embeddings"], dtype=np.float32)
+            embeddings = self._truncate_batch(embeddings)
             return embeddings.tolist()
         except Exception as e:
             logger.error(f"[{self.provider_name}] Failed to generate batch embeddings: {e}")
@@ -276,6 +349,63 @@ class LocalEmbeddingProvider(EmbeddingProvider):
 
     def get_dimension(self) -> int:
         return self.dimension
+
+    def _truncate_vector(self, vector: np.ndarray) -> np.ndarray:
+        if self.dimension and vector.shape[-1] > self.dimension:
+            return vector[: self.dimension]
+        return vector
+
+    def _truncate_batch(self, embeddings: np.ndarray) -> np.ndarray:
+        if self.dimension and embeddings.shape[-1] > self.dimension:
+            return embeddings[:, : self.dimension]
+        return embeddings
+
+    def _shutdown_worker(self, cache_key: str):
+        worker_info = self.worker_cache.get(cache_key)
+        if not worker_info:
+            return
+        conn = worker_info.get("conn")
+        process = worker_info.get("process")
+        try:
+            conn.send({"cmd": "shutdown"})
+        except Exception:
+            pass
+        if process.is_alive():
+            process.join(timeout=2)
+        self.worker_cache.pop(cache_key, None)
+
+
+def _local_embedding_worker(model_name: str, trust_remote_code: bool, device: str, conn):
+    try:
+        from sentence_transformers import SentenceTransformer
+
+        model = SentenceTransformer(model_name, trust_remote_code=trust_remote_code, device=device)
+        dimension = model.get_sentence_embedding_dimension()
+        conn.send({"status": "ready", "dimension": dimension})
+
+        while True:
+            message = conn.recv()
+            cmd = message.get("cmd")
+            if cmd == "shutdown":
+                break
+            if cmd == "embed":
+                texts = message.get("texts", [])
+                batch_size = message.get("batch_size", 32)
+                embeddings = model.encode(
+                    texts,
+                    batch_size=batch_size,
+                    show_progress_bar=False,
+                    convert_to_numpy=True,
+                )
+                conn.send({"status": "ok", "embeddings": embeddings.tolist()})
+            else:
+                conn.send({"status": "error", "error": f"Unknown command: {cmd}"})
+    except Exception as e:
+        logger.error(f"Local embedding worker failed for {model_name}: {e}", exc_info=True)
+        try:
+            conn.send({"status": "error", "error": str(e)})
+        except Exception:
+            pass
 
 
 class EmbeddingGenerator:

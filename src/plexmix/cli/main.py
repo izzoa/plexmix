@@ -1042,9 +1042,21 @@ def create_playlist(
     api_key = google_key if provider == "gemini" else (openai_key if provider == "openai" else anthropic_key)
 
     with SQLiteManager(str(db_path)) as db:
+        embedding_provider = settings.embedding.default_provider
+        embedding_model = settings.embedding.model
+
+        embedding_api_key = None
+        if embedding_provider == "gemini":
+            embedding_api_key = google_key
+        elif embedding_provider == "openai":
+            embedding_api_key = openai_key
+        elif embedding_provider == "cohere":
+            embedding_api_key = credentials.get_cohere_api_key()
+
         embedding_generator = EmbeddingGenerator(
-            provider=settings.embedding.default_provider,
-            api_key=google_key
+            provider=embedding_provider,
+            api_key=embedding_api_key,
+            model=embedding_model,
         )
 
         vector_index = VectorIndex(
@@ -1054,11 +1066,12 @@ def create_playlist(
         
         # Check for dimension mismatch
         if vector_index.dimension_mismatch:
-            console.print(f"[red]⚠️ Embedding dimension mismatch![/red]")
-            console.print(f"[yellow]Existing embeddings are {vector_index.loaded_dimension}D but")
-            console.print(f"current provider '{settings.embedding.default_provider}' uses {embedding_generator.get_dimension()}D.[/yellow]")
-            console.print(f"\n[cyan]You must regenerate embeddings to use the new provider:[/cyan]")
-            console.print(f"  plexmix sync incremental --embeddings")
+            console.print("[red]⚠️ Embedding dimension mismatch![/red]")
+            console.print(
+                f"[yellow]Existing embeddings are {vector_index.loaded_dimension}D but current provider '{embedding_provider}' uses {embedding_generator.get_dimension()}D.[/yellow]"
+            )
+            console.print("\n[cyan]You must regenerate embeddings to use the new provider:[/cyan]")
+            console.print("  plexmix sync incremental --embeddings")
             raise typer.Exit(1)
 
         generator = PlaylistGenerator(db, vector_index, embedding_generator)

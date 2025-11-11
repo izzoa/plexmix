@@ -6,6 +6,7 @@ from plexmix.ui.utils.validation import (
     validate_url, validate_plex_token, validate_api_key,
     validate_temperature, validate_batch_size
 )
+from plexmix.utils.embeddings import LOCAL_EMBEDDING_MODELS
 
 
 class SettingsState(AppState):
@@ -26,6 +27,9 @@ class SettingsState(AppState):
     embedding_model: str = "gemini-embedding-001"
     embedding_dimension: int = 3072
     embedding_models: List[str] = []
+    is_downloading_local_model: bool = False
+    local_download_status: str = ""
+    local_download_progress: int = 0
 
     db_path: str = ""
     faiss_index_path: str = ""
@@ -104,12 +108,14 @@ class SettingsState(AppState):
 
         except Exception as e:
             print(f"Error loading settings: {e}")
+        finally:
+            self._sync_embedding_dimension()
 
     def update_model_lists(self):
         ai_model_map = {
             "gemini": ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash-001"],
             "openai": ["gpt-5", "gpt-5-mini", "gpt-5-nano"],
-            "anthropic": ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-3-5"],
+            "anthropic": ["claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"],
             "cohere": ["command", "command-light", "command-r"]
         }
         self.ai_models = ai_model_map.get(self.ai_provider, [])
@@ -118,9 +124,13 @@ class SettingsState(AppState):
             "gemini": ["gemini-embedding-001"],
             "openai": ["text-embedding-3-large", "text-embedding-3-small", "text-embedding-ada-002"],
             "cohere": ["embed-english-v3.0", "embed-multilingual-v3.0"],
-            "local": ["all-MiniLM-L6-v2"]
+            "local": list(LOCAL_EMBEDDING_MODELS.keys()),
         }
-        self.embedding_models = embedding_model_map.get(self.embedding_provider, [])
+        models = embedding_model_map.get(self.embedding_provider, [])
+        self.embedding_models = models
+        if models and self.embedding_model not in models:
+            self.embedding_model = models[0]
+        self._sync_embedding_dimension()
 
     def set_ai_provider(self, provider: str):
         self.ai_provider = provider
@@ -133,14 +143,11 @@ class SettingsState(AppState):
         self.update_model_lists()
         if self.embedding_models:
             self.embedding_model = self.embedding_models[0]
-
-        dimension_map = {
-            "gemini": 3072,
-            "openai": 1536,
-            "cohere": 1024,
-            "local": 768
-        }
-        self.embedding_dimension = dimension_map.get(provider, 768)
+        if provider != "local":
+            self.is_downloading_local_model = False
+            self.local_download_status = ""
+            self.local_download_progress = 0
+        self._sync_embedding_dimension()
 
     def set_plex_url(self, url: str):
         self.plex_url = url
@@ -168,6 +175,7 @@ class SettingsState(AppState):
 
     def set_embedding_model(self, model: str):
         self.embedding_model = model
+        self._sync_embedding_dimension()
 
     def set_log_level(self, level: str):
         self.log_level = level
@@ -318,6 +326,65 @@ class SettingsState(AppState):
         self.sync_batch_size = size
         is_valid, error = validate_batch_size(size)
         self.batch_size_error = error if error else ""
+
+    @rx.event(background=True)
+    async def download_local_embedding_model(self):
+        if self.embedding_provider != "local":
+            return
+
+        model_name = self.embedding_model or "all-MiniLM-L6-v2"
+        async with self:
+            self.is_downloading_local_model = True
+            self.local_download_status = f"Preparing download for {model_name}..."
+            self.local_download_progress = 5
+
+        async def update_status(message: str, progress: int):
+            async with self:
+                self.local_download_status = message
+                self.local_download_progress = progress
+
+        try:
+            await update_status("Checking local cache...", 15)
+            loop = asyncio.get_running_loop()
+
+            def snapshot_download_model():
+                from huggingface_hub import snapshot_download
+
+                snapshot_download(model_name, local_files_only=False, resume_download=True)
+
+            await loop.run_in_executor(None, snapshot_download_model)
+            await update_status("Initializing model (first run may take a minute)...", 70)
+
+            def warmup_model():
+                from sentence_transformers import SentenceTransformer
+
+                SentenceTransformer(model_name)
+
+            await loop.run_in_executor(None, warmup_model)
+            await update_status("✓ Model cached and ready for offline use", 100)
+
+        except ImportError as e:
+            await update_status(f"Missing dependency: {e}", 0)
+        except Exception as e:
+            await update_status(f"Error downloading {model_name}: {str(e)}", 0)
+        finally:
+            async with self:
+                self.is_downloading_local_model = False
+
+    def _sync_embedding_dimension(self):
+        if self.embedding_provider == "local":
+            model_info = LOCAL_EMBEDDING_MODELS.get(self.embedding_model)
+            if model_info:
+                self.embedding_dimension = int(model_info.get("dimension", 384))
+            else:
+                self.embedding_dimension = 384
+        else:
+            dimension_map = {
+                "gemini": 3072,
+                "openai": 1536,
+                "cohere": 1024,
+            }
+            self.embedding_dimension = dimension_map.get(self.embedding_provider, self.embedding_dimension)
 
     def is_form_valid(self) -> bool:
         """Check if all form fields are valid."""

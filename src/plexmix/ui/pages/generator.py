@@ -129,6 +129,37 @@ def input_section() -> rx.Component:
             size="4",
             width="100%",
         ),
+        rx.cond(
+            GeneratorState.is_generating | (GeneratorState.generation_message != ""),
+            rx.card(
+                rx.vstack(
+                    rx.hstack(
+                        rx.progress(value=GeneratorState.generation_progress, max=100, width="100%"),
+                        rx.text(f"{GeneratorState.generation_progress}%", size="2", color_scheme="gray"),
+                        align="center",
+                        spacing="3",
+                        width="100%",
+                    ),
+                    rx.text(GeneratorState.generation_message, size="2", color_scheme="gray"),
+                    rx.box(
+                        rx.vstack(
+                            rx.foreach(
+                                GeneratorState.generation_log,
+                                lambda entry: rx.text(entry, size="2", color_scheme="gray"),
+                            ),
+                            spacing="1",
+                            width="100%",
+                        ),
+                        style={"maxHeight": "200px", "overflowY": "auto", "width": "100%"},
+                    ),
+                    spacing="3",
+                    width="100%",
+                ),
+                width="100%",
+                variant="surface",
+            ),
+            rx.box(),
+        ),
         spacing="6",
         width="100%",
         padding="4",
