@@ -471,7 +471,10 @@ PlexMix stores all music metadata locally:
 | **Google Gemini** ⭐ | gemini-embedding-001 | 3072 | ⭐⭐⭐⭐⭐ Outstanding | ⚡⚡ Moderate | 💰 Low | Required | High-dimensional, accurate semantic search |
 | OpenAI | text-embedding-3-small | 1536 | ⭐⭐⭐⭐ Excellent | ⚡⚡⚡ Fast | 💰💰 Medium | Required | Balanced performance, OpenAI ecosystem |
 | Cohere | embed-v4 | 256/512/1024/1536 | ⭐⭐⭐⭐ Excellent | ⚡⚡⚡ Fast | 💰 Low | Required | Flexible dimensions (Matryoshka), multimodal |
-| Local | all-MiniLM-L6-v2 / mxbai-embed-large-v1 / embeddinggemma-300m / nomic-embed-text-v1.5 | 384 / 1024 / 768 / 768* | ⭐⭐⭐ Good | ⚡⚡⚡ Fast | 💰 Free | None | Offline use, privacy, no API costs |
+| Local | sentence-transformers/all-MiniLM-L6-v2 | 384 | ⭐⭐⭐ Good | ⚡⚡⚡ Fast | 💰 Free | None | Offline use on modest hardware |
+| Local | mixedbread-ai/mxbai-embed-large-v1 | 1024 | ⭐⭐⭐⭐ Excellent | ⚡⚡ Moderate | 💰 Free | None | Highest-quality offline retrieval when you can store larger vectors |
+| Local | google/embeddinggemma-300m | 768 (Matryoshka) | ⭐⭐⭐⭐ Excellent | ⚡⚡ Fast | 💰 Free | None | Flexible local embeddings with truncation to 128/256/512d |
+| Local | nomic-ai/nomic-embed-text-v1.5 | 768 (Matryoshka) | ⭐⭐⭐ Excellent | ⚡⚡ Fast | 💰 Free | None | Open-source local embeddings with Matryoshka support |
 
 **Key Features:**
 - **Gemini**: Highest dimensions (3072d) for maximum semantic precision
@@ -480,13 +483,6 @@ PlexMix stores all music metadata locally:
 - **Local**: Completely free, offline, private, no internet required, with multiple Hugging Face options (MiniLM, MXBAI, EmbeddingGemma, Nomic) to balance speed vs. recall
 
 \* EmbeddingGemma and Nomic embeddings support Matryoshka truncation if you need smaller vectors (128/256/512d) without retraining.
-
-### Local Model Picks
-
-- **mixedbread-ai/mxbai-embed-large-v1** (1024d) – Mixedbread’s flagship encoder optimized for retrieval quality while still running locally via `sentence-transformers`. Great when you want the highest-accuracy offline model and can tolerate the larger vector size.
-- **google/embeddinggemma-300m** (768d, Matryoshka) – Google’s lightweight Gemma-based embedding model that allows truncation to 128/256/512d without rerunning inference, making it easy to dial storage/perf trade-offs.
-- **nomic-ai/nomic-embed-text-v1.5** (768d, Matryoshka) – Nomic’s open-source encoder with Matryoshka support and solid MTEB performance, ideal when you want flexible vector lengths and permissive licensing.
-- **sentence-transformers/all-MiniLM-L6-v2** (384d) – Still the fastest option for edge devices; continue using it when you prioritize latency or have extremely tight storage budgets.
 
 #### How the “Local” Provider Works
 
