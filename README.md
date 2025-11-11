@@ -483,9 +483,9 @@ PlexMix stores all music metadata locally:
 
 ### Local Model Picks
 
-- **mixedbread-ai/mxbai-embed-large-v1** (1024d) – Mixedbread’s flagship encoder optimized for retrieval quality while still running locally via `sentence-transformers`. Great when you want the highest-accuracy offline model and can tolerate the larger vector size. citeturn1search6
-- **google/embeddinggemma-300m** (768d, Matryoshka) – Google’s lightweight Gemma-based embedding model that allows truncation to 128/256/512d without rerunning inference, making it easy to dial storage/perf trade-offs. citeturn1search5
-- **nomic-ai/nomic-embed-text-v1.5** (768d, Matryoshka) – Nomic’s open-source encoder with Matryoshka support and solid MTEB performance, ideal when you want flexible vector lengths and permissive licensing. citeturn1search1
+- **mixedbread-ai/mxbai-embed-large-v1** (1024d) – Mixedbread’s flagship encoder optimized for retrieval quality while still running locally via `sentence-transformers`. Great when you want the highest-accuracy offline model and can tolerate the larger vector size.
+- **google/embeddinggemma-300m** (768d, Matryoshka) – Google’s lightweight Gemma-based embedding model that allows truncation to 128/256/512d without rerunning inference, making it easy to dial storage/perf trade-offs.
+- **nomic-ai/nomic-embed-text-v1.5** (768d, Matryoshka) – Nomic’s open-source encoder with Matryoshka support and solid MTEB performance, ideal when you want flexible vector lengths and permissive licensing.
 - **sentence-transformers/all-MiniLM-L6-v2** (384d) – Still the fastest option for edge devices; continue using it when you prioritize latency or have extremely tight storage budgets.
 
 #### How the “Local” Provider Works
