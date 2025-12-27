@@ -96,24 +96,16 @@ class GeneratorState(AppState):
                     self.is_generating = False
                 return
 
-            # Get the embedding dimension from settings
+            # Get the embedding settings (but don't create generator yet - it blocks!)
             embedding_provider = settings.embedding.default_provider
             embedding_model = settings.embedding.model
+            index_path = settings.database.faiss_index_path
 
             embedding_api_key = None
             if embedding_provider == "gemini":
                 embedding_api_key = get_google_api_key()
             elif embedding_provider == "openai":
                 embedding_api_key = get_openai_api_key()
-
-            embedding_generator = EmbeddingGenerator(
-                provider=embedding_provider,
-                api_key=embedding_api_key,
-                model=embedding_model,
-            )
-
-            dimension = embedding_generator.get_dimension()
-            index_path = settings.database.faiss_index_path
 
             filters = {}
             if self.genre_filter:
@@ -147,6 +139,15 @@ class GeneratorState(AppState):
             )
 
             def run_generation():
+                # Create EmbeddingGenerator inside executor to avoid blocking UI
+                # (LocalEmbeddingProvider spawns subprocess and waits for model load)
+                embedding_generator = EmbeddingGenerator(
+                    provider=embedding_provider,
+                    api_key=embedding_api_key,
+                    model=embedding_model,
+                )
+                dimension = embedding_generator.get_dimension()
+
                 local_db = SQLiteManager(str(db_path))
                 local_db.connect()
                 try:

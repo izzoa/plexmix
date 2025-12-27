@@ -66,37 +66,40 @@ class PlaylistGenerator:
         if progress_callback:
             progress_callback(0.7, "Building final playlist...")
 
+        # Bulk fetch all selected track details in one query
+        track_details = self.db.get_track_details_by_ids(selected_ids)
+        track_details_map = {d['id']: d for d in track_details}
+
         seen_tracks = set()
         seen_combinations = set()
         playlist_tracks = []
+
         for track_id in selected_ids:
             if track_id in seen_tracks:
                 continue
 
-            track = self.db.get_track_by_id(track_id)
-            if not track:
+            detail = track_details_map.get(track_id)
+            if not detail:
                 continue
 
-            artist = self.db.get_artist_by_id(track.artist_id)
-            album = self.db.get_album_by_id(track.album_id)
-
-            track_key = (track.title.lower(), artist.name.lower() if artist else 'unknown')
+            artist_name = detail['artist_name'] or 'Unknown'
+            track_key = (detail['title'].lower(), artist_name.lower())
             if track_key in seen_combinations:
-                logger.debug(f"Skipping duplicate: {track.title} by {artist.name if artist else 'Unknown'}")
+                logger.debug(f"Skipping duplicate: {detail['title']} by {artist_name}")
                 continue
 
             seen_tracks.add(track_id)
             seen_combinations.add(track_key)
 
             playlist_tracks.append({
-                'id': track.id,
-                'plex_key': track.plex_key,
-                'title': track.title,
-                'artist': artist.name if artist else 'Unknown',
-                'album': album.title if album else 'Unknown',
-                'duration_ms': track.duration_ms,
-                'genre': track.genre,
-                'year': track.year
+                'id': detail['id'],
+                'plex_key': detail['plex_key'],
+                'title': detail['title'],
+                'artist': artist_name,
+                'album': detail['album_title'] or 'Unknown',
+                'duration_ms': detail['duration_ms'],
+                'genre': detail['genre'],
+                'year': detail['year']
             })
 
         if progress_callback:
@@ -163,24 +166,31 @@ class PlaylistGenerator:
             track_id_filter=filtered_track_ids
         )
 
+        if not similar_tracks:
+            return []
+
+        # Bulk fetch all track details in one query (eliminates N+1)
+        track_ids = [track_id for track_id, _ in similar_tracks]
+        track_details = self.db.get_track_details_by_ids(track_ids)
+
+        # Create lookup map for similarity scores
+        similarity_map = {track_id: score for track_id, score in similar_tracks}
+
+        # Build candidates with similarity scores
         candidates = []
-        for track_id, similarity_score in similar_tracks:
-            track = self.db.get_track_by_id(track_id)
-            if not track:
-                continue
-
-            artist = self.db.get_artist_by_id(track.artist_id)
-            album = self.db.get_album_by_id(track.album_id)
-
+        for detail in track_details:
             candidates.append({
-                'id': track.id,
-                'title': track.title,
-                'artist': artist.name if artist else 'Unknown',
-                'album': album.title if album else 'Unknown',
-                'genre': track.genre or '',
-                'year': track.year or '',
-                'similarity': similarity_score
+                'id': detail['id'],
+                'title': detail['title'],
+                'artist': detail['artist_name'] or 'Unknown',
+                'album': detail['album_title'] or 'Unknown',
+                'genre': detail['genre'] or '',
+                'year': detail['year'] or '',
+                'similarity': similarity_map.get(detail['id'], 0.0)
             })
+
+        # Sort by similarity to maintain ranking from vector search
+        candidates.sort(key=lambda x: x['similarity'], reverse=True)
 
         logger.info(f"Retrieved {len(candidates)} candidate tracks")
         return candidates

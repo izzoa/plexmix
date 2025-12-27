@@ -10,6 +10,10 @@ class MockAIProvider(AIProvider):
     def __init__(self):
         self.model = "mock-model"
 
+    def complete(self, prompt, temperature=None, max_tokens=4096, timeout=30):
+        """Mock complete method that returns a simple JSON response."""
+        return '{"1": {"tags": ["test"], "environments": ["work"], "instruments": ["piano"]}}'
+
     def generate_playlist(self, mood_query, candidates, max_tracks):
         return [c['id'] for c in candidates[:max_tracks]]
 

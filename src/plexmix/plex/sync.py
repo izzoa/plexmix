@@ -211,6 +211,32 @@ class SyncEngine:
         progress.update(task, description=f"Indexed {len(plex_library['artists'])} artists, {len(plex_library['albums'])} albums, {len(plex_library['tracks'])} tracks")
         return plex_library
 
+    def _get_or_create_unknown_entities(self) -> tuple[int, int]:
+        """Ensure 'Unknown' artist and album exist and return their IDs."""
+        # Get or create Unknown artist
+        unknown_artist = self.db.get_artist_by_plex_key("__unknown__")
+        if unknown_artist:
+            unknown_artist_id = unknown_artist.id
+        else:
+            unknown_artist = Artist(plex_key="__unknown__", name="Unknown Artist")
+            unknown_artist_id = self.db.insert_artist(unknown_artist)
+            logger.info("Created 'Unknown Artist' entity for orphaned items")
+
+        # Get or create Unknown album (linked to Unknown artist)
+        unknown_album = self.db.get_album_by_plex_key("__unknown__")
+        if unknown_album:
+            unknown_album_id = unknown_album.id
+        else:
+            unknown_album = Album(
+                plex_key="__unknown__",
+                title="Unknown Album",
+                artist_id=unknown_artist_id
+            )
+            unknown_album_id = self.db.insert_album(unknown_album)
+            logger.info("Created 'Unknown Album' entity for orphaned items")
+
+        return unknown_artist_id, unknown_album_id
+
     def _detect_library_changes(
         self,
         plex_library: Dict[str, Any],
@@ -222,6 +248,9 @@ class SyncEngine:
         progress_end: float = 1.0
     ) -> Dict[str, int]:
         stats = {'tracks_added': 0, 'tracks_updated': 0, 'tracks_removed': 0}
+
+        # Ensure Unknown entities exist for orphaned items
+        unknown_artist_id, unknown_album_id = self._get_or_create_unknown_entities()
 
         db_artists = {a.plex_key: a for a in self.db.get_all_artists()}
         db_albums = {a.plex_key: a for a in self.db.get_all_albums()}
@@ -237,11 +266,13 @@ class SyncEngine:
 
         album_map = {}
         for plex_key, plex_album in plex_library['albums'].items():
-            artist_plex_key = plex_key.rsplit('/', 1)[0] if '/' in plex_key else None
+            # Use the artist key from Plex API (stored as _artist_key)
+            artist_plex_key = plex_album.__dict__.get('_artist_key')
             if artist_plex_key and artist_plex_key in artist_map:
                 plex_album.artist_id = artist_map[artist_plex_key]
             else:
-                plex_album.artist_id = 1
+                logger.warning(f"Album '{plex_album.title}' missing artist link; assigning to Unknown Artist")
+                plex_album.artist_id = unknown_artist_id
 
             if plex_key in db_albums:
                 album_map[plex_key] = db_albums[plex_key].id
@@ -262,12 +293,12 @@ class SyncEngine:
             if artist_plex_key and artist_plex_key in artist_map:
                 plex_track.artist_id = artist_map[artist_plex_key]
             else:
-                plex_track.artist_id = 1
+                plex_track.artist_id = unknown_artist_id
 
             if album_plex_key and album_plex_key in album_map:
                 plex_track.album_id = album_map[album_plex_key]
             else:
-                plex_track.album_id = 1
+                plex_track.album_id = unknown_album_id
 
             if plex_key in db_tracks:
                 existing = db_tracks[plex_key]
@@ -310,7 +341,10 @@ class SyncEngine:
             db_track.title != plex_track.title or
             db_track.year != plex_track.year or
             db_track.genre != plex_track.genre or
-            db_track.duration_ms != plex_track.duration_ms
+            db_track.duration_ms != plex_track.duration_ms or
+            db_track.rating != plex_track.rating or
+            db_track.play_count != plex_track.play_count or
+            db_track.last_played != plex_track.last_played
         )
 
     def _sync_artists(
@@ -354,6 +388,7 @@ class SyncEngine:
         progress: Progress,
         task,
         artist_map: Dict[str, int],
+        unknown_artist_id: int,
         progress_callback: Optional[Callable[[float, str], None]] = None,
         cancel_event: Optional[Event] = None,
         progress_start: float = 0.0,
@@ -367,11 +402,12 @@ class SyncEngine:
                 break
 
             for album in album_batch:
-                artist_plex_key = album.plex_key.rsplit('/', 1)[0] if '/' in album.plex_key else None
+                # Use the artist key from Plex API (stored as _artist_key)
+                artist_plex_key = album.__dict__.get('_artist_key')
                 if artist_plex_key and artist_plex_key in artist_map:
                     album.artist_id = artist_map[artist_plex_key]
                 else:
-                    album.artist_id = 1
+                    album.artist_id = unknown_artist_id
 
                 existing = self.db.get_album_by_plex_key(album.plex_key)
                 if existing:
@@ -398,6 +434,8 @@ class SyncEngine:
         task,
         artist_map: Dict[str, int],
         album_map: Dict[str, int],
+        unknown_artist_id: int,
+        unknown_album_id: int,
         progress_callback: Optional[Callable[[float, str], None]] = None,
         cancel_event: Optional[Event] = None,
         progress_start: float = 0.0,
@@ -420,12 +458,12 @@ class SyncEngine:
                 if artist_plex_key and artist_plex_key in artist_map:
                     track.artist_id = artist_map[artist_plex_key]
                 else:
-                    track.artist_id = 1
+                    track.artist_id = unknown_artist_id
 
                 if album_plex_key and album_plex_key in album_map:
                     track.album_id = album_map[album_plex_key]
                 else:
-                    track.album_id = 1
+                    track.album_id = unknown_album_id
 
                 existing = self.db.get_track_by_plex_key(track.plex_key)
                 if existing:
@@ -502,10 +540,16 @@ class SyncEngine:
                 batch_tracks = tracks_needing_embeddings[i:i + batch_size]
                 batch_num = i // batch_size + 1
 
+                # Bulk fetch artists and albums for this batch (eliminates N+1)
+                artist_ids = list(set(t.artist_id for t in batch_tracks if t.artist_id))
+                album_ids = list(set(t.album_id for t in batch_tracks if t.album_id))
+                artists_map = self.db.get_artists_by_ids(artist_ids)
+                albums_map = self.db.get_albums_by_ids(album_ids)
+
                 track_data_list = []
                 for track in batch_tracks:
-                    artist = self.db.get_artist_by_id(track.artist_id)
-                    album = self.db.get_album_by_id(track.album_id)
+                    artist = artists_map.get(track.artist_id)
+                    album = albums_map.get(track.album_id)
 
                     track_data = {
                         'id': track.id,
@@ -546,11 +590,27 @@ class SyncEngine:
             logger.warning(f"Embedding generation interrupted. Saved {embeddings_saved} embeddings.")
             raise
 
-        all_embeddings = self.db.get_all_embeddings()
-        track_ids = [emb[0] for emb in all_embeddings]
-        vectors = [emb[1] for emb in all_embeddings]
+        # Use incremental FAISS updates if index already exists with correct dimension
+        if self.vector_index.index is not None and not self.vector_index.dimension_mismatch:
+            # Get only the newly generated embeddings
+            new_track_ids = [t.id for t in tracks_needing_embeddings[:embeddings_saved]]
+            new_embeddings = []
+            for track_id in new_track_ids:
+                emb = self.db.get_embedding_by_track_id(track_id)
+                if emb:
+                    new_embeddings.append(emb.vector)
 
-        self.vector_index.build_index(vectors, track_ids)
+            if new_embeddings:
+                self.vector_index.add_vectors(new_embeddings, new_track_ids)
+                logger.info(f"Incrementally added {len(new_embeddings)} vectors to FAISS index")
+        else:
+            # Full rebuild needed (new index or dimension mismatch)
+            all_embeddings = self.db.get_all_embeddings()
+            track_ids = [emb[0] for emb in all_embeddings]
+            vectors = [emb[1] for emb in all_embeddings]
+            self.vector_index.build_index(vectors, track_ids)
+            logger.info(f"Rebuilt FAISS index with {len(track_ids)} vectors")
+
         self.vector_index.save_index(str(self.vector_index.index_path))
 
         progress.update(task, description=f"Generated {embeddings_saved} embeddings")
@@ -582,10 +642,16 @@ class SyncEngine:
         progress.update(task, total=len(tracks_needing_tags))
         logger.info(f"Generating AI tags for {len(tracks_needing_tags)} tracks")
 
+        # Bulk fetch all artists and albums (eliminates N+1)
+        artist_ids = list(set(t.artist_id for t in tracks_needing_tags if t.artist_id))
+        album_ids = list(set(t.album_id for t in tracks_needing_tags if t.album_id))
+        artists_map = self.db.get_artists_by_ids(artist_ids)
+        albums_map = self.db.get_albums_by_ids(album_ids)
+
         track_data_list = []
         for track in tracks_needing_tags:
-            artist = self.db.get_artist_by_id(track.artist_id)
-            album = self.db.get_album_by_id(track.album_id)
+            artist = artists_map.get(track.artist_id)
+            album = albums_map.get(track.album_id)
 
             track_data = {
                 'id': track.id,

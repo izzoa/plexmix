@@ -27,11 +27,16 @@ class SQLiteManager:
         db_existed = self.db_path.exists()
         self.conn = sqlite3.connect(str(self.db_path))
         self.conn.row_factory = sqlite3.Row
-        
+
+        # Enable foreign key constraints and optimize for concurrency
         cursor = self.conn.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
         has_tables = cursor.fetchone() is not None
-        
+
         if not db_existed or not has_tables:
             if db_existed and not has_tables:
                 logger.warning(f"Database exists but is empty. Initializing schema at {self.db_path}")
@@ -189,6 +194,7 @@ class SQLiteManager:
             "CREATE INDEX IF NOT EXISTS idx_albums_artist ON albums(artist_id)",
             "CREATE INDEX IF NOT EXISTS idx_albums_year ON albums(year)",
             "CREATE INDEX IF NOT EXISTS idx_embeddings_track ON embeddings(track_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_track_model ON embeddings(track_id, embedding_model)",
             "CREATE INDEX IF NOT EXISTS idx_track_genres_track ON track_genres(track_id)",
             "CREATE INDEX IF NOT EXISTS idx_track_genres_genre ON track_genres(genre_id)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_plex_key ON artists(plex_key)",
@@ -267,6 +273,31 @@ class SQLiteManager:
             cursor.execute("ALTER TABLE tracks ADD COLUMN instruments TEXT")
             migrations_run = True
 
+        # Add unique index on embeddings(track_id, embedding_model) for existing databases
+        cursor.execute("""
+            SELECT name FROM sqlite_master
+            WHERE type='index' AND name='idx_embeddings_track_model'
+        """)
+        if cursor.fetchone() is None:
+            logger.info("Running migration: Adding unique index on embeddings(track_id, embedding_model)")
+            # Remove duplicates before adding unique constraint (keep most recent)
+            cursor.execute("""
+                DELETE FROM embeddings WHERE id NOT IN (
+                    SELECT MAX(id) FROM embeddings GROUP BY track_id, embedding_model
+                )
+            """)
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_track_model "
+                "ON embeddings(track_id, embedding_model)"
+            )
+            migrations_run = True
+
+        # Fix sync_history status values: 'completed' -> 'success'
+        cursor.execute("UPDATE sync_history SET status = 'success' WHERE status = 'completed'")
+        if cursor.rowcount > 0:
+            logger.info(f"Running migration: Fixed {cursor.rowcount} sync records with 'completed' -> 'success'")
+            migrations_run = True
+
         if migrations_run:
             self.get_connection().commit()
             logger.info("Database migrations completed")
@@ -274,11 +305,18 @@ class SQLiteManager:
     def insert_artist(self, artist: Artist) -> int:
         cursor = self.get_connection().cursor()
         cursor.execute('''
-            INSERT OR REPLACE INTO artists (plex_key, name, genre, bio)
+            INSERT INTO artists (plex_key, name, genre, bio)
             VALUES (?, ?, ?, ?)
+            ON CONFLICT(plex_key) DO UPDATE SET
+                name = excluded.name,
+                genre = excluded.genre,
+                bio = excluded.bio
         ''', (artist.plex_key, artist.name, artist.genre, artist.bio))
         self.get_connection().commit()
-        return cursor.lastrowid
+        # Return the existing id if updated, or new id if inserted
+        cursor.execute('SELECT id FROM artists WHERE plex_key = ?', (artist.plex_key,))
+        row = cursor.fetchone()
+        return row['id'] if row else cursor.lastrowid
 
     def get_artist_by_id(self, artist_id: int) -> Optional[Artist]:
         cursor = self.get_connection().cursor()
@@ -299,11 +337,20 @@ class SQLiteManager:
     def insert_album(self, album: Album) -> int:
         cursor = self.get_connection().cursor()
         cursor.execute('''
-            INSERT OR REPLACE INTO albums (plex_key, title, artist_id, year, genre, cover_art_url)
+            INSERT INTO albums (plex_key, title, artist_id, year, genre, cover_art_url)
             VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(plex_key) DO UPDATE SET
+                title = excluded.title,
+                artist_id = excluded.artist_id,
+                year = excluded.year,
+                genre = excluded.genre,
+                cover_art_url = excluded.cover_art_url
         ''', (album.plex_key, album.title, album.artist_id, album.year, album.genre, album.cover_art_url))
         self.get_connection().commit()
-        return cursor.lastrowid
+        # Return the existing id if updated, or new id if inserted
+        cursor.execute('SELECT id FROM albums WHERE plex_key = ?', (album.plex_key,))
+        row = cursor.fetchone()
+        return row['id'] if row else cursor.lastrowid
 
     def get_album_by_id(self, album_id: int) -> Optional[Album]:
         cursor = self.get_connection().cursor()
@@ -324,14 +371,31 @@ class SQLiteManager:
     def insert_track(self, track: Track) -> int:
         cursor = self.get_connection().cursor()
         cursor.execute('''
-            INSERT OR REPLACE INTO tracks
+            INSERT INTO tracks
             (plex_key, title, artist_id, album_id, duration_ms, genre, year, rating, play_count, last_played, file_path, tags, environments, instruments)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(plex_key) DO UPDATE SET
+                title = excluded.title,
+                artist_id = excluded.artist_id,
+                album_id = excluded.album_id,
+                duration_ms = excluded.duration_ms,
+                genre = excluded.genre,
+                year = excluded.year,
+                rating = excluded.rating,
+                play_count = excluded.play_count,
+                last_played = excluded.last_played,
+                file_path = excluded.file_path,
+                tags = COALESCE(excluded.tags, tracks.tags),
+                environments = COALESCE(excluded.environments, tracks.environments),
+                instruments = COALESCE(excluded.instruments, tracks.instruments)
         ''', (track.plex_key, track.title, track.artist_id, track.album_id, track.duration_ms,
               track.genre, track.year, track.rating, track.play_count, track.last_played, track.file_path, track.tags,
               track.environments, track.instruments))
         self.get_connection().commit()
-        return cursor.lastrowid
+        # Return the existing id if updated, or new id if inserted
+        cursor.execute('SELECT id FROM tracks WHERE plex_key = ?', (track.plex_key,))
+        row = cursor.fetchone()
+        return row['id'] if row else cursor.lastrowid
 
     def get_track_by_id(self, track_id: int) -> Optional[Track]:
         cursor = self.get_connection().cursor()
@@ -364,6 +428,62 @@ class SQLiteManager:
         cursor.execute('SELECT * FROM tracks')
         return [Track(**dict(row)) for row in cursor.fetchall()]
 
+    def get_tracks_by_ids(self, track_ids: List[int]) -> Dict[int, Track]:
+        """Bulk fetch tracks by IDs. Returns dict mapping id -> Track."""
+        if not track_ids:
+            return {}
+        cursor = self.get_connection().cursor()
+        placeholders = ','.join('?' * len(track_ids))
+        cursor.execute(f'SELECT * FROM tracks WHERE id IN ({placeholders})', track_ids)
+        return {row['id']: Track(**dict(row)) for row in cursor.fetchall()}
+
+    def get_artists_by_ids(self, artist_ids: List[int]) -> Dict[int, Artist]:
+        """Bulk fetch artists by IDs. Returns dict mapping id -> Artist."""
+        if not artist_ids:
+            return {}
+        cursor = self.get_connection().cursor()
+        placeholders = ','.join('?' * len(artist_ids))
+        cursor.execute(f'SELECT * FROM artists WHERE id IN ({placeholders})', artist_ids)
+        return {row['id']: Artist(**dict(row)) for row in cursor.fetchall()}
+
+    def get_albums_by_ids(self, album_ids: List[int]) -> Dict[int, Album]:
+        """Bulk fetch albums by IDs. Returns dict mapping id -> Album."""
+        if not album_ids:
+            return {}
+        cursor = self.get_connection().cursor()
+        placeholders = ','.join('?' * len(album_ids))
+        cursor.execute(f'SELECT * FROM albums WHERE id IN ({placeholders})', album_ids)
+        return {row['id']: Album(**dict(row)) for row in cursor.fetchall()}
+
+    def get_track_details_by_ids(self, track_ids: List[int]) -> List[Dict[str, Any]]:
+        """Bulk fetch tracks with artist/album info. Returns list of dicts."""
+        if not track_ids:
+            return []
+        cursor = self.get_connection().cursor()
+        placeholders = ','.join('?' * len(track_ids))
+        cursor.execute(f'''
+            SELECT
+                t.id,
+                t.plex_key,
+                t.title,
+                t.duration_ms,
+                t.genre,
+                t.year,
+                t.rating,
+                t.tags,
+                t.environments,
+                t.instruments,
+                t.artist_id,
+                t.album_id,
+                a.name as artist_name,
+                al.title as album_title
+            FROM tracks t
+            JOIN artists a ON t.artist_id = a.id
+            JOIN albums al ON t.album_id = al.id
+            WHERE t.id IN ({placeholders})
+        ''', track_ids)
+        return [dict(row) for row in cursor.fetchall()]
+
     def delete_track(self, track_id: int) -> None:
         cursor = self.get_connection().cursor()
         cursor.execute('DELETE FROM tracks WHERE id = ?', (track_id,))
@@ -387,12 +507,22 @@ class SQLiteManager:
         cursor = self.get_connection().cursor()
         vector_json = json.dumps(embedding.vector)
         cursor.execute('''
-            INSERT OR REPLACE INTO embeddings (track_id, embedding_model, embedding_dim, vector, created_at, updated_at)
+            INSERT INTO embeddings (track_id, embedding_model, embedding_dim, vector, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(track_id, embedding_model) DO UPDATE SET
+                embedding_dim = excluded.embedding_dim,
+                vector = excluded.vector,
+                updated_at = excluded.updated_at
         ''', (embedding.track_id, embedding.embedding_model, embedding.embedding_dim,
               vector_json, embedding.created_at, embedding.updated_at))
         self.get_connection().commit()
-        return cursor.lastrowid
+        # Return the existing id if updated, or new id if inserted
+        cursor.execute(
+            'SELECT id FROM embeddings WHERE track_id = ? AND embedding_model = ?',
+            (embedding.track_id, embedding.embedding_model)
+        )
+        row = cursor.fetchone()
+        return row['id'] if row else cursor.lastrowid
 
     def get_embedding_by_track_id(self, track_id: int) -> Optional[Embedding]:
         cursor = self.get_connection().cursor()
@@ -524,7 +654,7 @@ class SQLiteManager:
             SELECT t.* FROM tracks t
             JOIN tracks_fts fts ON t.id = fts.track_id
             WHERE tracks_fts MATCH ?
-            ORDER BY rank
+            ORDER BY bm25(tracks_fts)
         ''', (query,))
         return [Track(**dict(row)) for row in cursor.fetchall()]
 
@@ -637,7 +767,7 @@ class SQLiteManager:
         cursor.execute('''
             SELECT MAX(sync_date) as last_sync
             FROM sync_history
-            WHERE status = 'completed'
+            WHERE status = 'success'
         ''')
         result = cursor.fetchone()
         return result['last_sync'] if result and result['last_sync'] else None

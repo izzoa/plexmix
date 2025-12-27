@@ -6,6 +6,7 @@ import logging
 import multiprocessing as mp
 import os
 import threading
+import time
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -84,6 +85,98 @@ class LocalLLMProvider(AIProvider):
             logger.info(f"[LocalLLM] Using custom endpoint {self.endpoint}")
         else:
             self._init_worker(model)
+
+    def complete(
+        self,
+        prompt: str,
+        temperature: Optional[float] = None,
+        max_tokens: int = 4096,
+        timeout: int = 30
+    ) -> str:
+        """Send a prompt to local LLM and return the text response."""
+        # Use provided temperature or fall back to instance default
+        temp = temperature if temperature is not None else self.temperature
+        tokens = min(max_tokens, self.max_output_tokens)
+
+        # Retry with exponential backoff
+        max_retries = 3
+        base_delay = 1
+
+        for attempt in range(max_retries):
+            try:
+                if self.mode == "endpoint":
+                    return self._call_endpoint_with_params(prompt, temp, tokens, timeout)
+                else:
+                    return self._generate_with_worker_params(prompt, temp, tokens)
+
+            except Exception as e:
+                error_str = str(e).lower()
+                is_retryable = any(x in error_str for x in ["timeout", "connection", "pipe"])
+
+                if is_retryable and attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"[LocalLLM] Retryable error on attempt {attempt + 1}: {e}. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    continue
+                raise
+
+        raise RuntimeError("Failed to get response from LocalLLM after retries")
+
+    def _call_endpoint_with_params(self, prompt: str, temperature: float, max_tokens: int, timeout: int) -> str:
+        """Call endpoint with specific parameters."""
+        messages = [{"role": "user", "content": prompt}]
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        headers = {"Content-Type": "application/json"}
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
+
+        response = requests.post(
+            self.endpoint,
+            data=json.dumps(payload),
+            headers=headers,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        choices = data.get("choices", [])
+        if choices:
+            message = choices[0].get("message") or {}
+            return message.get("content", "")
+
+        return data.get("content", "") or data.get("text", "")
+
+    def _generate_with_worker_params(self, prompt: str, temperature: float, max_tokens: int) -> str:
+        """Generate with worker using specific parameters."""
+        if not hasattr(self, "worker_conn"):
+            raise RuntimeError("Local LLM worker not initialized")
+
+        payload = {
+            "cmd": "generate",
+            "prompt": prompt,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+
+        try:
+            with self.worker_lock:
+                self.worker_conn.send(payload)
+                result = self.worker_conn.recv()
+        except (BrokenPipeError, EOFError):
+            logger.warning("[LocalLLM] Worker pipe broken. Restarting...")
+            self._init_worker(self.model)
+            return self._generate_with_worker_params(prompt, temperature, max_tokens)
+
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Unknown local generation error"))
+
+        return result.get("text", "")
 
     def generate_playlist(
         self,

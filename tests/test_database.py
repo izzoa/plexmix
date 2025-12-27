@@ -243,3 +243,186 @@ def test_migration_adds_environments_column(db_manager):
 
     assert 'environments' in columns
     assert 'instruments' in columns
+
+
+# ============================================================================
+# Phase G: Regression Tests for Data Integrity
+# ============================================================================
+
+def test_upsert_keeps_stable_id(db_manager):
+    """Test that upserting a track with the same plex_key keeps the same ID."""
+    artist = Artist(plex_key="/library/metadata/1", name="Artist")
+    artist_id = db_manager.insert_artist(artist)
+
+    album = Album(plex_key="/library/metadata/2", title="Album", artist_id=artist_id)
+    album_id = db_manager.insert_album(album)
+
+    # Insert initial track
+    track = Track(
+        plex_key="/library/metadata/3",
+        title="Original Title",
+        artist_id=artist_id,
+        album_id=album_id,
+        duration_ms=180000
+    )
+    first_id = db_manager.insert_track(track)
+
+    # Upsert with same plex_key but different title
+    track_updated = Track(
+        plex_key="/library/metadata/3",  # Same plex_key
+        title="Updated Title",
+        artist_id=artist_id,
+        album_id=album_id,
+        duration_ms=190000
+    )
+    second_id = db_manager.insert_track(track_updated)
+
+    # ID should remain stable
+    assert first_id == second_id, "UPSERT changed the row ID (data integrity issue!)"
+
+    # Verify the update was applied
+    retrieved = db_manager.get_track_by_id(first_id)
+    assert retrieved.title == "Updated Title"
+    assert retrieved.duration_ms == 190000
+
+
+def test_foreign_keys_enforced(db_manager):
+    """Test that foreign key constraints are enforced."""
+    # Enable foreign keys explicitly for this test
+    cursor = db_manager.get_connection().cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+
+    artist = Artist(plex_key="/library/metadata/1", name="Artist")
+    artist_id = db_manager.insert_artist(artist)
+
+    # Try to insert track with non-existent album_id
+    track = Track(
+        plex_key="/library/metadata/3",
+        title="Orphan Track",
+        artist_id=artist_id,
+        album_id=99999,  # Non-existent album
+        duration_ms=180000
+    )
+
+    # This should raise an error due to foreign key constraint
+    with pytest.raises(Exception):
+        db_manager.insert_track(track)
+
+
+def test_get_last_sync_time_returns_success_status(db_manager):
+    """Test that get_last_sync_time correctly queries for 'success' status."""
+    # Insert a sync record with 'success' status
+    sync_success = SyncHistory(
+        tracks_added=100,
+        tracks_updated=50,
+        tracks_removed=10,
+        status='success'
+    )
+    db_manager.insert_sync_record(sync_success)
+
+    # Insert a failed sync record
+    sync_failed = SyncHistory(
+        tracks_added=0,
+        tracks_updated=0,
+        tracks_removed=0,
+        status='failed'
+    )
+    db_manager.insert_sync_record(sync_failed)
+
+    # get_last_sync_time should return the success record's date
+    last_sync = db_manager.get_last_sync_time()
+    assert last_sync is not None, "get_last_sync_time returned None (sync status mismatch bug!)"
+
+
+def test_track_upsert_preserves_existing_tags(db_manager):
+    """Test that upserting a track without tags preserves existing tags."""
+    artist = Artist(plex_key="/library/metadata/1", name="Artist")
+    artist_id = db_manager.insert_artist(artist)
+
+    album = Album(plex_key="/library/metadata/2", title="Album", artist_id=artist_id)
+    album_id = db_manager.insert_album(album)
+
+    # Insert track with tags
+    track_with_tags = Track(
+        plex_key="/library/metadata/3",
+        title="Tagged Track",
+        artist_id=artist_id,
+        album_id=album_id,
+        duration_ms=180000,
+        tags="energetic,upbeat",
+        environments="workout,party",
+        instruments="drums,guitar"
+    )
+    track_id = db_manager.insert_track(track_with_tags)
+
+    # Upsert without tags (simulating sync that doesn't include tags)
+    track_without_tags = Track(
+        plex_key="/library/metadata/3",  # Same plex_key
+        title="Tagged Track Updated",
+        artist_id=artist_id,
+        album_id=album_id,
+        duration_ms=185000,
+        tags=None,  # No tags provided
+        environments=None,
+        instruments=None
+    )
+    db_manager.insert_track(track_without_tags)
+
+    # Existing tags should be preserved
+    retrieved = db_manager.get_track_by_id(track_id)
+    assert retrieved.tags == "energetic,upbeat", "Tags were wiped on upsert!"
+    assert retrieved.environments == "workout,party", "Environments were wiped on upsert!"
+    assert retrieved.instruments == "drums,guitar", "Instruments were wiped on upsert!"
+    # Title should still be updated
+    assert retrieved.title == "Tagged Track Updated"
+
+
+def test_bulk_fetch_tracks_by_ids(db_manager):
+    """Test bulk fetching tracks by IDs."""
+    artist = Artist(plex_key="/library/metadata/1", name="Artist")
+    artist_id = db_manager.insert_artist(artist)
+
+    album = Album(plex_key="/library/metadata/2", title="Album", artist_id=artist_id)
+    album_id = db_manager.insert_album(album)
+
+    # Insert multiple tracks
+    track_ids = []
+    for i in range(5):
+        track = Track(
+            plex_key=f"/library/metadata/{100 + i}",
+            title=f"Track {i}",
+            artist_id=artist_id,
+            album_id=album_id
+        )
+        track_ids.append(db_manager.insert_track(track))
+
+    # Bulk fetch
+    tracks = db_manager.get_tracks_by_ids(track_ids)
+
+    assert len(tracks) == 5
+    for tid in track_ids:
+        assert tid in tracks
+
+
+def test_bulk_fetch_track_details_by_ids(db_manager):
+    """Test bulk fetching track details with artist/album info."""
+    artist = Artist(plex_key="/library/metadata/1", name="Test Artist")
+    artist_id = db_manager.insert_artist(artist)
+
+    album = Album(plex_key="/library/metadata/2", title="Test Album", artist_id=artist_id)
+    album_id = db_manager.insert_album(album)
+
+    track = Track(
+        plex_key="/library/metadata/3",
+        title="Test Track",
+        artist_id=artist_id,
+        album_id=album_id
+    )
+    track_id = db_manager.insert_track(track)
+
+    details = db_manager.get_track_details_by_ids([track_id])
+
+    assert len(details) == 1
+    assert details[0]['title'] == "Test Track"
+    assert details[0]['artist_name'] == "Test Artist"
+    assert details[0]['album_title'] == "Test Album"

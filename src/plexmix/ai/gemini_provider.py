@@ -1,5 +1,6 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
+import time
 
 from .base import AIProvider
 
@@ -17,6 +18,63 @@ class GeminiProvider(AIProvider):
         except ImportError:
             raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
 
+    def complete(
+        self,
+        prompt: str,
+        temperature: Optional[float] = None,
+        max_tokens: int = 4096,
+        timeout: int = 30
+    ) -> str:
+        """Send a prompt to Gemini and return the text response."""
+        temp = temperature if temperature is not None else self.temperature
+
+        model = self.genai.GenerativeModel(
+            model_name=self.model,
+            generation_config={
+                "temperature": temp,
+                "max_output_tokens": max_tokens,
+            }
+        )
+
+        # Retry with exponential backoff
+        max_retries = 3
+        base_delay = 1
+
+        for attempt in range(max_retries):
+            try:
+                logger.debug(f"[Gemini] API call attempt {attempt + 1}/{max_retries}")
+                response = model.generate_content(
+                    prompt,
+                    request_options={"timeout": timeout}
+                )
+
+                if not response:
+                    raise ValueError("Empty response from Gemini")
+
+                # Extract text from response
+                try:
+                    return response.text
+                except (ValueError, AttributeError):
+                    if response.candidates and response.candidates[0].content.parts:
+                        return "".join(
+                            part.text for part in response.candidates[0].content.parts
+                            if hasattr(part, 'text')
+                        )
+                    raise ValueError("Could not extract text from Gemini response")
+
+            except Exception as e:
+                error_str = str(e).lower()
+                is_retryable = any(x in error_str for x in ["504", "timeout", "429", "quota", "rate"])
+
+                if is_retryable and attempt < max_retries - 1:
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(f"[Gemini] Retryable error on attempt {attempt + 1}: {e}. Retrying in {delay}s...")
+                    time.sleep(delay)
+                    continue
+                raise
+
+        raise RuntimeError("Failed to get response from Gemini after retries")
+
     def generate_playlist(
         self,
         mood_query: str,
@@ -24,97 +82,25 @@ class GeminiProvider(AIProvider):
         max_tracks: int = 50
     ) -> List[int]:
         try:
-            # Reduce candidate count if needed to fit in context (before preparing prompt)
+            # Reduce candidate count if needed to fit in context
             max_candidates = self.get_max_candidates()
             if len(candidate_tracks) > max_candidates:
-                print(f"Truncating {len(candidate_tracks)} candidates to {max_candidates} for model {self.model}")
+                logger.warning(f"[Gemini] Truncating {len(candidate_tracks)} candidates to {max_candidates}")
                 candidate_tracks = candidate_tracks[:max_candidates]
 
             prompt = self._prepare_prompt(mood_query, candidate_tracks, max_tracks)
-
-            model = self.genai.GenerativeModel(
-                model_name=self.model,
-                generation_config={
-                    "temperature": self.temperature,
-                    "max_output_tokens": 8192,  # Keep reasonable to avoid timeouts
-                }
-            )
-
-            # Retry up to 2 times on timeout
-            max_retries = 2
-            for attempt in range(max_retries):
-                try:
-                    print(f"Gemini API call attempt {attempt + 1}/{max_retries}")
-                    response = model.generate_content(
-                        prompt,
-                        request_options={"timeout": 30}  # 30 second timeout
-                    )
-                    break
-                except Exception as e:
-                    if "504" in str(e) or "timeout" in str(e).lower():
-                        if attempt < max_retries - 1:
-                            print(f"Timeout on attempt {attempt + 1}, retrying...")
-                            continue
-                    raise
-
-            if not response:
-                print("ERROR: Empty response from Gemini")
-                logger.error("Empty response from Gemini")
-                return []
-
-            # Check for safety blocks or other issues
-            print(f"Gemini response received")
-            if hasattr(response, 'prompt_feedback'):
-                print(f"Gemini prompt_feedback: {response.prompt_feedback}")
-            if hasattr(response, 'candidates'):
-                print(f"Gemini returned {len(response.candidates)} candidates")
-                if len(response.candidates) > 0:
-                    candidate = response.candidates[0]
-                    print(f"First candidate finish_reason: {candidate.finish_reason}")
-                    if candidate.finish_reason == 1:  # MAX_TOKENS
-                        print("WARNING: Response hit MAX_TOKENS limit, response may be truncated")
-
-            response_text = None
-            try:
-                response_text = response.text
-                print(f"Successfully got response.text: {len(response_text)} chars")
-            except (ValueError, AttributeError) as e:
-                print(f"Could not access response.text directly: {e}")
-                try:
-                    if response.candidates and len(response.candidates) > 0:
-                        candidate = response.candidates[0]
-                        print(f"Candidate has content: {hasattr(candidate, 'content')}")
-                        if hasattr(candidate, 'content'):
-                            print(f"Content has parts: {hasattr(candidate.content, 'parts')}")
-                            if hasattr(candidate.content, 'parts'):
-                                print(f"Number of parts: {len(candidate.content.parts)}")
-                                response_text = "".join(part.text for part in candidate.content.parts if hasattr(part, 'text'))
-                                print(f"Extracted from parts: {len(response_text) if response_text else 0} chars")
-                        elif hasattr(candidate, 'text'):
-                            response_text = candidate.text
-                            print(f"Extracted from candidate.text: {len(response_text)} chars")
-                except Exception as e2:
-                    print(f"Failed to extract text from response candidates: {e2}")
-                    import traceback
-                    traceback.print_exc()
+            response_text = self.complete(prompt, max_tokens=8192, timeout=30)
 
             if not response_text:
-                print(f"ERROR: Could not extract text from Gemini response")
-                print(f"Response attributes: {dir(response)}")
-                if hasattr(response, 'prompt_feedback'):
-                    print(f"Prompt feedback: {response.prompt_feedback}")
-                return []
-
-            if not response_text:
-                logger.error("Empty response text from Gemini")
+                logger.error("[Gemini] Empty response text")
                 return []
 
             track_ids = self._parse_response(response_text)
             validated_ids = self._validate_selections(track_ids, candidate_tracks)
 
-            logger.info(f"Gemini selected {len(validated_ids)} tracks for mood: {mood_query}")
+            logger.info(f"[Gemini] Selected {len(validated_ids)} tracks for mood: {mood_query}")
             return validated_ids[:max_tracks]
 
         except Exception as e:
-            logger.error(f"Failed to generate playlist with Gemini: {e}")
+            logger.error(f"[Gemini] Failed to generate playlist: {e}")
             return []

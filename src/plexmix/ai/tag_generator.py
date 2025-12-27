@@ -174,53 +174,15 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
         return system_prompt + "\n\n" + user_prompt
 
     def _call_ai_provider(self, prompt: str) -> str:
+        """Call the AI provider using the uniform complete() interface."""
         try:
-            import google.generativeai as genai
-
-            if hasattr(self.ai_provider, 'genai'):
-                model = self.ai_provider.genai.GenerativeModel(
-                    model_name=self.ai_provider.model,
-                    generation_config={
-                        "temperature": 0.3,
-                        "max_output_tokens": 8192,
-                    }
-                )
-                response = model.generate_content(prompt)
-
-                if not response:
-                    raise ValueError("Empty response from Gemini")
-
-                try:
-                    response_text = response.text
-                except ValueError:
-                    if response.candidates and response.candidates[0].content.parts:
-                        response_text = "".join(part.text for part in response.candidates[0].content.parts)
-                    else:
-                        raise ValueError("Could not extract text from Gemini response")
-
-                return response_text
-
-            elif hasattr(self.ai_provider, 'client'):
-                if hasattr(self.ai_provider.client, 'chat'):
-                    response = self.ai_provider.client.chat.completions.create(
-                        model=self.ai_provider.model,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=0.3,
-                        max_tokens=4096
-                    )
-                    return response.choices[0].message.content
-                else:
-                    response = self.ai_provider.client.messages.create(
-                        model=self.ai_provider.model,
-                        max_tokens=4096,
-                        temperature=0.3,
-                        messages=[{"role": "user", "content": prompt}]
-                    )
-                    return response.content[0].text
-
-            else:
-                raise ValueError("Unknown AI provider type")
-
+            # Use the uniform complete() interface with tagging-specific settings
+            return self.ai_provider.complete(
+                prompt=prompt,
+                temperature=0.3,  # Lower temperature for consistent tagging
+                max_tokens=8192,
+                timeout=60  # Longer timeout for batch tagging
+            )
         except Exception as e:
             logger.error(f"AI provider call failed: {e}")
             raise

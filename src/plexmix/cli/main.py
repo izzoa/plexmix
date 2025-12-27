@@ -1090,7 +1090,6 @@ def tags_generate(
 @app.command("create")
 def create_playlist(
     mood: str = typer.Argument(..., help="Mood description for playlist"),
-    provider: str = typer.Option("gemini", help="AI provider (gemini, openai, claude)"),
     limit: Optional[int] = typer.Option(None, help="Number of tracks"),
     name: Optional[str] = typer.Option(None, help="Playlist name"),
     genre: Optional[str] = typer.Option(None, help="Filter by genre"),
@@ -1100,6 +1099,12 @@ def create_playlist(
     pool_multiplier: Optional[int] = typer.Option(None, help="Candidate pool multiplier (default: 25x playlist length)"),
     create_in_plex: bool = typer.Option(True, help="Create playlist in Plex"),
 ):
+    """
+    Create a playlist based on mood using semantic similarity search.
+
+    Playlist generation uses FAISS vector search with pre-computed embeddings.
+    No AI provider API key is required for creation (embeddings are generated during sync).
+    """
     console.print(f"[bold]Creating playlist for mood: {mood}[/bold]")
 
     settings = Settings.load_from_file()
@@ -1114,31 +1119,16 @@ def create_playlist(
     db_path = settings.database.get_db_path()
     index_path = settings.database.get_index_path()
 
-    google_key = credentials.get_google_api_key()
-    openai_key = credentials.get_openai_api_key()
-    anthropic_key = credentials.get_anthropic_api_key()
-
-    if provider == "gemini" and not google_key:
-        console.print("[red]Google API key not configured.[/red]")
-        raise typer.Exit(1)
-    elif provider == "openai" and not openai_key:
-        console.print("[red]OpenAI API key not configured.[/red]")
-        raise typer.Exit(1)
-    elif provider == "claude" and not anthropic_key:
-        console.print("[red]Anthropic API key not configured.[/red]")
-        raise typer.Exit(1)
-
-    api_key = google_key if provider == "gemini" else (openai_key if provider == "openai" else anthropic_key)
-
     with SQLiteManager(str(db_path)) as db:
         embedding_provider = settings.embedding.default_provider
         embedding_model = settings.embedding.model
 
+        # Get embedding provider API key (only needed for query embedding generation)
         embedding_api_key = None
         if embedding_provider == "gemini":
-            embedding_api_key = google_key
+            embedding_api_key = credentials.get_google_api_key()
         elif embedding_provider == "openai":
-            embedding_api_key = openai_key
+            embedding_api_key = credentials.get_openai_api_key()
         elif embedding_provider == "cohere":
             embedding_api_key = credentials.get_cohere_api_key()
 
@@ -1218,11 +1208,11 @@ def create_playlist(
                 plex_client = PlexClient(settings.plex.url, plex_token)
                 if plex_client.connect() and plex_client.select_library(settings.plex.library_name):
                     plex_rating_keys = []
-                    with SQLiteManager(str(db_path)) as db:
-                        for track_id in track_ids:
-                            track = db.get_track_by_id(track_id)
-                            if track and track.plex_key:
-                                plex_rating_keys.append(int(track.plex_key))
+                    # Reuse existing db connection instead of opening a new one
+                    for track_id in track_ids:
+                        track = db.get_track_by_id(track_id)
+                        if track and track.plex_key:
+                            plex_rating_keys.append(int(track.plex_key))
 
                     playlist = plex_client.create_playlist(name, plex_rating_keys, f"AI-generated playlist: {mood}")
                     if playlist:

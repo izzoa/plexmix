@@ -216,17 +216,22 @@ class PlexClient:
         genres = [genre.tag for genre in plex_album.genres] if hasattr(plex_album, 'genres') else []
         genre_str = ", ".join(genres) if genres else None
 
+        # Get artist reference from Plex API
         artist = plex_album.artist() if hasattr(plex_album, 'artist') else None
-        artist_key = str(artist.ratingKey) if artist else "unknown"
 
-        return Album(
+        album = Album(
             plex_key=str(plex_album.ratingKey),
             title=plex_album.title,
-            artist_id=0,
+            artist_id=0,  # Will be set in sync based on artist rating key
             year=plex_album.year if hasattr(plex_album, 'year') else None,
             genre=genre_str,
             cover_art_url=plex_album.thumb if hasattr(plex_album, 'thumb') else None
         )
+
+        # Store artist rating key as temporary attribute (not part of model schema)
+        album.__dict__['_artist_key'] = str(artist.ratingKey) if artist else None
+
+        return album
 
     def extract_track_metadata(self, plex_track) -> Track:
         if not plex_track.title or not plex_track.title.strip():
@@ -268,7 +273,8 @@ class PlexClient:
             tracks = []
             for plex_key in track_plex_keys:
                 try:
-                    track = self.music_library.fetchItem(plex_key)
+                    # fetchItem expects an integer rating key, not a string
+                    track = self.music_library.fetchItem(int(plex_key))
                     tracks.append(track)
                 except Exception as e:
                     logger.warning(f"Failed to fetch track {plex_key}: {e}")
