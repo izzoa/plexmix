@@ -1,5 +1,6 @@
 import reflex as rx
 from plexmix.ui.states.app_state import AppState
+from plexmix.ui.components.loading import loading_spinner
 
 
 def navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
@@ -15,6 +16,7 @@ def navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
             width="100%",
         ),
         href=href,
+        on_click=AppState.set_page_loading(True),
         underline="none",
         padding_y="2",
         padding_x="3",
@@ -96,9 +98,38 @@ def navbar() -> rx.Component:
     )
 
 
+def loading_overlay() -> rx.Component:
+    """Loading overlay for page transitions."""
+    return rx.box(
+        rx.vstack(
+            loading_spinner(size=48, color="orange"),
+            rx.text("Loading...", size="4", color="gray.11"),
+            spacing="4",
+            align="center",
+            justify="center",
+        ),
+        position="fixed",
+        top="0",
+        left="240px",  # Account for navbar
+        right="0",
+        bottom="0",
+        background="rgba(0, 0, 0, 0.7)",
+        backdrop_filter="blur(4px)",
+        z_index="999",
+        display="flex",
+        align_items="center",
+        justify_content="center",
+    )
+
+
 def layout(content: rx.Component) -> rx.Component:
     return rx.box(
         navbar(),
+        rx.cond(
+            AppState.is_page_loading,
+            loading_overlay(),
+            rx.fragment(),
+        ),
         rx.box(
             content,
             margin_left="240px",

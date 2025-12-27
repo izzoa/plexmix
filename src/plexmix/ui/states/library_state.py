@@ -76,6 +76,7 @@ class LibraryState(AppState):
     def on_load(self):
         super().on_load()
         self.load_tracks()
+        self.is_page_loading = False
 
     def load_tracks(self):
         try:

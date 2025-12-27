@@ -13,6 +13,7 @@ class DashboardState(AppState):
         self.check_configuration_status()
         self.load_library_stats()
         self.load_recent_playlists()
+        self.is_page_loading = False
         return rx.console_log("Dashboard loaded")
 
     def load_recent_playlists(self):

@@ -25,6 +25,14 @@ class AppState(rx.State):
     current_task: Optional[str] = None
     task_progress: int = 0
 
+    # Page loading state for navigation transitions
+    is_page_loading: bool = True
+
+    @rx.event
+    def set_page_loading(self, loading: bool):
+        """Set the page loading state."""
+        self.is_page_loading = loading
+
     @rx.event
     def on_load(self):
         """Load app data when the page loads."""

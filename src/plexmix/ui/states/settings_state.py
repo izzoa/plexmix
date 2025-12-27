@@ -64,6 +64,7 @@ class SettingsState(AppState):
         super().on_load()
         self.load_settings()
         self.update_model_lists()
+        self.is_page_loading = False
 
     def load_settings(self):
         try:

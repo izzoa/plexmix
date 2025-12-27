@@ -39,6 +39,7 @@ class TaggingState(AppState):
     def on_load(self):
         super().on_load()
         self.load_recently_tagged()
+        self.is_page_loading = False
 
     def load_recently_tagged(self):
         try:

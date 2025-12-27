@@ -44,6 +44,7 @@ class DoctorState(AppState):
                 async with self:
                     self.check_message = "Database not found. Please run a sync first."
                     self.is_checking = False
+                    self.is_page_loading = False
                 return
             
             with SQLiteManager(str(db_path)) as db:
@@ -90,13 +91,15 @@ class DoctorState(AppState):
                         if tracks_needing_embeddings > 0:
                             issues.append(f"{tracks_needing_embeddings} tracks need embeddings")
                         self.check_message = f"⚠️ Issues found: {', '.join(issues)}"
-                    
+
                     self.is_checking = False
-        
+                    self.is_page_loading = False
+
         except Exception as e:
             async with self:
                 self.check_message = f"Error during health check: {str(e)}"
                 self.is_checking = False
+                self.is_page_loading = False
     
     @rx.event(background=True)
     async def delete_orphaned_embeddings(self):

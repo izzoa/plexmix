@@ -67,16 +67,19 @@ class HistoryState(AppState):
                 async with self:
                     self.playlists = playlists
                     self.loading_playlists = False
+                    self.is_page_loading = False
             else:
                 async with self:
                     self.playlists = []
                     self.loading_playlists = False
+                    self.is_page_loading = False
 
         except Exception as e:
             logger.error(f"Error loading playlists: {e}")
             async with self:
                 self.playlists = []
                 self.loading_playlists = False
+                self.is_page_loading = False
                 self.error_message = f"Error loading playlists: {str(e)}"
 
     def select_playlist(self, playlist_id: int):

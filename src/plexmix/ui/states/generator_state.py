@@ -37,6 +37,7 @@ class GeneratorState(AppState):
 
     def on_load(self):
         super().on_load()
+        self.is_page_loading = False
 
     def use_example(self, example: str):
         self.mood_query = example
