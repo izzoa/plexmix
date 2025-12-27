@@ -81,7 +81,7 @@ def doctor() -> rx.Component:
                 stat_card("Total Tracks", DoctorState.doctor_total_tracks),
                 stat_card("Tracks with Embeddings", DoctorState.doctor_tracks_with_embeddings),
                 stat_card("Untagged Tracks", DoctorState.doctor_untagged_tracks),
-                columns="3",
+                columns=rx.breakpoints(initial="1", sm="2", lg="3"),
                 spacing="4",
                 width="100%",
             ),
@@ -261,6 +261,5 @@ def doctor() -> rx.Component:
             width="100%",
         ),
         size="4",
-        on_mount=DoctorState.on_load,
     )
     return layout(content)

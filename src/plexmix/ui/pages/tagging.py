@@ -98,7 +98,7 @@ def selection_panel() -> rx.Component:
         rx.button(
             "Start Tagging",
             on_click=TaggingState.start_tagging,
-            disabled=TaggingState.preview_count == 0 | TaggingState.is_tagging,
+            disabled=(TaggingState.preview_count == 0) | TaggingState.is_tagging,
             loading=TaggingState.is_tagging,
             color_scheme="blue",
             size="4",

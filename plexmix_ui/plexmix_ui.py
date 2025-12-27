@@ -17,14 +17,17 @@ from plexmix.ui.states.doctor_state import DoctorState
 
 app = rx.App(
     theme=rx.theme(
-        has_background=True,
-        accent_color="purple",
+        appearance="dark",
+        accent_color="orange",
         radius="medium",
-    )
+    ),
+    stylesheets=[
+        "/styles.css",
+    ],
 )
 
 app.add_page(index, route="/")
-app.add_page(dashboard, route="/dashboard")
+app.add_page(dashboard, route="/dashboard", on_load=DashboardState.on_load)
 app.add_page(settings, route="/settings", on_load=SettingsState.on_load)
 app.add_page(library, route="/library", on_load=LibraryState.on_load)
 app.add_page(generator, route="/generator", on_load=GeneratorState.on_load)

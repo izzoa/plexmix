@@ -93,7 +93,7 @@ def dashboard() -> rx.Component:
                     DashboardState.embedding_provider_name,
                     DashboardState.embedding_model_name
                 ),
-                columns="3",
+                columns=rx.breakpoints(initial="1", sm="2", lg="3"),
                 spacing="4",
                 width="100%",
             ),
@@ -114,7 +114,7 @@ def dashboard() -> rx.Component:
                 stats_card("Total Tracks", DashboardState.total_tracks),
                 stats_card("Embedded Tracks", DashboardState.embedded_tracks),
                 stats_card("Last Sync", rx.cond(DashboardState.last_sync, DashboardState.last_sync, "Never")),
-                columns="3",
+                columns=rx.breakpoints(initial="1", sm="2", lg="3"),
                 spacing="4",
                 width="100%",
             ),
@@ -142,6 +142,5 @@ def dashboard() -> rx.Component:
             width="100%",
         ),
         size="4",
-        on_mount=DashboardState.on_load,  # Add on_mount to trigger state initialization
     )
     return layout(content)

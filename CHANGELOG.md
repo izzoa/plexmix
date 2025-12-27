@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2025-12-27
+
+### Added
+- Active-route highlighting in navbar with visual indicator for current page
+- Icons for all navbar links using Lucide icons
+- CSS design system with design tokens (colors, spacing, radius, shadows, transitions)
+- Focus ring styles for improved keyboard accessibility
+- Responsive grid layouts for Dashboard, Generator, and Doctor pages
+- Real provider tests for AI and embedding settings (replaces stub implementations)
+- Global state cleanup handlers for background tasks on client disconnect
+- Additional unit tests for TaggingState and LibraryState handlers
+
+### Changed
+- Consolidated app entrypoints to use consistent orange theme and dark mode
+- Dashboard `on_load` now wired at app level instead of component level
+- Doctor `on_load` now wired at app level instead of component level
+- Navbar links now have hover/focus transitions and consistent styling
+- Navbar width increased with added padding for better visual spacing
+- Library stats now use SQLiteManager for consistency with Doctor page
+- Generator page layout stacks on mobile screens
+
+### Fixed
+- Missing `set_edit_tags`, `set_edit_environments`, `set_edit_instruments` handlers in TaggingState
+- Operator precedence bug in tagging page button disabled logic
+- Library regenerate confirm dialog Cancel button now properly calls cancel handler
+- Track table checkbox callbacks now accept optional checked value parameter
+
 ## [0.2.11] - 2025-12-27
 
 ### Added
@@ -120,7 +147,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI interface with Rich formatting
 - Tag generation and management
 
-[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.2.11...HEAD
+[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/izzoa/plexmix/compare/v0.2.11...v0.3.0
 [0.2.11]: https://github.com/izzoa/plexmix/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/izzoa/plexmix/compare/v0.2.9...v0.2.10
 [0.2.9]: https://github.com/izzoa/plexmix/compare/v0.2.8...v0.2.9

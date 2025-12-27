@@ -1,14 +1,43 @@
 import reflex as rx
 import asyncio
 import logging
+import atexit
 from typing import List, Dict, Any, Optional
 from threading import Event
 from plexmix.ui.states.app_state import AppState
 
 logger = logging.getLogger(__name__)
 
+# Per-client globals for background tasks
 _sync_cancel_events: Dict[str, Event] = {}
 _search_tasks: Dict[str, asyncio.Task] = {}
+
+
+def _cleanup_client_state(client_token: str) -> None:
+    """Clean up any state associated with a disconnected client."""
+    if client_token in _sync_cancel_events:
+        _sync_cancel_events[client_token].set()  # Signal cancellation
+        del _sync_cancel_events[client_token]
+    if client_token in _search_tasks:
+        task = _search_tasks[client_token]
+        if not task.done():
+            task.cancel()
+        del _search_tasks[client_token]
+
+
+def _cleanup_all_state() -> None:
+    """Clean up all global state on process exit."""
+    for token in list(_sync_cancel_events.keys()):
+        _sync_cancel_events[token].set()
+    _sync_cancel_events.clear()
+    for task in list(_search_tasks.values()):
+        if not task.done():
+            task.cancel()
+    _search_tasks.clear()
+
+
+# Register cleanup on process exit
+atexit.register(_cleanup_all_state)
 
 
 class LibraryState(AppState):

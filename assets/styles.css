@@ -1,7 +1,15 @@
 /* PlexMix UI Custom Styles */
 
-/* Override Reflex accent color with PlexMix orange */
+/* ============================================
+   Design Tokens
+   ============================================ */
 :root {
+  /* Brand Colors */
+  --plexmix-orange: #ef8327;
+  --plexmix-orange-hover: #d66f1f;
+  --plexmix-orange-light: rgba(239, 131, 39, 0.1);
+
+  /* Override Reflex accent color with PlexMix orange */
   --accent-9: #ef8327;
   --accent-10: #d66f1f;
   --accent-11: #ef8327;
@@ -14,7 +22,160 @@
   --accent-6: rgba(239, 131, 39, 0.4);
   --accent-7: rgba(239, 131, 39, 0.5);
   --accent-8: rgba(239, 131, 39, 0.7);
+
+  /* Spacing */
+  --space-xs: 0.25rem;
+  --space-sm: 0.5rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+
+  /* Border Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.1);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.15);
+
+  /* Transitions */
+  --transition-fast: 150ms ease;
+  --transition-normal: 250ms ease;
+  --transition-slow: 350ms ease;
+
+  /* Navbar */
+  --navbar-width: 200px;
 }
+
+/* ============================================
+   Transition Utilities
+   ============================================ */
+.transition-colors {
+  transition: color var(--transition-fast), background-color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.transition-all {
+  transition: all var(--transition-normal);
+}
+
+.transition-transform {
+  transition: transform var(--transition-fast);
+}
+
+/* ============================================
+   Navbar Styles
+   ============================================ */
+.nav-link {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md);
+  border-radius: var(--radius-md);
+  transition: all var(--transition-fast);
+  width: 100%;
+}
+
+.nav-link:hover {
+  background-color: var(--accent-3);
+}
+
+.nav-link.active {
+  background-color: var(--accent-4);
+  color: var(--plexmix-orange);
+}
+
+.nav-link.active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 60%;
+  background-color: var(--plexmix-orange);
+  border-radius: 0 2px 2px 0;
+}
+
+/* ============================================
+   Table Styles
+   ============================================ */
+.table-hover tr:hover {
+  background-color: var(--accent-3);
+}
+
+.table-zebra tr:nth-child(even) {
+  background-color: rgba(128, 128, 128, 0.05);
+}
+
+.table-header {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.05em;
+  color: var(--gray-11);
+}
+
+/* ============================================
+   Button Variants
+   ============================================ */
+.btn-primary {
+  background-color: var(--plexmix-orange);
+  color: white;
+  transition: background-color var(--transition-fast);
+}
+
+.btn-primary:hover {
+  background-color: var(--plexmix-orange-hover);
+}
+
+.btn-secondary {
+  background-color: transparent;
+  border: 1px solid var(--gray-6);
+  color: var(--gray-11);
+  transition: all var(--transition-fast);
+}
+
+.btn-secondary:hover {
+  background-color: var(--gray-3);
+  border-color: var(--gray-7);
+}
+
+.btn-destructive {
+  background-color: var(--red-9);
+  color: white;
+  transition: background-color var(--transition-fast);
+}
+
+.btn-destructive:hover {
+  background-color: var(--red-10);
+}
+
+/* ============================================
+   Card Styles
+   ============================================ */
+.card-hover {
+  transition: box-shadow var(--transition-normal), transform var(--transition-normal);
+}
+
+.card-hover:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+/* ============================================
+   Form Styles
+   ============================================ */
+.input-focus:focus {
+  outline: none;
+  border-color: var(--plexmix-orange);
+  box-shadow: 0 0 0 2px var(--accent-3);
+}
+
+/* ============================================
+   Component Overrides
+   ============================================ */
 
 /* Button hover states */
 .rt-Button[data-accent-color="orange"]:hover {
@@ -29,4 +190,33 @@
 /* Spinner color */
 .rt-Spinner[data-accent-color="orange"] {
   color: #ef8327;
+}
+
+/* Focus ring for accessibility */
+.rt-Button:focus-visible,
+.rt-TextFieldInput:focus-visible,
+.rt-SelectTrigger:focus-visible,
+.rt-CheckboxRoot:focus-visible,
+.rt-SwitchRoot:focus-visible {
+  outline: 2px solid var(--plexmix-orange);
+  outline-offset: 2px;
+}
+
+/* ============================================
+   Responsive Utilities
+   ============================================ */
+@media (max-width: 768px) {
+  :root {
+    --navbar-width: 60px;
+  }
+
+  .hide-mobile {
+    display: none !important;
+  }
+}
+
+@media (min-width: 769px) {
+  .hide-desktop {
+    display: none !important;
+  }
 }

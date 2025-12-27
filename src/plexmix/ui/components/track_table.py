@@ -50,7 +50,7 @@ def track_table(tracks: List[Dict[str, Any]], selected_tracks: List[int], on_tog
                 lambda track: track_table_row(
                     track,
                     selected_tracks.contains(track["id"]),
-                    lambda: on_toggle_selection(track["id"])
+                    lambda _checked=None: on_toggle_selection(track["id"])
                 )
             )
         ),

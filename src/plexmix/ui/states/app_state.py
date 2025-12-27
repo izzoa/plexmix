@@ -97,8 +97,11 @@ class AppState(rx.State):
             self.embedding_provider_configured = False
 
     def load_library_stats(self):
+        """Load library statistics using SQLiteManager for consistency."""
         try:
             from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
 
@@ -106,52 +109,51 @@ class AppState(rx.State):
                 self.total_tracks = "0"
                 self.embedded_tracks = "0"
                 self.last_sync = None
+                self.embedding_dimension_warning = ""
                 return
 
-            import sqlite3
-            conn = sqlite3.connect(str(db_path))
-            cursor = conn.cursor()
+            with SQLiteManager(str(db_path)) as db:
+                cursor = db.get_connection().cursor()
 
-            cursor.execute("SELECT COUNT(*) FROM tracks")
-            self.total_tracks = str(cursor.fetchone()[0])
+                # Get total tracks count
+                cursor.execute("SELECT COUNT(*) FROM tracks")
+                self.total_tracks = str(cursor.fetchone()[0])
 
-            # Count embedded tracks from the embeddings metadata
-            import pickle
-            from pathlib import Path
-            # Use the FAISS index path with .metadata extension
-            faiss_path = Path(settings.database.faiss_index_path).expanduser()
-            metadata_path = faiss_path.with_suffix('.metadata')
-            if metadata_path.exists():
-                with open(metadata_path, 'rb') as f:
-                    metadata = pickle.load(f)
-                    self.embedded_tracks = str(len(metadata.get('track_ids', [])))
-                    
-                    # Check for dimension mismatch
-                    loaded_dimension = metadata.get('dimension', 0)
-                    expected_dimension = settings.embedding.get_dimension_for_provider(
-                        settings.embedding.default_provider
-                    )
-                    if loaded_dimension != expected_dimension:
-                        self.embedding_dimension_warning = (
-                            f"⚠️ Embedding dimension mismatch: Existing embeddings are {loaded_dimension}D "
-                            f"but current provider '{settings.embedding.default_provider}' uses {expected_dimension}D. "
-                            f"Please regenerate embeddings."
+                # Get embedded tracks count from DB (consistent with doctor)
+                cursor.execute("SELECT COUNT(DISTINCT track_id) FROM embeddings")
+                self.embedded_tracks = str(cursor.fetchone()[0])
+
+                # Check for dimension mismatch using metadata file
+                import pickle
+                from pathlib import Path
+                faiss_path = Path(settings.database.faiss_index_path).expanduser()
+                metadata_path = faiss_path.with_suffix('.metadata')
+                if metadata_path.exists():
+                    with open(metadata_path, 'rb') as f:
+                        metadata = pickle.load(f)
+                        loaded_dimension = metadata.get('dimension', 0)
+                        expected_dimension = settings.embedding.get_dimension_for_provider(
+                            settings.embedding.default_provider
                         )
-                    else:
-                        self.embedding_dimension_warning = ""
-            else:
-                self.embedded_tracks = "0"
-                self.embedding_dimension_warning = ""
+                        if loaded_dimension != expected_dimension:
+                            self.embedding_dimension_warning = (
+                                f"⚠️ Embedding dimension mismatch: Existing embeddings are {loaded_dimension}D "
+                                f"but current provider '{settings.embedding.default_provider}' uses {expected_dimension}D. "
+                                f"Please regenerate embeddings."
+                            )
+                        else:
+                            self.embedding_dimension_warning = ""
+                else:
+                    self.embedding_dimension_warning = ""
 
-            # Use last_played as a proxy for last sync since updated_at doesn't exist
-            cursor.execute("SELECT MAX(last_played) FROM tracks")
-            last_update = cursor.fetchone()[0]
-            self.last_sync = last_update if last_update else None
-
-            conn.close()
+                # Use last_played as a proxy for last sync
+                cursor.execute("SELECT MAX(last_played) FROM tracks")
+                last_update = cursor.fetchone()[0]
+                self.last_sync = last_update if last_update else None
 
         except Exception as e:
             print(f"Error loading library stats: {e}")
             self.total_tracks = "0"
             self.embedded_tracks = "0"
             self.last_sync = None
+            self.embedding_dimension_warning = ""

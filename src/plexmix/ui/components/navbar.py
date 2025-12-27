@@ -1,13 +1,32 @@
 import reflex as rx
+from plexmix.ui.states.app_state import AppState
 
 
-def navbar_link(text: str, href: str) -> rx.Component:
+def navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
+    """Create a navbar link with icon and active state highlighting."""
+    is_active = AppState.router.page.path == href
+
     return rx.link(
-        rx.text(text, size="4"),
+        rx.hstack(
+            rx.icon(icon_name, size=18),
+            rx.text(text, size="3", weight="medium"),
+            spacing="3",
+            align="center",
+            width="100%",
+        ),
         href=href,
         underline="none",
-        color_scheme="gray",
-        _hover={"color": "orange.10"},
+        padding_y="2",
+        padding_x="3",
+        border_radius="md",
+        width="100%",
+        background_color=rx.cond(is_active, "accent.3", "transparent"),
+        color=rx.cond(is_active, "accent.11", "gray.11"),
+        _hover={
+            "background_color": rx.cond(is_active, "accent.4", "gray.3"),
+            "color": rx.cond(is_active, "accent.11", "gray.12"),
+        },
+        transition="all 150ms ease",
     )
 
 
@@ -32,16 +51,19 @@ def navbar() -> rx.Component:
                 ),
                 href="/dashboard",
                 _hover={"opacity": 0.8},
+                transition="opacity 150ms ease",
             ),
             rx.divider(margin_y="3"),
-            navbar_link("Dashboard", "/dashboard"),
-            navbar_link("Generate", "/generator"),
-            navbar_link("Library", "/library"),
-            navbar_link("Tagging", "/tagging"),
-            navbar_link("History", "/history"),
-            navbar_link("Doctor", "/doctor"),
-            navbar_link("Settings", "/settings"),
+            # Navigation links with icons
+            navbar_link("Dashboard", "/dashboard", "layout-dashboard"),
+            navbar_link("Generate", "/generator", "sparkles"),
+            navbar_link("Library", "/library", "library"),
+            navbar_link("Tagging", "/tagging", "tags"),
+            navbar_link("History", "/history", "history"),
+            navbar_link("Doctor", "/doctor", "stethoscope"),
+            navbar_link("Settings", "/settings", "settings"),
             rx.spacer(),
+            # Theme toggle
             rx.hstack(
                 rx.icon("sun", size=16),
                 rx.switch(
@@ -52,18 +74,25 @@ def navbar() -> rx.Component:
                 spacing="2",
                 align="center",
             ),
-            spacing="3",
+            spacing="2",
             align="start",
-            padding="4",
+            padding_top="16px",
+            padding_bottom="16px",
+            padding_left="24px",
+            padding_right="16px",
+            width="100%",
         ),
         position="fixed",
         left="0",
         top="0",
         height="100vh",
-        width="200px",
+        width="240px",
+        padding_left="16px",
+        padding_right="12px",
         background_color="gray.2",
         border_right="1px solid",
         border_color="gray.4",
+        z_index="100",
     )
 
 
@@ -72,7 +101,8 @@ def layout(content: rx.Component) -> rx.Component:
         navbar(),
         rx.box(
             content,
-            margin_left="200px",
+            margin_left="240px",
             padding="6",
+            min_height="100vh",
         ),
     )

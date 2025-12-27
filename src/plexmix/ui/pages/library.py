@@ -218,7 +218,11 @@ def library() -> rx.Component:
             ),
             rx.hstack(
                 rx.alert_dialog.cancel(
-                    rx.button("Cancel", variant="soft"),
+                    rx.button(
+                        "Cancel",
+                        variant="soft",
+                        on_click=LibraryState.cancel_regenerate_confirm,
+                    ),
                 ),
                 rx.alert_dialog.action(
                     rx.button(

@@ -280,6 +280,15 @@ class TaggingState(AppState):
         self.edit_environments = ""
         self.edit_instruments = ""
 
+    def set_edit_tags(self, value: str):
+        self.edit_tags = value
+
+    def set_edit_environments(self, value: str):
+        self.edit_environments = value
+
+    def set_edit_instruments(self, value: str):
+        self.edit_instruments = value
+
     @rx.event(background=True)
     async def save_tag_edit(self):
         async with self:

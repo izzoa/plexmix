@@ -338,6 +338,84 @@ class TestLibraryState:
         assert state.year_min == 2000
         assert state.year_max == 2020
 
+    def test_regenerate_confirm_flow(self):
+        """Test regenerate confirmation dialog flow."""
+        from plexmix.ui.states.library_state import LibraryState
+
+        state = LibraryState()
+
+        # Initially not showing
+        assert state.show_regenerate_confirm == False
+
+        # Show confirmation
+        state.confirm_regenerate_sync()
+        assert state.show_regenerate_confirm == True
+
+        # Cancel confirmation
+        state.cancel_regenerate_confirm()
+        assert state.show_regenerate_confirm == False
+
+    def test_sync_mode_setter(self):
+        """Test sync mode setter."""
+        from plexmix.ui.states.library_state import LibraryState
+
+        state = LibraryState()
+
+        # Default mode
+        assert state.sync_mode == "incremental"
+
+        # Set to regenerate
+        state.set_sync_mode("regenerate")
+        assert state.sync_mode == "regenerate"
+
+        # Set back to incremental
+        state.set_sync_mode("incremental")
+        assert state.sync_mode == "incremental"
+
+    def test_track_selection(self):
+        """Test track selection toggle and clear."""
+        from plexmix.ui.states.library_state import LibraryState
+
+        state = LibraryState()
+
+        # Initially empty
+        assert state.selected_tracks == []
+
+        # Toggle a track on
+        state.toggle_track_selection(1)
+        assert 1 in state.selected_tracks
+
+        # Toggle another track on
+        state.toggle_track_selection(2)
+        assert 1 in state.selected_tracks
+        assert 2 in state.selected_tracks
+
+        # Toggle first track off
+        state.toggle_track_selection(1)
+        assert 1 not in state.selected_tracks
+        assert 2 in state.selected_tracks
+
+        # Clear selection
+        state.clear_selection()
+        assert state.selected_tracks == []
+
+    def test_select_all_tracks(self):
+        """Test selecting all tracks on current page."""
+        from plexmix.ui.states.library_state import LibraryState
+
+        state = LibraryState()
+        state.tracks = [
+            {"id": 1, "title": "Track 1"},
+            {"id": 2, "title": "Track 2"},
+            {"id": 3, "title": "Track 3"},
+        ]
+
+        # Select all
+        state.select_all_tracks()
+        assert 1 in state.selected_tracks
+        assert 2 in state.selected_tracks
+        assert 3 in state.selected_tracks
+
 
 class TestTaggingState:
     """Test cases for TaggingState."""
@@ -362,6 +440,41 @@ class TestTaggingState:
         assert state.artist_filter == "Miles"
         assert state.has_no_tags == True
 
+    def test_filter_setters(self):
+        """Test filter setter methods."""
+        from plexmix.ui.states.tagging_state import TaggingState
+
+        state = TaggingState()
+
+        # Test set_genre_filter
+        state.set_genre_filter("rock")
+        assert state.genre_filter == "rock"
+
+        # Test set_artist_filter
+        state.set_artist_filter("Beatles")
+        assert state.artist_filter == "Beatles"
+
+        # Test set_year_min
+        state.set_year_min("1990")
+        assert state.year_min == 1990
+
+        state.set_year_min("")
+        assert state.year_min is None
+
+        # Test set_year_max
+        state.set_year_max("2020")
+        assert state.year_max == 2020
+
+        state.set_year_max("")
+        assert state.year_max is None
+
+        # Test toggle_has_no_tags
+        assert state.has_no_tags == False
+        state.toggle_has_no_tags()
+        assert state.has_no_tags == True
+        state.toggle_has_no_tags()
+        assert state.has_no_tags == False
+
     def test_tag_editing(self):
         """Test inline tag editing state."""
         from plexmix.ui.states.tagging_state import TaggingState
@@ -369,18 +482,55 @@ class TestTaggingState:
         state = TaggingState()
 
         # Start editing a track
-        track = {"id": 1, "tags": "chill,relaxing", "environments": "study"}
+        track = {"id": 1, "tags": "chill,relaxing", "environments": "study", "instruments": "piano"}
         state.start_edit_tag(track)
 
         # Verify editing state
         assert state.editing_track_id == 1
         assert state.edit_tags == "chill,relaxing"
         assert state.edit_environments == "study"
+        assert state.edit_instruments == "piano"
 
         # Cancel editing
         state.cancel_edit()
-        assert state.editing_track_id == None
+        assert state.editing_track_id is None
         assert state.edit_tags == ""
+        assert state.edit_environments == ""
+        assert state.edit_instruments == ""
+
+    def test_edit_setters(self):
+        """Test inline edit setter methods."""
+        from plexmix.ui.states.tagging_state import TaggingState
+
+        state = TaggingState()
+
+        # Test set_edit_tags
+        state.set_edit_tags("new,tags")
+        assert state.edit_tags == "new,tags"
+
+        # Test set_edit_environments
+        state.set_edit_environments("party,workout")
+        assert state.edit_environments == "party,workout"
+
+        # Test set_edit_instruments
+        state.set_edit_instruments("guitar,drums")
+        assert state.edit_instruments == "guitar,drums"
+
+    def test_cancel_tagging(self):
+        """Test cancel tagging sets cancellation event."""
+        from plexmix.ui.states.tagging_state import TaggingState
+        import threading
+
+        state = TaggingState()
+        state._cancel_event = threading.Event()
+
+        # Initially not set
+        assert not state._cancel_event.is_set()
+
+        # Cancel should set the event
+        state.cancel_tagging()
+        assert state._cancel_event.is_set()
+        assert state.tagging_message == "Cancelling tagging..."
 
 
 class TestValidation:
