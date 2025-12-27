@@ -1,6 +1,5 @@
 import reflex as rx
 from plexmix.ui.states.app_state import AppState
-from plexmix.ui.components.loading import loading_spinner
 
 
 def navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
@@ -102,7 +101,7 @@ def loading_overlay() -> rx.Component:
     """Loading overlay for page transitions."""
     return rx.box(
         rx.vstack(
-            loading_spinner(size=48, color="orange"),
+            rx.spinner(size="3"),
             rx.text("Loading...", size="4", color="gray.11"),
             spacing="4",
             align="center",
