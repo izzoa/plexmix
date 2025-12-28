@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.png" alt="PlexMix Logo" width="300"/>
+  <img src="logo.svg" alt="PlexMix Logo" width="300"/>
 
   # PlexMix
 
