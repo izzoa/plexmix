@@ -59,6 +59,7 @@ dmypy.json
 
 .idea/
 .vscode/
+.cursor/
 *.code-workspace
 
 .early.coverage
