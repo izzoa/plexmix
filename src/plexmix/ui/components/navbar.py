@@ -38,13 +38,13 @@ def navbar() -> rx.Component:
             rx.link(
                 rx.color_mode_cond(
                     light=rx.image(
-                        src="/logo-light.png",
+                        src="/logo-light.svg",
                         alt="PlexMix",
                         width="120px",
                         height="120px",
                     ),
                     dark=rx.image(
-                        src="/logo-dark.png",
+                        src="/logo-dark.svg",
                         alt="PlexMix",
                         width="120px",
                         height="120px",
