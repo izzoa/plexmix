@@ -41,7 +41,7 @@ venv.bak/
 
 .pytest_cache/
 .coverage
-.coverage.anthonys.macbook.air*
+.coverage.*
 htmlcov/
 *.cover
 *.log
