@@ -34,25 +34,28 @@ def navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
 def navbar() -> rx.Component:
     return rx.box(
         rx.vstack(
-            # Logo - switch based on theme
-            rx.link(
-                rx.color_mode_cond(
-                    light=rx.image(
-                        src="/logo-light.svg",
-                        alt="PlexMix",
-                        width="120px",
-                        height="120px",
+            # Logo - switch based on theme (centered)
+            rx.center(
+                rx.link(
+                    rx.color_mode_cond(
+                        light=rx.image(
+                            src="/logo-light.svg",
+                            alt="PlexMix",
+                            width="120px",
+                            height="120px",
+                        ),
+                        dark=rx.image(
+                            src="/logo-dark.svg",
+                            alt="PlexMix",
+                            width="120px",
+                            height="120px",
+                        ),
                     ),
-                    dark=rx.image(
-                        src="/logo-dark.svg",
-                        alt="PlexMix",
-                        width="120px",
-                        height="120px",
-                    ),
+                    href="/dashboard",
+                    _hover={"opacity": 0.8},
+                    transition="opacity 150ms ease",
                 ),
-                href="/dashboard",
-                _hover={"opacity": 0.8},
-                transition="opacity 150ms ease",
+                width="100%",
             ),
             rx.divider(margin_y="3"),
             # Navigation links with icons

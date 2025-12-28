@@ -2,8 +2,30 @@ import reflex as rx
 import asyncio
 import threading
 import time
+import atexit
 from typing import List, Dict, Any, Optional
 from plexmix.ui.states.app_state import AppState
+
+# Per-client cancel events for tagging operations
+_tagging_cancel_events: Dict[str, threading.Event] = {}
+
+
+def _cleanup_tagging_state(client_token: str) -> None:
+    """Clean up any state associated with a disconnected client."""
+    if client_token in _tagging_cancel_events:
+        _tagging_cancel_events[client_token].set()
+        del _tagging_cancel_events[client_token]
+
+
+def _cleanup_all_tagging_state() -> None:
+    """Clean up all tagging state on process exit."""
+    for token in list(_tagging_cancel_events.keys()):
+        _tagging_cancel_events[token].set()
+    _tagging_cancel_events.clear()
+
+
+# Register cleanup on process exit
+atexit.register(_cleanup_all_tagging_state)
 
 
 class TaggingState(AppState):
@@ -32,9 +54,6 @@ class TaggingState(AppState):
     edit_tags: str = ""
     edit_environments: str = ""
     edit_instruments: str = ""
-
-    # Cancel event
-    _cancel_event: Optional[threading.Event] = None
 
     def on_load(self):
         super().on_load()
@@ -118,6 +137,7 @@ class TaggingState(AppState):
 
     @rx.event(background=True)
     async def start_tagging(self):
+        token = self.router.session.client_token
         async with self:
             if self.preview_count == 0:
                 self.tagging_message = "No tracks to tag. Preview selection first."
@@ -128,7 +148,8 @@ class TaggingState(AppState):
             self.current_batch = 0
             self.tags_generated_count = 0
             self.tagging_message = "Starting tag generation..."
-            self._cancel_event = threading.Event()
+
+        _tagging_cancel_events[token] = threading.Event()
 
         try:
             from plexmix.config.settings import Settings
@@ -236,7 +257,7 @@ class TaggingState(AppState):
                 tracks,
                 batch_size=batch_size,
                 progress_callback=progress_callback,
-                cancel_event=self._cancel_event
+                cancel_event=_tagging_cancel_events.get(token)
             )
 
             # Save tags to database
@@ -254,19 +275,27 @@ class TaggingState(AppState):
             # Reload recently tagged tracks
             self.load_recently_tagged()
 
+            # Clean up cancel event
+            if token in _tagging_cancel_events:
+                del _tagging_cancel_events[token]
+
             async with self:
                 self.is_tagging = False
                 self.tagging_progress = 100
                 self.tagging_message = f"Successfully tagged {self.tags_generated_count} tracks!"
 
         except Exception as e:
+            # Clean up cancel event on error
+            if token in _tagging_cancel_events:
+                del _tagging_cancel_events[token]
             async with self:
                 self.is_tagging = False
                 self.tagging_message = f"Error during tagging: {str(e)}"
 
     def cancel_tagging(self):
-        if self._cancel_event:
-            self._cancel_event.set()
+        token = self.router.session.client_token
+        if token in _tagging_cancel_events:
+            _tagging_cancel_events[token].set()
             self.tagging_message = "Cancelling tagging..."
 
     def start_edit_tag(self, track: Dict[str, Any]):

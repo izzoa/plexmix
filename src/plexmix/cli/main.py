@@ -90,9 +90,9 @@ def main(
 
 @app.command("ui")
 def launch_ui(
-    host: str = typer.Option("localhost", help="Host address for the UI server"),
+    host: str = typer.Option("127.0.0.1", help="Host IP address for the backend server"),
     port: int = typer.Option(3000, help="Port for the UI frontend"),
-    reload: bool = typer.Option(False, "--reload", "-r", help="Enable hot-reloading for development"),
+    prod: bool = typer.Option(False, "--prod", help="Run in production mode (disables hot-reloading)"),
 ):
     try:
         import sys
@@ -103,14 +103,16 @@ def launch_ui(
         import reflex as rx
 
         console.print("[bold green]Launching PlexMix Web UI...[/bold green]")
-        console.print(f"Frontend: http://{host}:{port}")
-        console.print("Backend: http://localhost:8000")
+        console.print(f"Frontend: http://localhost:{port}")
+        console.print(f"Backend: http://{host}:8000")
+        if not prod:
+            console.print("[dim]Hot-reloading enabled (dev mode)[/dim]")
 
         import subprocess
 
         cmd = [sys.executable, "-m", "reflex", "run", "--frontend-port", str(port), "--backend-host", host]
-        if reload:
-            cmd.append("--reload")
+        if prod:
+            cmd.extend(["--env", "prod"])
 
         subprocess.run(cmd, cwd=str(Path(__file__).parent.parent.parent.parent))
 

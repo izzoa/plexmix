@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2025-12-28
+
+### Changed
+- Upgrade Reflex UI runtime from 0.6.8.post1 to 0.8.24 (Vite/Rolldown toolchain)
+- Bump Click dependency from 8.1.7 to ^8.2 (required by Reflex 0.8)
+- Bump Typer dependency from 0.12.0 to ^0.21.0 (Click 8.3 compatibility)
+- Refactor TaggingState cancel mechanism to use module-level dict pattern (Reflex 0.8 compatibility)
+- Replace `--reload` CLI flag with `--prod` flag (hot-reloading now default in dev mode)
+- Center logo in navbar
+
+### Fixed
+- Backend host must be IP address (127.0.0.1) not hostname for Granian compatibility
+
 ## [0.3.1] - 2025-12-27
 
 ### Added
@@ -157,7 +170,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI interface with Rich formatting
 - Tag generation and management
 
-[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/izzoa/plexmix/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/izzoa/plexmix/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/izzoa/plexmix/compare/v0.2.11...v0.3.0
 [0.2.11]: https://github.com/izzoa/plexmix/compare/v0.2.10...v0.2.11

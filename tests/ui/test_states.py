@@ -517,20 +517,33 @@ class TestTaggingState:
         assert state.edit_instruments == "guitar,drums"
 
     def test_cancel_tagging(self):
-        """Test cancel tagging sets cancellation event."""
-        from plexmix.ui.states.tagging_state import TaggingState
+        """Test cancel tagging sets cancellation event via module-level dict."""
+        from plexmix.ui.states.tagging_state import TaggingState, _tagging_cancel_events
         import threading
+        from unittest.mock import MagicMock, PropertyMock
 
         state = TaggingState()
-        state._cancel_event = threading.Event()
+
+        # Mock the router.session.client_token
+        mock_router = MagicMock()
+        mock_session = MagicMock()
+        mock_session.client_token = "test-client-token"
+        mock_router.session = mock_session
+        type(state).router = PropertyMock(return_value=mock_router)
+
+        # Simulate that a cancel event was created for this client
+        _tagging_cancel_events["test-client-token"] = threading.Event()
 
         # Initially not set
-        assert not state._cancel_event.is_set()
+        assert not _tagging_cancel_events["test-client-token"].is_set()
 
         # Cancel should set the event
         state.cancel_tagging()
-        assert state._cancel_event.is_set()
+        assert _tagging_cancel_events["test-client-token"].is_set()
         assert state.tagging_message == "Cancelling tagging..."
+
+        # Clean up
+        del _tagging_cancel_events["test-client-token"]
 
 
 class TestValidation:
