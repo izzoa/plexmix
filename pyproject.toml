@@ -27,7 +27,7 @@ sentence-transformers = "^2.2.0"
 pyyaml = "^6.0.1"
 reflex = {version = "^0.8.23", optional = true}
 
-essentia = {version = "^2.1b6", optional = true}
+essentia = {version = ">=2.1b5", optional = true}
 
 [tool.poetry.extras]
 ui = ["reflex"]

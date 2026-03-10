@@ -633,6 +633,37 @@ docs = ["pydoctor (>=25.4.0)"]
 test = ["pytest"]
 
 [[package]]
+name = "essentia"
+version = "2.1b6.dev1389"
+description = "Library for audio and music analysis, description and synthesis"
+optional = true
+python-versions = "*"
+groups = ["main"]
+markers = "extra == \"audio\""
+files = [
+    {file = "essentia-2.1b6.dev1389-cp310-cp310-macosx_13_0_x86_64.whl", hash = "sha256:935e591d658ee76d6149df7218f424c04627f6c5feca019b077ad80993591190"},
+    {file = "essentia-2.1b6.dev1389-cp310-cp310-macosx_15_0_arm64.whl", hash = "sha256:333ab67ee7154548931e81a5edd7324946d8d5aa89baa17fcc7b9f4328a72215"},
+    {file = "essentia-2.1b6.dev1389-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:2fd106f4f7c2628891cdc7c84f48e36148f24019462781885d8e75d2cb383a38"},
+    {file = "essentia-2.1b6.dev1389-cp311-cp311-macosx_13_0_x86_64.whl", hash = "sha256:b2f88f724325200b38da3f2e9eee083ee954d08f700f5ec0a436686e11b8f8da"},
+    {file = "essentia-2.1b6.dev1389-cp311-cp311-macosx_15_0_arm64.whl", hash = "sha256:819c52ae8964e8ebd63942679908a810a88e97657075a7aeb428ebb422a80340"},
+    {file = "essentia-2.1b6.dev1389-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:59925891f222f8c68575e84f4109973084db2a2df0ab7a73d69c3f592fc45971"},
+    {file = "essentia-2.1b6.dev1389-cp312-cp312-macosx_13_0_x86_64.whl", hash = "sha256:9552bb8e4ff79135cd361a680e10fa8e6d1ef3571b8fc1d9f1314c9d8cf50b5a"},
+    {file = "essentia-2.1b6.dev1389-cp312-cp312-macosx_15_0_arm64.whl", hash = "sha256:ca58a269185c49da232e5f4c177b566f7d248c57b113dd355af778ac0b132e6e"},
+    {file = "essentia-2.1b6.dev1389-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5905c38da25d8ccf4259bd045e50242103a47f482b77559ec6899d4b463ca4e7"},
+    {file = "essentia-2.1b6.dev1389-cp313-cp313-macosx_13_0_x86_64.whl", hash = "sha256:cf6a7fd7965f47d14acbd444fb93650ff116f0b28750f9a1a6aa8a551b8538e7"},
+    {file = "essentia-2.1b6.dev1389-cp313-cp313-macosx_15_0_arm64.whl", hash = "sha256:84e5167b95d9e74b2ddd928555d5a1e11997a458dae25e653544a953bc3068b9"},
+    {file = "essentia-2.1b6.dev1389-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:40815e145dc8841d464fc1af935ef7e6ff1d310ef8169019e8cf22c7670c8830"},
+    {file = "essentia-2.1b6.dev1389-cp39-cp39-macosx_13_0_x86_64.whl", hash = "sha256:f224a8c04d02ee99da638da2e0f79a265049994b5b12915d4dace29b9814d5f0"},
+    {file = "essentia-2.1b6.dev1389-cp39-cp39-macosx_15_0_arm64.whl", hash = "sha256:d73990e19431aea2253576987ed5eb4961d9266b6b73e06d8c0138a14b588ffa"},
+    {file = "essentia-2.1b6.dev1389-cp39-cp39-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:76443c9cb59532a38ce31c371dc911e5a66996578f517d8a9d95aee44071961a"},
+]
+
+[package.dependencies]
+numpy = ">=1.25"
+pyyaml = "*"
+six = "*"
+
+[[package]]
 name = "exceptiongroup"
 version = "1.3.0"
 description = "Backport of PEP 654 (exception groups)"
@@ -3203,6 +3234,19 @@ dev = ["flake8", "pytest", "pytest-cov", "tox"]
 docs = ["sphinx"]
 
 [[package]]
+name = "six"
+version = "1.17.0"
+description = "Python 2 and 3 compatibility utilities"
+optional = true
+python-versions = "!=3.0.*,!=3.1.*,!=3.2.*,>=2.7"
+groups = ["main"]
+markers = "extra == \"audio\""
+files = [
+    {file = "six-1.17.0-py2.py3-none-any.whl", hash = "sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274"},
+    {file = "six-1.17.0.tar.gz", hash = "sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81"},
+]
+
+[[package]]
 name = "sniffio"
 version = "1.3.1"
 description = "Sniff out which async library your code is running under"
@@ -4056,9 +4100,10 @@ test = ["big-O", "jaraco.functools", "jaraco.itertools", "jaraco.test", "more_it
 type = ["pytest-mypy"]
 
 [extras]
+audio = ["essentia"]
 ui = ["reflex"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "33151481f3cb14c31d7972697711e91eb05c6e1e62b70ccd20c9a1397399546a"
+content-hash = "10b6cf7504a5334ef2196fbe4f3a0b187da28bd5ac5e318e5b3f036b13a17a01"
