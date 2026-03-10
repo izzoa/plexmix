@@ -12,11 +12,11 @@ WORKDIR /app
 COPY pyproject.toml poetry.lock ./
 
 RUN poetry config virtualenvs.create false \
-    && poetry install -E ui --no-dev --no-interaction --no-ansi
+    && poetry install -E ui --only main --no-interaction --no-ansi
 
 COPY . .
 
-RUN poetry install -E ui --no-dev --no-interaction --no-ansi
+RUN poetry install -E ui --only main --no-interaction --no-ansi
 
 ENV PLEXMIX_DATA_DIR=/data
 
