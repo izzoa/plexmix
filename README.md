@@ -68,16 +68,17 @@ plexmix sync regenerate
 
 ### Option 2: Docker
 
+Pre-built multi-platform images (amd64 + arm64) are published to GHCR on every release.
+
 ```bash
-# Clone the repo
+# Pull the latest image
+docker pull ghcr.io/izzoa/plexmix:latest
+
+# Or run with Docker Compose (clone the repo for docker-compose.yml)
 git clone https://github.com/izzoa/plexmix.git
 cd plexmix
-
-# Configure environment
 cp .env.example .env
 # Edit .env with your PLEX_TOKEN, GOOGLE_API_KEY, etc.
-
-# Start with Docker Compose
 docker compose up -d
 
 # Access the web UI at http://localhost:3000
@@ -179,6 +180,10 @@ poetry install -E audio
 ### With Docker
 
 ```bash
+# Pre-built image from GHCR
+docker pull ghcr.io/izzoa/plexmix:latest
+
+# Or build locally
 git clone https://github.com/izzoa/plexmix.git
 cd plexmix
 docker compose up -d
@@ -659,14 +664,17 @@ If you ever want to nuke cached weights, delete the relevant directories under `
 
 ## Docker Deployment
 
-PlexMix ships with a `Dockerfile` and `docker-compose.yml` for containerized deployments.
+PlexMix publishes multi-platform Docker images (amd64 + arm64) to GitHub Container Registry on every release.
 
 ### Quick Start
 
 ```bash
+# Option A: Use the pre-built image
+docker pull ghcr.io/izzoa/plexmix:latest
+
+# Option B: Use Docker Compose (clone repo for compose file)
 cp .env.example .env
 # Edit .env with your credentials (PLEX_TOKEN, GOOGLE_API_KEY, etc.)
-
 docker compose up -d
 ```
 
