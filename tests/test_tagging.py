@@ -12,22 +12,20 @@ class TestProviderComplete:
 
     def test_gemini_provider_complete(self):
         """Test GeminiProvider.complete() with mocked API."""
-        with patch('google.generativeai.GenerativeModel') as mock_model_class:
-            # Setup mock
-            mock_response = MagicMock()
-            mock_response.text = '{"1": {"tags": ["energetic", "upbeat"], "environments": ["workout"], "instruments": ["guitar"]}}'
-            mock_model = MagicMock()
-            mock_model.generate_content.return_value = mock_response
-            mock_model_class.return_value = mock_model
+        mock_response = MagicMock()
+        mock_response.text = '{"1": {"tags": ["energetic", "upbeat"], "environments": ["workout"], "instruments": ["guitar"]}}'
 
-            with patch('google.generativeai.configure'):
-                from plexmix.ai.gemini_provider import GeminiProvider
-                provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
+        mock_client = MagicMock()
+        mock_client.models.generate_content.return_value = mock_response
 
-                result = provider.complete("Test prompt", temperature=0.3, max_tokens=1000)
+        with patch('google.genai.Client', return_value=mock_client):
+            from plexmix.ai.gemini_provider import GeminiProvider
+            provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
 
-                assert '{"1":' in result
-                mock_model.generate_content.assert_called_once()
+            result = provider.complete("Test prompt", temperature=0.3, max_tokens=1000)
+
+            assert '{"1":' in result
+            mock_client.models.generate_content.assert_called_once()
 
     def test_openai_provider_complete(self):
         """Test OpenAIProvider.complete() with mocked API."""
@@ -159,43 +157,38 @@ class TestProviderRetry:
 
     def test_provider_retries_on_rate_limit(self):
         """Test that providers retry on rate limit errors."""
-        with patch('google.generativeai.GenerativeModel') as mock_model_class:
-            # First call raises rate limit error, second succeeds
-            mock_response = MagicMock()
-            mock_response.text = '{"result": "success"}'
+        mock_response = MagicMock()
+        mock_response.text = '{"result": "success"}'
 
-            mock_model = MagicMock()
-            mock_model.generate_content.side_effect = [
-                Exception("429 Too Many Requests"),
-                mock_response
-            ]
-            mock_model_class.return_value = mock_model
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = [
+            Exception("429 Too Many Requests"),
+            mock_response
+        ]
 
-            with patch('google.generativeai.configure'):
-                with patch('time.sleep'):  # Don't actually sleep in tests
-                    from plexmix.ai.gemini_provider import GeminiProvider
-                    provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
+        with patch('google.genai.Client', return_value=mock_client):
+            with patch('time.sleep'):  # Don't actually sleep in tests
+                from plexmix.ai.gemini_provider import GeminiProvider
+                provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
 
-                    result = provider.complete("Test prompt")
+                result = provider.complete("Test prompt")
 
-                    assert "success" in result
-                    # Should have been called twice (first failed, second succeeded)
-                    assert mock_model.generate_content.call_count == 2
+                assert "success" in result
+                # Should have been called twice (first failed, second succeeded)
+                assert mock_client.models.generate_content.call_count == 2
 
     def test_provider_gives_up_after_max_retries(self):
         """Test that providers give up after max retries."""
-        with patch('google.generativeai.GenerativeModel') as mock_model_class:
-            mock_model = MagicMock()
-            mock_model.generate_content.side_effect = Exception("429 Too Many Requests")
-            mock_model_class.return_value = mock_model
+        mock_client = MagicMock()
+        mock_client.models.generate_content.side_effect = Exception("429 Too Many Requests")
 
-            with patch('google.generativeai.configure'):
-                with patch('time.sleep'):
-                    from plexmix.ai.gemini_provider import GeminiProvider
-                    provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
+        with patch('google.genai.Client', return_value=mock_client):
+            with patch('time.sleep'):
+                from plexmix.ai.gemini_provider import GeminiProvider
+                provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
 
-                    with pytest.raises(Exception):
-                        provider.complete("Test prompt")
+                with pytest.raises(Exception):
+                    provider.complete("Test prompt")
 
-                    # Should have tried 3 times (max_retries)
-                    assert mock_model.generate_content.call_count == 3
+                # Should have tried 3 times (max_retries)
+                assert mock_client.models.generate_content.call_count == 3

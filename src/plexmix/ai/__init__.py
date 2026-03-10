@@ -27,7 +27,7 @@ def get_ai_provider(
 
     if api_key is None:
         if provider_name == "gemini":
-            api_key = os.getenv("GOOGLE_API_KEY")
+            api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
         elif provider_name == "openai":
             api_key = os.getenv("OPENAI_API_KEY")
         elif provider_name == "claude":

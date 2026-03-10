@@ -23,13 +23,14 @@ This file is the **project-specific playbook** for using Claude (or any coding a
 
 ### Repository layout (high-signal map)
 
-- `src/plexmix/cli/main.py`: Typer CLI (commands: `config`, `sync`, `tags`, `embeddings`, `create`, `ui`, `doctor`, `db`)
+- `src/plexmix/cli/main.py`: Typer CLI (commands: `config`, `sync`, `tags`, `embeddings`, `create`, `ui`, `doctor`, `db`, `audio`)
 - `src/plexmix/config/settings.py`: Pydantic settings + YAML config load/save
-- `src/plexmix/config/credentials.py`: Keyring credential storage (token/API keys)
+- `src/plexmix/config/credentials.py`: Credential storage (env var fallback → keyring)
 - `src/plexmix/database/`: SQLite manager, models, recovery, FAISS vector index
 - `src/plexmix/plex/`: Plex client + sync engine
 - `src/plexmix/ai/`: AI provider implementations + provider factory
-- `src/plexmix/playlist/`: Playlist generation logic (`generator.py`)
+- `src/plexmix/playlist/`: Playlist generation logic (`generator.py`) — supports audio feature filters
+- `src/plexmix/audio/`: Audio feature analysis via Essentia (`analyzer.py`)
 - `src/plexmix/ui/`: Reflex pages/states/components (the UI implementation)
   - **Pages**: `index`, `dashboard`, `settings`, `library`, `generator`, `history`, `tagging`, `doctor`
   - **States**: `app_state` (base), `dashboard_state`, `settings_state`, `library_state`, `generator_state`, `history_state`, `tagging_state`, `doctor_state`
@@ -140,13 +141,23 @@ Rule for changes:
 
 ### Core workflow patterns (backend)
 
-#### Sync pipeline (Plex → SQLite → tags → embeddings → FAISS)
+#### Audio features
+
+- Audio analysis is in `src/plexmix/audio/analyzer.py` (`EssentiaAnalyzer`)
+- Requires `essentia` (optional extra: `poetry install -E audio`)
+- Features stored in `audio_features` DB table (1:1 with tracks)
+- Only tracks with `file_path` set can be analyzed
+- Audio features enrich embedding text (tempo, key, energy, danceability) for better semantic search
+- Config: `AudioSettings` in `settings.py` (env prefix `AUDIO_`)
+
+#### Sync pipeline (Plex → SQLite → tags → audio → embeddings → FAISS)
 
 - Sync logic is centralized in `src/plexmix/plex/sync.py` (`SyncEngine`).
 - Sync supports:
   - **progress callbacks** (`progress_callback(progress_float, message)`) for UI/CLI feedback
   - **cancellation** via `threading.Event` (`cancel_event`)
 - Tag generation (if AI provider configured) is designed to run **before** embeddings so embeddings can incorporate tags.
+- Audio analysis (if enabled via `--audio` flag or `audio.analyze_on_sync`) runs after tags, before embeddings.
 
 Best practices:
 - Keep DB writes **parameterized** and inside the `SQLiteManager` APIs.
@@ -223,6 +234,12 @@ Testing:
 
 ---
 
+### CI/CD pipelines
+
+GitHub Actions workflows live in `.github/workflows/` (test, publish, docker). For details on each workflow and the Docker image build process, see the **CI/CD Pipelines** section in `LLM.md`.
+
+---
+
 ### Versioning & releases
 
 This repo keeps the version in **two places**:
@@ -265,6 +282,10 @@ Example workflow:
 ---
 
 ### “How to change things safely” (quick recipes)
+
+#### Keep README.md up to date (REQUIRED)
+
+After any user-facing feature change (new settings, CLI options, env vars, Docker config, etc.), **update `README.md`** to reflect the change. This includes adding new environment variables to the Docker table, documenting new CLI flags, and updating configuration examples.
 
 #### Add a new CLI command
 

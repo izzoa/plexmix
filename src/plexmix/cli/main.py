@@ -90,7 +90,10 @@ def main(
 
 @app.command("ui")
 def launch_ui(
-    host: str = typer.Option("127.0.0.1", help="Host IP address for the backend server"),
+    host: str = typer.Option(
+        os.getenv("PLEXMIX_UI_HOST", "127.0.0.1"),
+        help="Host IP address for the backend server",
+    ),
     port: int = typer.Option(3000, help="Port for the UI frontend"),
     prod: bool = typer.Option(False, "--prod", help="Run in production mode (disables hot-reloading)"),
 ):
@@ -421,10 +424,11 @@ app.add_typer(embeddings_app)
 @sync_app.callback()
 def sync_callback(
     ctx: typer.Context,
-    embeddings: bool = typer.Option(True, help="Generate embeddings during sync")
+    embeddings: bool = typer.Option(True, help="Generate embeddings during sync"),
+    audio: bool = typer.Option(False, help="Extract audio features during sync"),
 ):
     if ctx.invoked_subcommand is None:
-        sync_incremental(embeddings=embeddings)
+        sync_incremental(embeddings=embeddings, audio=audio)
 
 
 @embeddings_app.command("generate")
@@ -542,7 +546,8 @@ def embeddings_generate(
 
 @sync_app.command("incremental")
 def sync_incremental(
-    embeddings: bool = typer.Option(True, help="Generate embeddings during sync")
+    embeddings: bool = typer.Option(True, help="Generate embeddings during sync"),
+    audio: bool = typer.Option(False, help="Extract audio features during sync"),
 ):
     console.print("[bold]Starting incremental library sync...[/bold]")
 
@@ -596,6 +601,11 @@ def sync_incremental(
             console.print(f"  Tracks added: {sync_result.tracks_added}")
             console.print(f"  Tracks updated: {sync_result.tracks_updated}")
             console.print(f"  Tracks removed: {sync_result.tracks_removed}")
+
+            # Run audio analysis if requested
+            run_audio = audio or settings.audio.analyze_on_sync
+            if run_audio:
+                _run_audio_analysis(db, settings)
 
         except KeyboardInterrupt:
             console.print(f"\n[yellow]Sync interrupted by user.[/yellow]")
@@ -1098,6 +1108,11 @@ def create_playlist(
     year: Optional[int] = typer.Option(None, help="Filter by year"),
     environment: Optional[str] = typer.Option(None, help="Filter by environment (work, study, focus, relax, party, workout, sleep, driving, social)"),
     instrument: Optional[str] = typer.Option(None, help="Filter by instrument (piano, guitar, saxophone, trumpet, drums, bass, synth, vocals, strings, orchestra)"),
+    tempo_min: Optional[int] = typer.Option(None, help="Minimum BPM"),
+    tempo_max: Optional[int] = typer.Option(None, help="Maximum BPM"),
+    energy: Optional[str] = typer.Option(None, help="Energy level: low, medium, high"),
+    key: Optional[str] = typer.Option(None, help="Musical key (e.g., C, D, Eb)"),
+    danceable: Optional[float] = typer.Option(None, help="Minimum danceability (0-1)"),
     pool_multiplier: Optional[int] = typer.Option(None, help="Candidate pool multiplier (default: 25x playlist length)"),
     create_in_plex: bool = typer.Option(True, help="Create playlist in Plex"),
 ):
@@ -1166,6 +1181,16 @@ def create_playlist(
             filters['environment'] = environment
         if instrument:
             filters['instrument'] = instrument
+        if tempo_min is not None:
+            filters['tempo_min'] = tempo_min
+        if tempo_max is not None:
+            filters['tempo_max'] = tempo_max
+        if energy:
+            filters['energy_level'] = energy
+        if key:
+            filters['key'] = key
+        if danceable is not None:
+            filters['danceability_min'] = danceable
 
         tracks = generator.generate(
             mood,
@@ -1379,6 +1404,113 @@ def db_reset(
     console.print("\n[yellow]Next steps:[/yellow]")
     console.print("  1. Run 'plexmix sync' to re-sync your Plex library")
     console.print("  2. (Optional) Run 'plexmix tags generate' to re-tag tracks")
+
+
+audio_app = typer.Typer(name="audio", help="Audio feature analysis")
+app.add_typer(audio_app)
+
+
+def _run_audio_analysis(
+    db: SQLiteManager,
+    settings: Settings,
+    force: bool = False,
+) -> None:
+    """Run audio feature analysis on tracks in the database."""
+    try:
+        from ..audio.analyzer import EssentiaAnalyzer
+    except ImportError:
+        console.print("[yellow]Essentia not installed. Skipping audio analysis.[/yellow]")
+        console.print("Install with: poetry install -E audio")
+        return
+
+    from rich.progress import (
+        Progress, SpinnerColumn, TextColumn, BarColumn,
+        TaskProgressColumn, TimeRemainingColumn,
+    )
+
+    analyzer = EssentiaAnalyzer()
+    duration_limit = settings.audio.duration_limit
+
+    if force:
+        tracks = db.get_all_tracks()
+        tracks = [t for t in tracks if t.file_path]
+    else:
+        tracks = db.get_tracks_without_audio_features()
+
+    if not tracks:
+        console.print("[green]All eligible tracks already have audio features.[/green]")
+        return
+
+    console.print(f"[bold]Analyzing audio features for {len(tracks)} tracks...[/bold]")
+    analyzed = 0
+    errors = 0
+
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            task = progress.add_task("Analyzing audio...", total=len(tracks))
+
+            for track in tracks:
+                try:
+                    resolved_path = settings.audio.resolve_path(track.file_path)
+                    features = analyzer.analyze(resolved_path, duration_limit=duration_limit)
+                    db.insert_audio_features(track.id, features.to_dict())
+                    analyzed += 1
+                except Exception as e:
+                    errors += 1
+                    if errors <= 5:
+                        console.print(f"[dim]  Skipped {track.title}: {e}[/dim]")
+                progress.update(task, advance=1)
+
+    except KeyboardInterrupt:
+        console.print(f"\n[yellow]Analysis interrupted. Saved {analyzed} results.[/yellow]")
+        return
+
+    console.print(f"[green]Analyzed {analyzed} tracks ({errors} errors).[/green]")
+
+
+@audio_app.command("analyze")
+def audio_analyze(
+    force: bool = typer.Option(False, "--force", help="Re-analyze all tracks"),
+):
+    """Analyze audio features for tracks in the library."""
+    settings = Settings.load_from_file()
+    db_path = settings.database.get_db_path()
+
+    with SQLiteManager(str(db_path)) as db:
+        _run_audio_analysis(db, settings, force=force)
+
+
+@audio_app.command("info")
+def audio_info():
+    """Show audio analysis statistics."""
+    settings = Settings.load_from_file()
+    db_path = settings.database.get_db_path()
+
+    with SQLiteManager(str(db_path)) as db:
+        total_tracks = len(db.get_all_tracks())
+        tracks_with_path = len([t for t in db.get_all_tracks() if t.file_path])
+        features_count = db.get_audio_features_count()
+        tracks_without = len(db.get_tracks_without_audio_features())
+
+        table = Table(title="Audio Analysis Stats")
+        table.add_column("Metric", style="cyan")
+        table.add_column("Value", style="green")
+
+        table.add_row("Total tracks", str(total_tracks))
+        table.add_row("Tracks with file path", str(tracks_with_path))
+        table.add_row("Tracks analyzed", str(features_count))
+        table.add_row("Tracks pending analysis", str(tracks_without))
+
+        pct = f"{features_count / tracks_with_path * 100:.0f}%" if tracks_with_path > 0 else "N/A"
+        table.add_row("Analysis coverage", pct)
+
+        console.print(table)
 
 
 if __name__ == "__main__":

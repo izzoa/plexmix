@@ -44,6 +44,10 @@ class SettingsState(AppState):
     embedding_batch_size: int = 50
     log_level: str = "INFO"
 
+    audio_enabled: bool = False
+    audio_analyze_on_sync: bool = False
+    audio_duration_limit: int = 60
+
     testing_connection: bool = False
     plex_test_status: str = ""
     ai_test_status: str = ""
@@ -122,6 +126,10 @@ class SettingsState(AppState):
             self.db_path = settings.database.path
             self.faiss_index_path = settings.database.faiss_index_path
             self.log_level = settings.logging.level
+
+            self.audio_enabled = settings.audio.enabled
+            self.audio_analyze_on_sync = settings.audio.analyze_on_sync
+            self.audio_duration_limit = settings.audio.duration_limit
 
         except Exception as e:
             print(f"Error loading settings: {e}")
@@ -248,6 +256,19 @@ class SettingsState(AppState):
 
     def set_log_level(self, level: str):
         self.log_level = level
+
+    def set_audio_enabled(self, enabled: bool):
+        self.audio_enabled = enabled
+
+    def set_audio_analyze_on_sync(self, enabled: bool):
+        self.audio_analyze_on_sync = enabled
+
+    def set_audio_duration_limit(self, value: str):
+        try:
+            v = int(value)
+            self.audio_duration_limit = max(0, min(300, v))
+        except (ValueError, TypeError):
+            self.audio_duration_limit = 60
 
     @rx.event(background=True)
     async def test_plex_connection(self):
@@ -549,6 +570,10 @@ class SettingsState(AppState):
                     store_cohere_api_key(self.embedding_api_key)
 
             settings.logging.level = self.log_level
+
+            settings.audio.enabled = self.audio_enabled
+            settings.audio.analyze_on_sync = self.audio_analyze_on_sync
+            settings.audio.duration_limit = self.audio_duration_limit
 
             settings.save_to_file()
 

@@ -266,22 +266,70 @@ class TestGeneratorState:
 
         state = GeneratorState()
         state.generated_playlist = [
-            {"id": 1, "title": "Track 1"},
-            {"id": 2, "title": "Track 2"},
-            {"id": 3, "title": "Track 3"},
+            {"id": 1, "title": "Track 1", "duration_ms": 180000},
+            {"id": 2, "title": "Track 2", "duration_ms": 200000},
+            {"id": 3, "title": "Track 3", "duration_ms": 150000},
         ]
+        state.total_duration_ms = 530000
 
-        # Test that we can remove from the list
-        initial_len = len(state.generated_playlist)
-
-        # Remove by ID
-        state.generated_playlist = [
-            t for t in state.generated_playlist if t["id"] != 2
-        ]
-
-        assert len(state.generated_playlist) == initial_len - 1
+        state.remove_track(2)
+        assert len(state.generated_playlist) == 2
         assert state.generated_playlist[0]["id"] == 1
         assert state.generated_playlist[1]["id"] == 3
+        assert state.total_duration_ms == 330000
+
+    def test_set_max_tracks_clamps(self):
+        from plexmix.ui.states.generator_state import GeneratorState
+        state = GeneratorState()
+        state.set_max_tracks(5)
+        assert state.max_tracks == 10  # clamped to min 10
+        state.set_max_tracks(200)
+        assert state.max_tracks == 100  # clamped to max 100
+        state.set_max_tracks(50)
+        assert state.max_tracks == 50
+
+    def test_set_candidate_pool_multiplier_clamps(self):
+        from plexmix.ui.states.generator_state import GeneratorState
+        state = GeneratorState()
+        state.set_candidate_pool_multiplier(0)
+        assert state.candidate_pool_multiplier == 1
+        state.set_candidate_pool_multiplier(200)
+        assert state.candidate_pool_multiplier == 100
+        state.set_candidate_pool_multiplier(25)
+        assert state.candidate_pool_multiplier == 25
+
+    def test_set_year_min_max(self):
+        from plexmix.ui.states.generator_state import GeneratorState
+        state = GeneratorState()
+        state.set_year_min("2000")
+        assert state.year_min == 2000
+        state.set_year_min("")
+        assert state.year_min is None
+        state.set_year_max("2020")
+        assert state.year_max == 2020
+        state.set_year_max("")
+        assert state.year_max is None
+
+    def test_audio_setters(self):
+        from plexmix.ui.states.generator_state import GeneratorState
+        state = GeneratorState()
+        state.set_tempo_min("80")
+        assert state.tempo_min == "80"
+        state.set_tempo_max("140")
+        assert state.tempo_max == "140"
+        state.set_energy_level("high")
+        assert state.energy_level == "high"
+        state.set_key_filter("C")
+        assert state.key_filter == "C"
+        state.set_danceability_min("0.5")
+        assert state.danceability_min == "0.5"
+
+    def test_format_duration(self):
+        from plexmix.ui.states.generator_state import GeneratorState
+        state = GeneratorState()
+        assert state.format_duration(0) == "0:00"
+        assert state.format_duration(185000) == "3:05"
+        assert state.format_duration(60000) == "1:00"
 
 
 class TestLibraryState:
@@ -649,6 +697,205 @@ class TestValidation:
 
         valid, error = validate_batch_size("not a number")
         assert valid == False
+
+
+class TestSettingsStateExpanded:
+    """Expanded tests for SettingsState setters and sync logic."""
+
+    def test_set_audio_enabled(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.set_audio_enabled(True)
+        assert state.audio_enabled is True
+        state.set_audio_enabled(False)
+        assert state.audio_enabled is False
+
+    def test_set_audio_analyze_on_sync(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.set_audio_analyze_on_sync(True)
+        assert state.audio_analyze_on_sync is True
+
+    def test_set_audio_duration_limit_valid(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.set_audio_duration_limit("30")
+        assert state.audio_duration_limit == 30
+
+    def test_set_audio_duration_limit_clamp_high(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.set_audio_duration_limit("999")
+        assert state.audio_duration_limit == 300
+
+    def test_set_audio_duration_limit_clamp_low(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.set_audio_duration_limit("-5")
+        assert state.audio_duration_limit == 0
+
+    def test_set_audio_duration_limit_invalid(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.set_audio_duration_limit("abc")
+        assert state.audio_duration_limit == 60  # fallback
+
+    def test_sync_embedding_dimension_gemini(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.embedding_provider = "gemini"
+        state._sync_embedding_dimension()
+        assert state.embedding_dimension == 3072
+
+    def test_sync_embedding_dimension_openai(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.embedding_provider = "openai"
+        state._sync_embedding_dimension()
+        assert state.embedding_dimension == 1536
+
+    def test_sync_embedding_dimension_cohere(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.embedding_provider = "cohere"
+        state._sync_embedding_dimension()
+        assert state.embedding_dimension == 1024
+
+    def test_sync_embedding_dimension_local_known(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.embedding_provider = "local"
+        state.embedding_model = "all-MiniLM-L6-v2"
+        state._sync_embedding_dimension()
+        assert state.embedding_dimension == 384
+
+    def test_sync_embedding_dimension_local_unknown(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.embedding_provider = "local"
+        state.embedding_model = "unknown-model"
+        state._sync_embedding_dimension()
+        assert state.embedding_dimension == 384
+
+    def test_set_embedding_provider_triggers_sync(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.set_embedding_provider("openai")
+        assert state.embedding_dimension == 1536
+
+    def test_set_ai_provider_clears_api_key(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.ai_api_key = "should_be_cleared"
+        state.set_ai_provider("openai")
+        assert state.ai_api_key == ""
+
+    def test_set_ai_local_mode_clears_endpoint_error(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.local_endpoint_error = "some error"
+        state.set_ai_local_mode("builtin")
+        assert state.local_endpoint_error == ""
+
+    def test_set_ai_local_mode_keeps_endpoint_error(self):
+        from plexmix.ui.states.settings_state import SettingsState
+        state = SettingsState()
+        state.local_endpoint_error = "some error"
+        state.set_ai_local_mode("endpoint")
+        assert state.local_endpoint_error == "some error"
+
+
+class TestDoctorStateExpanded:
+    """Expanded tests for DoctorState computed vars."""
+
+    def test_orphaned_embeddings_label(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.doctor_orphaned_embeddings = 5
+        assert state.orphaned_embeddings_label == "5 Orphaned Embeddings"
+
+    def test_missing_embeddings_label(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.doctor_tracks_needing_embeddings = 10
+        assert state.missing_embeddings_label == "10 Tracks Need Embeddings"
+
+    def test_missing_audio_label(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.doctor_tracks_without_audio = 7
+        assert state.missing_audio_label == "7 Tracks Need Audio Analysis"
+
+    def test_fix_progress_label_zero(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.fix_total = 0
+        state.fix_progress = 0
+        assert state.fix_progress_label == "0 / 0"
+
+    def test_fix_progress_label_nonzero(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.fix_total = 20
+        state.fix_progress = 5
+        assert state.fix_progress_label == "5 / 20"
+
+    def test_embedding_job_running(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.current_fix_target = "embeddings_incremental"
+        assert state.embedding_job_running is True
+        state.current_fix_target = "embeddings_full"
+        assert state.embedding_job_running is True
+        state.current_fix_target = "tags"
+        assert state.embedding_job_running is False
+
+    def test_incremental_embedding_running(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.current_fix_target = "embeddings_incremental"
+        assert state.incremental_embedding_running is True
+        state.current_fix_target = ""
+        assert state.incremental_embedding_running is False
+
+    def test_full_embedding_running(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.current_fix_target = "embeddings_full"
+        assert state.full_embedding_running is True
+        state.current_fix_target = ""
+        assert state.full_embedding_running is False
+
+    def test_tag_job_running(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.current_fix_target = "tags"
+        assert state.tag_job_running is True
+        state.current_fix_target = ""
+        assert state.tag_job_running is False
+
+    def test_audio_job_running(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.current_fix_target = "audio_analysis"
+        assert state.audio_job_running is True
+        state.current_fix_target = ""
+        assert state.audio_job_running is False
+
+    def test_untagged_tracks_message_with_untagged(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.doctor_untagged_tracks = 15
+        msg = state.untagged_tracks_message
+        assert "15 tracks" in msg
+        assert "don't have AI-generated tags" in msg
+
+    def test_untagged_tracks_message_all_tagged(self):
+        from plexmix.ui.states.doctor_state import DoctorState
+        state = DoctorState()
+        state.doctor_untagged_tracks = 0
+        msg = state.untagged_tracks_message
+        assert "All tracks" in msg
 
 
 if __name__ == "__main__":

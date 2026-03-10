@@ -43,29 +43,27 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
     def __init__(self, api_key: str, model: str = "gemini-embedding-001"):
         super().__init__()
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
+            from google import genai
+
+            self.client = genai.Client(api_key=api_key)
             self.model_name = model
             self.dimension = 3072
             logger.info(f"[{self.provider_name}] Initialized embedding provider with model {model}")
         except ImportError:
-            raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
+            raise ImportError("google-genai not installed. Run: pip install google-genai")
 
     def generate_embedding(self, text: str) -> List[float]:
-        import google.generativeai as genai
-
         max_retries = 5
         base_delay = 2
         backoff_multiplier = 1.5
 
         for attempt in range(max_retries):
             try:
-                result = genai.embed_content(
-                    model=f"models/{self.model_name}",
-                    content=text,
-                    task_type="retrieval_document"
+                result = self.client.models.embed_content(
+                    model=self.model_name,
+                    contents=text,
                 )
-                return result['embedding']
+                return list(result.embeddings[0].values)
             except Exception as e:
                 error_str = str(e)
 
@@ -103,8 +101,6 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         return None
 
     def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
-        import google.generativeai as genai
-
         embeddings = []
         total_batches = (len(texts) + batch_size - 1) // batch_size
         max_retries = 5
@@ -443,7 +439,7 @@ class EmbeddingGenerator:
         return self.provider.get_dimension()
 
 
-def create_track_text(track_data: dict) -> str:
+def create_track_text(track_data: dict, audio_features: Optional[dict] = None) -> str:
     title = track_data.get('title', 'Unknown')
     artist = track_data.get('artist', 'Unknown Artist')
     album = track_data.get('album', 'Unknown Album')
@@ -465,18 +461,45 @@ def create_track_text(track_data: dict) -> str:
     if instruments:
         text += f" | instruments: {instruments}"
 
+    if audio_features:
+        audio_parts: List[str] = []
+        if audio_features.get('tempo'):
+            bpm = audio_features['tempo']
+            pace = "slow" if bpm < 90 else "medium" if bpm < 130 else "fast"
+            audio_parts.append(f"{int(bpm)} bpm ({pace})")
+        if audio_features.get('key') and audio_features.get('scale'):
+            audio_parts.append(f"{audio_features['key']} {audio_features['scale']}")
+        if audio_features.get('energy_level'):
+            audio_parts.append(f"{audio_features['energy_level']} energy")
+        if audio_features.get('danceability') is not None:
+            d = audio_features['danceability']
+            label = "very danceable" if d > 0.7 else "danceable" if d > 0.4 else "not danceable"
+            audio_parts.append(label)
+        if audio_parts:
+            text += " | audio: " + ", ".join(audio_parts)
+
     return text
 
 
-def embed_track(track_data: dict, generator: EmbeddingGenerator) -> List[float]:
-    text = create_track_text(track_data)
+def embed_track(
+    track_data: dict,
+    generator: EmbeddingGenerator,
+    audio_features: Optional[dict] = None,
+) -> List[float]:
+    text = create_track_text(track_data, audio_features)
     return generator.generate_embedding(text)
 
 
 def embed_all_tracks(
     tracks: List[dict],
     generator: EmbeddingGenerator,
-    batch_size: int = 100
+    batch_size: int = 100,
+    audio_features_map: Optional[Dict[int, dict]] = None,
 ) -> List[List[float]]:
-    texts = [create_track_text(track) for track in tracks]
+    texts = []
+    for track in tracks:
+        af = None
+        if audio_features_map:
+            af = audio_features_map.get(track.get('id'))
+        texts.append(create_track_text(track, af))
     return generator.generate_batch_embeddings(texts, batch_size)

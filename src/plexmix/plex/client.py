@@ -255,7 +255,7 @@ class PlexClient:
             rating=plex_track.userRating if hasattr(plex_track, 'userRating') else None,
             play_count=plex_track.viewCount if hasattr(plex_track, 'viewCount') else 0,
             last_played=plex_track.lastViewedAt if hasattr(plex_track, 'lastViewedAt') else None,
-            file_path=None
+            file_path=self._extract_file_path(plex_track)
         )
 
         # Store rating keys as temporary attributes (not part of model schema)
@@ -263,6 +263,18 @@ class PlexClient:
         track.__dict__['_album_key'] = str(album.ratingKey) if album else None
 
         return track
+
+    @staticmethod
+    def _extract_file_path(plex_track: object) -> Optional[str]:
+        """Extract the file path from a Plex track's media parts."""
+        try:
+            if hasattr(plex_track, 'media') and plex_track.media:
+                parts = plex_track.media[0].parts if plex_track.media[0].parts else []
+                if parts:
+                    return parts[0].file
+        except Exception:
+            pass
+        return None
 
     def create_playlist(self, name: str, track_plex_keys: List[str], description: Optional[str] = None):
         if not self.music_library:

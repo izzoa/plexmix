@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-03-10
+
+### Added
+- Docker support with Dockerfile, docker-compose.yml, and .dockerignore
+- GitHub Actions workflow for building & pushing multi-platform Docker images to GHCR on tag push
+- Configurable data directory via `PLEXMIX_DATA_DIR` env var for container deployments
+- Environment variable fallback for all credentials (keyring-free operation in containers)
+- `PLEXMIX_UI_HOST` env var for configuring UI host binding
+- Audio feature analysis module powered by Essentia (optional `audio` extra)
+- `audio_features` database table with migration for existing databases
+- `plexmix audio analyze` and `plexmix audio info` CLI commands
+- `--audio` flag on sync commands to extract audio features during sync
+- Audio feature enrichment in embedding text (tempo, key, energy, danceability)
+- Audio feature filters in playlist generator (tempo, key, energy, danceability)
+- Audio filter options in `plexmix create` CLI command
+- Audio settings (`AudioSettings`) in config with `AUDIO_` env prefix
+- Audio path remapping for Docker/remote setups (`AUDIO_PATH_PREFIX_FROM` / `AUDIO_PATH_PREFIX_TO`)
+- File path extraction from Plex media for audio analysis
+- Support `GEMINI_API_KEY` env var alongside existing `GOOGLE_API_KEY` for Gemini provider
+- Comprehensive test suite for config, recovery, vector index, CLI, and expanded UI states
+
+### Changed
+- Migrate `google-generativeai` (EOL) to `google-genai` ^1.0.0 (new client-based SDK)
+- Bump `anthropic` from ^0.8.0 to ^0.84.0
+- Bump `openai` from ^1.6.0 to ^1.60.0
+- Add missing `cohere` ^5.20.0 dependency to pyproject.toml
+
 ## [0.4.0] - 2025-12-28
 
 ### Changed

@@ -282,3 +282,154 @@ def test_generate_removes_duplicates(playlist_generator, sample_tracks, db_manag
 
     titles_and_artists = [(track['title'], track['artist']) for track in result]
     assert len(titles_and_artists) == len(set(titles_and_artists))
+
+
+def test_apply_filters_audio_tempo(playlist_generator, sample_tracks, db_manager):
+    """Test filtering by tempo range via audio_features table."""
+    tracks, track_ids = sample_tracks
+
+    # Add audio features for some tracks
+    db_manager.insert_audio_features(track_ids[0], {"tempo": 80.0, "energy_level": "low"})
+    db_manager.insert_audio_features(track_ids[1], {"tempo": 120.0, "energy_level": "medium"})
+    db_manager.insert_audio_features(track_ids[2], {"tempo": 150.0, "energy_level": "high"})
+
+    # Filter for medium tempo range
+    filtered_ids = playlist_generator._apply_filters({
+        'tempo_min': 100,
+        'tempo_max': 140,
+    })
+
+    assert track_ids[1] in filtered_ids
+    assert track_ids[0] not in filtered_ids
+    assert track_ids[2] not in filtered_ids
+
+
+def test_apply_filters_audio_energy_level(playlist_generator, sample_tracks, db_manager):
+    tracks, track_ids = sample_tracks
+
+    db_manager.insert_audio_features(track_ids[0], {"energy_level": "low"})
+    db_manager.insert_audio_features(track_ids[1], {"energy_level": "high"})
+
+    filtered_ids = playlist_generator._apply_filters({'energy_level': 'high'})
+    assert track_ids[1] in filtered_ids
+    assert track_ids[0] not in filtered_ids
+
+
+def test_apply_filters_audio_key(playlist_generator, sample_tracks, db_manager):
+    tracks, track_ids = sample_tracks
+
+    db_manager.insert_audio_features(track_ids[0], {"key": "C"})
+    db_manager.insert_audio_features(track_ids[1], {"key": "G"})
+
+    filtered_ids = playlist_generator._apply_filters({'key': 'C'})
+    assert track_ids[0] in filtered_ids
+    assert track_ids[1] not in filtered_ids
+
+
+def test_apply_filters_audio_danceability(playlist_generator, sample_tracks, db_manager):
+    tracks, track_ids = sample_tracks
+
+    db_manager.insert_audio_features(track_ids[0], {"danceability": 0.3})
+    db_manager.insert_audio_features(track_ids[1], {"danceability": 0.8})
+
+    filtered_ids = playlist_generator._apply_filters({'danceability_min': 0.5})
+    assert track_ids[1] in filtered_ids
+    assert track_ids[0] not in filtered_ids
+
+
+# ---------------------------------------------------------------------------
+# _select_diverse_tracks
+# ---------------------------------------------------------------------------
+
+def test_select_diverse_caps_artist_at_3(playlist_generator):
+    """Artist cap: max 3 tracks per artist."""
+    candidates = [
+        {"id": i, "title": f"Song {i}", "artist": "Same Artist", "album": f"Album {i}"}
+        for i in range(10)
+    ]
+    selected = playlist_generator._select_diverse_tracks(candidates, max_tracks=10)
+    assert len(selected) == 3
+
+
+def test_select_diverse_caps_album_at_2(playlist_generator):
+    """Album cap: max 2 tracks per album."""
+    candidates = [
+        {"id": i, "title": f"Song {i}", "artist": f"Artist {i}", "album": "Same Album"}
+        for i in range(10)
+    ]
+    selected = playlist_generator._select_diverse_tracks(candidates, max_tracks=10)
+    assert len(selected) == 2
+
+
+def test_select_diverse_deduplicates_title_artist(playlist_generator):
+    """Duplicate title+artist (case insensitive) are skipped."""
+    candidates = [
+        {"id": 1, "title": "Hello World", "artist": "Bob", "album": "A1"},
+        {"id": 2, "title": "hello world", "artist": "bob", "album": "A2"},
+        {"id": 3, "title": "Different", "artist": "Alice", "album": "A3"},
+    ]
+    selected = playlist_generator._select_diverse_tracks(candidates, max_tracks=10)
+    assert 1 in selected
+    assert 2 not in selected
+    assert 3 in selected
+
+
+def test_select_diverse_respects_max_tracks(playlist_generator):
+    candidates = [
+        {"id": i, "title": f"Song {i}", "artist": f"Artist {i}", "album": f"Album {i}"}
+        for i in range(20)
+    ]
+    selected = playlist_generator._select_diverse_tracks(candidates, max_tracks=5)
+    assert len(selected) == 5
+
+
+def test_select_diverse_empty_candidates(playlist_generator):
+    assert playlist_generator._select_diverse_tracks([], max_tracks=10) == []
+
+
+# ---------------------------------------------------------------------------
+# _apply_filters edge cases
+# ---------------------------------------------------------------------------
+
+def test_apply_filters_empty_dict_returns_all(playlist_generator, sample_tracks):
+    """Empty filter dict should return all track IDs."""
+    tracks, track_ids = sample_tracks
+    filtered_ids = playlist_generator._apply_filters({})
+    assert len(filtered_ids) == len(track_ids)
+
+
+def test_apply_filters_combined_audio_and_genre(playlist_generator, sample_tracks, db_manager):
+    """Combined genre + audio filter uses LEFT JOIN."""
+    tracks, track_ids = sample_tracks
+    db_manager.insert_audio_features(track_ids[0], {"tempo": 120.0})
+    db_manager.insert_audio_features(track_ids[1], {"tempo": 80.0})
+
+    filtered_ids = playlist_generator._apply_filters({
+        'genre': 'Jazz',
+        'tempo_min': 100,
+    })
+    assert track_ids[0] in filtered_ids
+    assert track_ids[1] not in filtered_ids
+
+
+# ---------------------------------------------------------------------------
+# generate with progress_callback
+# ---------------------------------------------------------------------------
+
+def test_generate_with_progress_callback(playlist_generator, sample_tracks):
+    tracks, track_ids = sample_tracks
+    progress_calls = []
+
+    def callback(progress, message):
+        progress_calls.append((progress, message))
+
+    playlist_generator.generate(
+        mood_query="jazz",
+        max_tracks=3,
+        candidate_pool_size=5,
+        progress_callback=callback,
+    )
+
+    assert len(progress_calls) >= 3  # at least start, search, build, complete
+    assert progress_calls[0][0] == 0.0  # starts at 0
+    assert progress_calls[-1][0] == 1.0  # ends at 1.0

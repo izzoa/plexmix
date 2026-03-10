@@ -74,11 +74,14 @@ def test_create_track_text_empty_optional_fields():
 
 @pytest.fixture
 def mock_gemini_model():
-    with patch('plexmix.utils.embeddings.genai') as mock_genai:
-        mock_result = Mock()
-        mock_result.embedding = [0.1] * 3072
-        mock_genai.embed_content.return_value = {'embedding': [0.1] * 3072}
-        yield mock_genai
+    mock_client = MagicMock()
+    mock_embedding = MagicMock()
+    mock_embedding.values = [0.1] * 3072
+    mock_response = MagicMock()
+    mock_response.embeddings = [mock_embedding]
+    mock_client.models.embed_content.return_value = mock_response
+    with patch('google.genai.Client', return_value=mock_client):
+        yield mock_client
 
 
 def test_embedding_generator_local():
@@ -89,7 +92,8 @@ def test_embedding_generator_local():
 
 
 def test_embedding_generator_gemini_dimension():
-    with patch('google.generativeai.configure'):
+    mock_client = MagicMock()
+    with patch('google.genai.Client', return_value=mock_client):
         generator = EmbeddingGenerator(provider='gemini', api_key='test-key')
         assert generator.get_dimension() == 3072
         assert generator.provider_name == 'gemini'
@@ -153,3 +157,54 @@ def test_embedding_generator_local_batch():
 def test_embedding_generator_invalid_provider():
     with pytest.raises(ValueError, match="Unknown provider"):
         EmbeddingGenerator(provider='invalid')
+
+
+def test_create_track_text_with_audio_features():
+    track_data = {
+        'title': 'Uptown Funk',
+        'artist': 'Bruno Mars',
+        'album': 'Uptown Special',
+        'genre': 'Pop',
+    }
+    audio_features = {
+        'tempo': 115.0,
+        'key': 'D',
+        'scale': 'minor',
+        'energy_level': 'high',
+        'danceability': 0.85,
+    }
+
+    text = create_track_text(track_data, audio_features)
+
+    assert '115 bpm' in text
+    assert 'medium' in text  # 115 bpm -> medium pace
+    assert 'D minor' in text
+    assert 'high energy' in text
+    assert 'very danceable' in text
+
+
+def test_create_track_text_audio_features_none():
+    track_data = {
+        'title': 'Track',
+        'artist': 'Artist',
+        'album': 'Album',
+    }
+
+    text_without = create_track_text(track_data, None)
+    text_plain = create_track_text(track_data)
+    assert text_without == text_plain
+    assert 'audio:' not in text_without
+
+
+def test_create_track_text_partial_audio_features():
+    track_data = {
+        'title': 'Track',
+        'artist': 'Artist',
+        'album': 'Album',
+    }
+    audio_features = {'tempo': 90.0}
+
+    text = create_track_text(track_data, audio_features)
+
+    assert '90 bpm' in text
+    assert 'audio:' in text

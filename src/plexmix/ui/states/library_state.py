@@ -60,6 +60,10 @@ class LibraryState(AppState):
     embedding_progress: int = 0
     embedding_message: str = ""
 
+    is_analyzing_audio: bool = False
+    audio_analysis_progress: int = 0
+    audio_analysis_message: str = ""
+
     selected_tracks: List[int] = []
     sort_column: str = "title"
     sort_ascending: bool = True
@@ -422,3 +426,77 @@ class LibraryState(AppState):
             async with self:
                 self.is_embedding = False
                 self.embedding_message = f"Embedding generation failed: {str(e)}"
+
+    @rx.event(background=True)
+    async def analyze_audio(self):
+        async with self:
+            self.is_analyzing_audio = True
+            self.audio_analysis_progress = 0
+            self.audio_analysis_message = "Starting audio analysis..."
+
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            try:
+                from plexmix.audio.analyzer import EssentiaAnalyzer
+            except ImportError:
+                async with self:
+                    self.audio_analysis_message = (
+                        "Essentia is not installed. Run: poetry install -E audio"
+                    )
+                    self.is_analyzing_audio = False
+                return
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+            duration_limit = settings.audio.duration_limit
+
+            if not db_path.exists():
+                async with self:
+                    self.audio_analysis_message = "Database not found"
+                    self.is_analyzing_audio = False
+                return
+
+            loop = asyncio.get_running_loop()
+            analyzer = EssentiaAnalyzer()
+
+            with SQLiteManager(str(db_path)) as db:
+                pending_tracks = db.get_tracks_without_audio_features()
+
+                if not pending_tracks:
+                    async with self:
+                        self.audio_analysis_message = "All tracks already have audio features."
+                        self.is_analyzing_audio = False
+                    return
+
+                total = len(pending_tracks)
+                analyzed = 0
+
+                for track in pending_tracks:
+                    def analyze_track(t=track):
+                        resolved = settings.audio.resolve_path(t.file_path)
+                        features = analyzer.analyze(resolved, duration_limit=duration_limit)
+                        return features.to_dict()
+
+                    try:
+                        features_dict = await loop.run_in_executor(None, analyze_track)
+                        db.insert_audio_features(track.id, features_dict)
+                        analyzed += 1
+                    except Exception as exc:
+                        logger.warning("Audio analysis failed for track %s: %s", track.id, exc)
+
+                    async with self:
+                        self.audio_analysis_progress = int((analyzed / total) * 100) if total else 0
+                        self.audio_analysis_message = f"Analyzed {analyzed}/{total} tracks"
+
+            async with self:
+                self.is_analyzing_audio = False
+                self.audio_analysis_progress = 100
+                self.audio_analysis_message = f"Audio analysis complete! Analyzed {analyzed} tracks."
+                self.load_library_stats()
+
+        except Exception as e:
+            async with self:
+                self.is_analyzing_audio = False
+                self.audio_analysis_message = f"Audio analysis failed: {str(e)}"

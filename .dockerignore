@@ -1,0 +1,15 @@
+.git
+.web
+.states
+__pycache__
+*.pyc
+.env
+.env.local
+htmlcov
+dist
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.db
+*.index
+*.metadata

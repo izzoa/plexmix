@@ -28,6 +28,30 @@ def mock_background(func):
 
 rx_mock.background = mock_background
 
+
+def mock_event(func=None, background=False):
+    """Mock @rx.event decorator — preserves the decorated function."""
+    if func is not None:
+        return func
+
+    def decorator(f):
+        return f
+
+    return decorator
+
+
+rx_mock.event = mock_event
+
+
+def mock_var(cache=False):
+    """Mock @rx.var decorator — turns the method into a property."""
+    def decorator(func):
+        return property(func)
+    return decorator
+
+
+rx_mock.var = mock_var
+
 # Mock other Reflex components
 rx_mock.Component = Mock
 rx_mock.box = Mock

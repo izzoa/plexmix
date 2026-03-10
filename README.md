@@ -19,10 +19,12 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 - 🤖 **AI-Powered** - Uses Google Gemini, OpenAI GPT, Anthropic Claude, Cohere Command, or fully local Gemma/Mistral models
 - 🔌 **Bring-Your-Own LLM** - Point PlexMix at any OpenAI-compatible local endpoint (Ollama, LM Studio, llama.cpp)
 - 🏷️ **AI Tagging** - Automatically generates tags, environments, and instruments for tracks
+- 🎵 **Audio Analysis** - Extract tempo, key, energy, danceability via Essentia DSP (optional)
 - 🔍 **Semantic Search** - FAISS vector similarity search for intelligent track matching
 - 🎨 **Mood-Based** - Generate playlists from natural language descriptions
 - ⚡ **Fast** - Local database with optimized indexes and full-text search
-- 🎯 **Flexible** - Filter by genre, year, rating, artist, environment, and instrument
+- 🎯 **Flexible** - Filter by genre, year, rating, artist, environment, instrument, tempo, energy, key, and danceability
+- 🐳 **Docker Ready** - Deploy with Docker Compose for containerized setups
 - 🛡️ **Resilient** - Automatic database recovery if deleted or corrupted
 
 ## Quick Start
@@ -51,6 +53,9 @@ plexmix create "chill evening vibes" --genre jazz --year-min 2010 --limit 30
 # Filter by environment and instrument
 plexmix create "focus music" --environment study --instrument piano
 
+# Filter by audio features (requires audio analysis)
+plexmix create "dance party" --tempo-min 120 --energy high --danceable 0.7
+
 # Use alternative AI provider
 plexmix create "workout motivation" --provider openai
 
@@ -61,7 +66,28 @@ plexmix doctor
 plexmix sync regenerate
 ```
 
-### Option 2: Web User Interface (Alpha)
+### Option 2: Docker
+
+```bash
+# Clone the repo
+git clone https://github.com/izzoa/plexmix.git
+cd plexmix
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your PLEX_TOKEN, GOOGLE_API_KEY, etc.
+
+# Start with Docker Compose
+docker compose up -d
+
+# Access the web UI at http://localhost:3000
+
+# Run CLI commands via Docker
+docker compose run plexmix sync
+docker compose run plexmix create "chill evening vibes"
+```
+
+### Option 3: Web User Interface (Alpha)
 
 > **Note:** The Web UI is currently in Alpha status. The CLI is the recommended way to interact with PlexMix for production use.
 
@@ -140,14 +166,32 @@ cd plexmix
 poetry install
 ```
 
+### With Audio Analysis (Optional)
+
+```bash
+# Install with Essentia for audio feature extraction
+pip install "plexmix[audio]"
+
+# Or with Poetry
+poetry install -E audio
+```
+
+### With Docker
+
+```bash
+git clone https://github.com/izzoa/plexmix.git
+cd plexmix
+docker compose up -d
+```
+
 ## Configuration
 
-PlexMix uses **Google Gemini by default** for both AI playlist generation and embeddings, requiring only a **single API key**!
+PlexMix uses **Google Gemini by default** for both AI playlist generation and embeddings, requiring only a **single API key**! Credentials can be stored in the system keyring or passed as environment variables.
 
 ### Required
 
 - **Plex Server**: URL and authentication token
-- **Google API Key**: For Gemini AI and embeddings ([Get one here](https://makersuite.google.com/app/apikey))
+- **Google API Key** (or **Gemini API Key**): For Gemini AI and embeddings ([Get one here](https://makersuite.google.com/app/apikey))
 
 ### Optional Alternative Providers
 
@@ -206,6 +250,9 @@ plexmix sync
 # Same as above, but explicit
 plexmix sync incremental
 
+# Sync with audio feature analysis (requires essentia)
+plexmix sync --audio
+
 # Regenerate everything from scratch (WARNING: Deletes ALL tags and embeddings)
 plexmix sync regenerate
 
@@ -221,6 +268,7 @@ plexmix sync --no-embeddings
 | Mode | Tracks | Tags | Embeddings | Use Case |
 |------|--------|------|------------|----------|
 | `incremental` (default) | ✅ Syncs changes only | ✅ Preserves existing | ✅ Preserves existing | Regular updates, new tracks added |
+| `incremental --audio` | ✅ Syncs changes only | ✅ Preserves existing | ✅ Preserves existing | Sync + audio feature analysis |
 | `full` (alias) | ✅ Syncs changes only | ✅ Preserves existing | ✅ Preserves existing | Same as incremental (kept for compatibility) |
 | `regenerate` | ✅ Syncs everything | ⚠️ **DELETES ALL** | ⚠️ **DELETES ALL** | Starting fresh, fixing corrupt data |
 
@@ -339,6 +387,38 @@ AI-generated metadata (per track) that enhances semantic search:
 
 All metadata is automatically included in embeddings for more accurate mood-based playlist generation.
 
+### Audio Feature Analysis (Optional)
+
+PlexMix can extract DSP-level audio features from your tracks using [Essentia](https://essentia.upf.edu/). This enriches embeddings and enables audio-aware playlist filters.
+
+```bash
+# Install with audio support
+pip install "plexmix[audio]"
+
+# Analyze all tracks that don't have audio features yet
+plexmix audio analyze
+
+# Re-analyze all tracks (overwrites existing features)
+plexmix audio analyze --force
+
+# Show audio analysis statistics
+plexmix audio info
+
+# Analyze during sync
+plexmix sync --audio
+```
+
+**Extracted features:**
+- **Tempo** (BPM) with confidence score
+- **Key & Scale** (e.g., C major, A minor)
+- **Energy Level** (low / medium / high)
+- **Danceability** (0.0 - 1.0)
+- **Loudness** (dB)
+- **Spectral Centroid** and **Zero Crossing Rate**
+- **MFCCs** (13-coefficient timbral fingerprint)
+
+Audio features are automatically incorporated into embeddings for richer semantic search and can be used as playlist filters (see below).
+
 ### Playlist Generation
 
 ```bash
@@ -366,6 +446,12 @@ plexmix create "chill study session" --provider claude
 # Force the offline/local provider
 plexmix create "ambient focus" --provider local
 
+# Filter by audio features (requires audio analysis)
+plexmix create "high energy dance" --tempo-min 120 --tempo-max 140
+plexmix create "chill lounge" --energy low
+plexmix create "piano ballads in C major" --key C --instrument piano
+plexmix create "dance floor bangers" --danceable 0.7
+
 # Custom playlist name
 plexmix create "morning coffee" --name "Perfect Morning Mix"
 
@@ -385,8 +471,11 @@ PlexMix uses a multi-stage pipeline for intelligent playlist generation:
    - 1-3 environments (work, study, focus, relax, party, workout, sleep, driving, social)
    - 1-3 instruments (piano, guitar, saxophone, drums, bass, synth, vocals, strings, etc.)
 
-2. **Playlist Generation Pipeline**:
-   - **SQL Filters** → Apply optional filters (genre, year, rating, artist, environment, instrument)
+2. **Audio Analysis** (Optional) → Tracks receive DSP features:
+   - Tempo (BPM), key, scale, energy level, danceability, loudness, spectral features, MFCCs
+
+3. **Playlist Generation Pipeline**:
+   - **SQL Filters** → Apply optional filters (genre, year, rating, artist, environment, instrument, tempo, energy, key, danceability)
    - **Candidate Pool** → Search using FAISS vector similarity (default: 25x playlist length)
    - **Diversity Selection** → Apply algorithmic diversity rules:
      - Max 3 tracks per artist
@@ -401,8 +490,10 @@ PlexMix uses a multi-stage pipeline for intelligent playlist generation:
 - **Database**: SQLite with FTS5 full-text search
 - **Vector Search**: FAISS (CPU) with cosine similarity
 - **AI Providers**: Google Gemini (default), OpenAI GPT, Anthropic Claude, Cohere, Local Gemma/Yarn presets or any OpenAI-compatible endpoint
-- **Embeddings**: Google Gemini (3072d), OpenAI (1536d), Local (384-768d)
+- **Embeddings**: Google Gemini (3072d), OpenAI (1536d), Cohere (1024d), Local (384-768d)
+- **Audio Analysis**: Essentia (optional) for DSP feature extraction
 - **Plex Integration**: PlexAPI
+- **Deployment**: Docker & Docker Compose support
 
 ### Project Structure
 
@@ -417,20 +508,22 @@ plexmix/
 │   │   ├── cohere_provider.py
 │   │   ├── local_provider.py   # Managed Hugging Face + custom endpoint support
 │   │   └── tag_generator.py  # AI-based tag generation
+│   ├── audio/            # Audio feature analysis (optional)
+│   │   └── analyzer.py   # Essentia-based DSP feature extraction
 │   ├── cli/              # Command-line interface
 │   │   └── main.py       # Typer CLI app
 │   ├── config/           # Configuration management
 │   │   ├── settings.py   # Pydantic settings
-│   │   └── credentials.py # Keyring integration
+│   │   └── credentials.py # Keyring + env var credential storage
 │   ├── database/         # Database layer
 │   │   ├── models.py     # Pydantic models
-│   │   ├── sqlite_manager.py # SQLite CRUD
+│   │   ├── sqlite_manager.py # SQLite CRUD (incl. audio_features)
 │   │   └── vector_index.py   # FAISS index
 │   ├── plex/             # Plex integration
-│   │   ├── client.py     # PlexAPI wrapper
-│   │   └── sync.py       # Sync engine
+│   │   ├── client.py     # PlexAPI wrapper (extracts file paths)
+│   │   └── sync.py       # Sync engine (audio-aware embeddings)
 │   ├── playlist/         # Playlist generation
-│   │   └── generator.py  # Core generation logic
+│   │   └── generator.py  # Core generation logic (audio filters)
 │   ├── ui/               # Web UI (Reflex)
 │   │   ├── app.py        # Main Reflex app
 │   │   ├── pages/        # UI pages
@@ -438,8 +531,10 @@ plexmix/
 │   │   ├── components/   # Reusable components
 │   │   └── utils/        # UI utilities
 │   └── utils/            # Utilities
-│       ├── embeddings.py # Embedding providers
+│       ├── embeddings.py # Embedding providers (audio-enriched)
 │       └── logging.py    # Logging setup
+├── Dockerfile            # Container image definition
+├── docker-compose.yml    # Multi-service orchestration
 └── tests/                # Test suite
     └── ui/               # UI tests
 ```
@@ -451,7 +546,8 @@ PlexMix stores all music metadata locally:
 - **artists**: Artist information
 - **albums**: Album details with artist relationships
 - **tracks**: Track metadata with full-text search, AI-generated tags (3-5), environments (1-3), and instruments (1-3)
-- **embeddings**: Vector embeddings for semantic search (includes all AI-generated metadata)
+- **embeddings**: Vector embeddings for semantic search (includes all AI-generated metadata + audio features)
+- **audio_features**: DSP-extracted features per track (tempo, key, scale, energy, danceability, loudness, spectral centroid, MFCCs, zero crossing rate)
 - **playlists**: Generated playlist metadata
 - **sync_history**: Synchronization audit log
 
@@ -561,6 +657,82 @@ If you ever want to nuke cached weights, delete the relevant directories under `
 - **Device:** Set `PLEXMIX_LOCAL_EMBEDDING_DEVICE=cpu` (or `cuda` if you have a local GPU) so sentence-transformers always uses the right hardware.
 - **Storage Tips:** Keep FAISS index on SSD (`~/.plexmix/embeddings.index`) and prune unused tracks to reduce RAM usage when generating playlists.
 
+## Docker Deployment
+
+PlexMix ships with a `Dockerfile` and `docker-compose.yml` for containerized deployments.
+
+### Quick Start
+
+```bash
+cp .env.example .env
+# Edit .env with your credentials (PLEX_TOKEN, GOOGLE_API_KEY, etc.)
+
+docker compose up -d
+```
+
+### Environment Variables
+
+All credentials can be passed as environment variables (no keyring required in containers):
+
+| Variable | Description |
+|----------|-------------|
+| `PLEX_URL` | Plex server URL (default: `http://host.docker.internal:32400`) |
+| `PLEX_TOKEN` | Plex authentication token |
+| `GOOGLE_API_KEY` / `GEMINI_API_KEY` | Google Gemini API key |
+| `OPENAI_API_KEY` | OpenAI API key (optional) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (optional) |
+| `COHERE_API_KEY` | Cohere API key (optional) |
+| `PLEXMIX_DATA_DIR` | Data directory override (default: `/data` in Docker, `~/.plexmix` locally) |
+| `PLEXMIX_UI_HOST` | UI bind address (default: `0.0.0.0` in Docker, `127.0.0.1` locally) |
+| `AUDIO_ENABLED` | Enable audio analysis (default: `false`) |
+| `AUDIO_ANALYZE_ON_SYNC` | Run audio analysis during sync (default: `false`) |
+| `AUDIO_PATH_PREFIX_FROM` | Plex file path prefix to replace (for path remapping) |
+| `AUDIO_PATH_PREFIX_TO` | Local file path prefix replacement (for path remapping) |
+
+### Running CLI Commands
+
+```bash
+# Sync library
+docker compose run plexmix sync
+
+# Generate tags
+docker compose run plexmix tags generate
+
+# Create a playlist
+docker compose run plexmix create "chill evening vibes"
+
+# Check database health
+docker compose run plexmix db info
+```
+
+### Audio Path Remapping
+
+Plex reports file paths from its own perspective (e.g., `/data/music/Artist/track.flac` inside Plex's container). When PlexMix runs in Docker or on a different machine, those paths won't match. Use path remapping to translate Plex paths to local paths for audio analysis:
+
+```yaml
+# docker-compose.yml
+services:
+  plexmix:
+    volumes:
+      - /path/to/music:/music:ro    # Mount your music library
+    environment:
+      - AUDIO_PATH_PREFIX_FROM=/data/music   # Plex's path prefix
+      - AUDIO_PATH_PREFIX_TO=/music          # Local path prefix
+```
+
+Or in `~/.plexmix/config.yaml`:
+
+```yaml
+audio:
+  enabled: true
+  path_prefix_from: /data/music
+  path_prefix_to: /music
+```
+
+### Data Persistence
+
+All data (SQLite database, FAISS index, logs) is stored in a named Docker volume (`plexmix-data`) mapped to `/data` inside the container. This persists across container restarts.
+
 ## Development
 
 ### Setup Development Environment
@@ -659,6 +831,7 @@ Total: ~1-2 hours for a large library. You can interrupt and resume at any time.
 Partially. After initial sync and tag/embedding generation, you can:
 - ✅ Browse your database offline
 - ✅ Use local embeddings (no API needed)
+- ✅ Run audio analysis locally (with Essentia installed)
 - ❌ Generate new playlists (requires AI API)
 - ❌ Generate tags for new tracks (requires AI API)
 
@@ -718,12 +891,12 @@ Absolutely! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. We welcome bu
 
 ## Roadmap
 
-- [ ] Docker support
+- [x] Docker support
+- [x] Audio feature analysis integration (Essentia)
 - [ ] Multi-library support
 - [ ] Playlist templates
 - [ ] Smart shuffle and ordering
 - [ ] Export/import playlists (M3U, JSON)
-- [ ] Audio feature analysis integration
 
 ## Contributing
 
@@ -744,6 +917,7 @@ MIT License - see [LICENSE](LICENSE) for details
 - Built with [Typer](https://typer.tiangolo.com/) and [Rich](https://rich.readthedocs.io/)
 - Plex integration via [python-plexapi](https://github.com/pkkid/python-plexapi)
 - Vector search powered by [FAISS](https://github.com/facebookresearch/faiss)
+- Audio analysis powered by [Essentia](https://essentia.upf.edu/)
 - AI providers: Google, OpenAI, Anthropic, Cohere
 
 ---

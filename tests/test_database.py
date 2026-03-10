@@ -426,3 +426,91 @@ def test_bulk_fetch_track_details_by_ids(db_manager):
     assert details[0]['title'] == "Test Track"
     assert details[0]['artist_name'] == "Test Artist"
     assert details[0]['album_title'] == "Test Album"
+
+
+def _create_test_track(db_manager, title="Track", plex_key="t1", file_path=None):
+    """Helper to create a track with an artist and album."""
+    artist = Artist(plex_key="a1", name="Artist")
+    artist_id = db_manager.insert_artist(artist)
+    album = Album(plex_key="al1", title="Album", artist_id=artist_id)
+    album_id = db_manager.insert_album(album)
+    track = Track(
+        plex_key=plex_key,
+        title=title,
+        artist_id=artist_id,
+        album_id=album_id,
+        file_path=file_path,
+    )
+    return db_manager.insert_track(track)
+
+
+def test_insert_and_get_audio_features(db_manager):
+    track_id = _create_test_track(db_manager, file_path="/music/track.mp3")
+
+    features = {
+        "tempo": 120.5,
+        "tempo_confidence": 0.9,
+        "key": "C",
+        "scale": "major",
+        "key_confidence": 0.85,
+        "loudness": -10.0,
+        "energy": 0.6,
+        "energy_level": "medium",
+        "danceability": 0.75,
+        "spectral_centroid": 2000.0,
+        "mfcc": [1.0, 2.0, 3.0],
+        "zero_crossing_rate": 0.1,
+    }
+    db_manager.insert_audio_features(track_id, features)
+
+    result = db_manager.get_audio_features(track_id)
+    assert result is not None
+    assert result["tempo"] == 120.5
+    assert result["key"] == "C"
+    assert result["scale"] == "major"
+    assert result["danceability"] == 0.75
+    assert result["mfcc"] == [1.0, 2.0, 3.0]
+
+
+def test_upsert_audio_features(db_manager):
+    track_id = _create_test_track(db_manager, file_path="/music/track.mp3")
+
+    db_manager.insert_audio_features(track_id, {"tempo": 100.0})
+    db_manager.insert_audio_features(track_id, {"tempo": 120.0})
+
+    result = db_manager.get_audio_features(track_id)
+    assert result["tempo"] == 120.0
+
+
+def test_get_tracks_without_audio_features(db_manager):
+    t1 = _create_test_track(db_manager, plex_key="t1", file_path="/music/a.mp3")
+    _create_test_track(db_manager, plex_key="t2", file_path="/music/b.mp3")
+    _create_test_track(db_manager, plex_key="t3")  # no file_path
+
+    db_manager.insert_audio_features(t1, {"tempo": 120.0})
+
+    pending = db_manager.get_tracks_without_audio_features()
+    # Only t2 should be pending (t1 has features, t3 has no file_path)
+    assert len(pending) == 1
+    assert pending[0].plex_key == "t2"
+
+
+def test_get_audio_features_by_track_ids(db_manager):
+    t1 = _create_test_track(db_manager, plex_key="t1", file_path="/a.mp3")
+    t2 = _create_test_track(db_manager, plex_key="t2", file_path="/b.mp3")
+
+    db_manager.insert_audio_features(t1, {"tempo": 100.0})
+    db_manager.insert_audio_features(t2, {"tempo": 140.0})
+
+    result = db_manager.get_audio_features_by_track_ids([t1, t2])
+    assert len(result) == 2
+    assert result[t1]["tempo"] == 100.0
+    assert result[t2]["tempo"] == 140.0
+
+
+def test_audio_features_count(db_manager):
+    t1 = _create_test_track(db_manager, plex_key="t1", file_path="/a.mp3")
+    assert db_manager.get_audio_features_count() == 0
+
+    db_manager.insert_audio_features(t1, {"tempo": 120.0})
+    assert db_manager.get_audio_features_count() == 1

@@ -146,8 +146,39 @@ class PlaylistGenerator:
             where_clauses.append("artist_id IN (SELECT id FROM artists WHERE name LIKE ?)")
             params.append(f"%{filters['artist']}%")
 
+        # Audio feature filters (require LEFT JOIN on audio_features)
+        audio_filters = {
+            k: v for k, v in filters.items()
+            if k in ('tempo_min', 'tempo_max', 'energy_level', 'key', 'danceability_min')
+        }
+        join_audio = bool(audio_filters)
+
+        if 'tempo_min' in audio_filters:
+            where_clauses.append("af.tempo >= ?")
+            params.append(audio_filters['tempo_min'])
+        if 'tempo_max' in audio_filters:
+            where_clauses.append("af.tempo <= ?")
+            params.append(audio_filters['tempo_max'])
+        if 'energy_level' in audio_filters:
+            where_clauses.append("af.energy_level = ?")
+            params.append(audio_filters['energy_level'].lower())
+        if 'key' in audio_filters:
+            where_clauses.append("af.key = ?")
+            params.append(audio_filters['key'])
+        if 'danceability_min' in audio_filters:
+            where_clauses.append("af.danceability >= ?")
+            params.append(audio_filters['danceability_min'])
+
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
-        query = f"SELECT id FROM tracks WHERE {where_sql}"
+
+        if join_audio:
+            query = (
+                f"SELECT t.id FROM tracks t "
+                f"LEFT JOIN audio_features af ON t.id = af.track_id "
+                f"WHERE {where_sql}"
+            )
+        else:
+            query = f"SELECT id FROM tracks WHERE {where_sql}"
 
         cursor.execute(query, params)
         return [row[0] for row in cursor.fetchall()]

@@ -426,6 +426,74 @@ def advanced_tab() -> rx.Component:
     )
 
 
+def audio_tab() -> rx.Component:
+    return rx.vstack(
+        rx.heading("Audio Analysis", size="6", margin_bottom="4"),
+        rx.callout(
+            "Audio analysis extracts tempo, key, energy, and danceability from your tracks "
+            "using Essentia. These features enrich embeddings and enable audio-based playlist filters.",
+            icon="music",
+            color_scheme="blue",
+            size="2",
+        ),
+        rx.vstack(
+            rx.hstack(
+                rx.switch(
+                    checked=SettingsState.audio_enabled,
+                    on_change=SettingsState.set_audio_enabled,
+                ),
+                rx.text("Enable Audio Analysis", size="3", weight="bold"),
+                spacing="3",
+                align="center",
+            ),
+            rx.hstack(
+                rx.switch(
+                    checked=SettingsState.audio_analyze_on_sync,
+                    on_change=SettingsState.set_audio_analyze_on_sync,
+                ),
+                rx.text("Analyze Audio on Sync", size="3", weight="bold"),
+                spacing="3",
+                align="center",
+            ),
+            rx.text(
+                "When enabled, new tracks will be analyzed during sync",
+                size="2",
+                color_scheme="gray",
+            ),
+            rx.text("Duration Limit (seconds)", size="3", weight="bold", margin_top="3"),
+            rx.hstack(
+                rx.input(
+                    type="number",
+                    value=SettingsState.audio_duration_limit,
+                    on_change=SettingsState.set_audio_duration_limit,
+                    width="120px",
+                ),
+                rx.tooltip(
+                    rx.icon("info", size=16),
+                    content="Seconds of audio to analyze per track. 0 = full track.",
+                ),
+                spacing="2",
+                align="center",
+            ),
+            rx.button(
+                "Save",
+                on_click=SettingsState.save_all_settings,
+                color_scheme="green",
+                margin_top="4",
+            ),
+            rx.cond(
+                SettingsState.save_status != "",
+                rx.text(SettingsState.save_status, size="2", margin_top="3"),
+                rx.box(),
+            ),
+            spacing="3",
+            width="100%",
+        ),
+        spacing="4",
+        width="100%",
+    )
+
+
 def settings() -> rx.Component:
     content = rx.container(
         rx.vstack(
@@ -435,11 +503,13 @@ def settings() -> rx.Component:
                     rx.tabs.trigger("Plex", value="plex"),
                     rx.tabs.trigger("AI Provider", value="ai"),
                     rx.tabs.trigger("Embeddings", value="embedding"),
+                    rx.tabs.trigger("Audio", value="audio"),
                     rx.tabs.trigger("Advanced", value="advanced"),
                 ),
                 rx.tabs.content(plex_tab(), value="plex"),
                 rx.tabs.content(ai_provider_tab(), value="ai"),
                 rx.tabs.content(embedding_tab(), value="embedding"),
+                rx.tabs.content(audio_tab(), value="audio"),
                 rx.tabs.content(advanced_tab(), value="advanced"),
                 default_value="plex",
                 width="100%",

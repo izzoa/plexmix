@@ -1,8 +1,11 @@
 import reflex as rx
 import asyncio
+import logging
 from typing import List, Dict, Any
 from pathlib import Path
 from plexmix.ui.states.app_state import AppState
+
+logger = logging.getLogger(__name__)
 
 
 class DoctorState(AppState):
@@ -11,7 +14,9 @@ class DoctorState(AppState):
     doctor_orphaned_embeddings: int = 0
     doctor_untagged_tracks: int = 0
     doctor_tracks_needing_embeddings: int = 0
-    
+    doctor_tracks_without_audio: int = 0
+    doctor_audio_features_count: int = 0
+
     is_healthy: bool = False
     is_checking: bool = False
     check_message: str = ""
@@ -72,13 +77,19 @@ class DoctorState(AppState):
                 # Get tracks needing embeddings
                 cursor.execute('SELECT COUNT(*) FROM tracks WHERE id NOT IN (SELECT DISTINCT track_id FROM embeddings)')
                 tracks_needing_embeddings = cursor.fetchone()[0]
-                
+
+                # Get audio analysis stats
+                audio_features_count = db.get_audio_features_count()
+                tracks_without_audio = len(db.get_tracks_without_audio_features())
+
                 async with self:
                     self.doctor_total_tracks = total_tracks
                     self.doctor_tracks_with_embeddings = tracks_with_embeddings
                     self.doctor_orphaned_embeddings = orphaned_count
                     self.doctor_untagged_tracks = untagged_count
                     self.doctor_tracks_needing_embeddings = tracks_needing_embeddings
+                    self.doctor_audio_features_count = audio_features_count
+                    self.doctor_tracks_without_audio = tracks_without_audio
                     
                     if orphaned_count == 0 and tracks_needing_embeddings == 0:
                         self.is_healthy = True
@@ -399,6 +410,90 @@ class DoctorState(AppState):
                 self.is_fixing = False
                 self.current_fix_target = ""
     
+    @rx.event(background=True)
+    async def analyze_missing_audio(self):
+        async with self:
+            self.is_fixing = True
+            self.fix_message = "Analyzing audio features for unanalyzed tracks..."
+            self.fix_progress = 0
+            self.current_fix_target = "audio_analysis"
+
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            try:
+                from plexmix.audio.analyzer import EssentiaAnalyzer
+            except ImportError:
+                async with self:
+                    self.fix_message = (
+                        "Essentia is not installed. "
+                        "Run: poetry install -E audio"
+                    )
+                    self.is_fixing = False
+                    self.current_fix_target = ""
+                return
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+            duration_limit = settings.audio.duration_limit
+
+            if not db_path.exists():
+                async with self:
+                    self.fix_message = "Database not found. Please run a sync first."
+                    self.is_fixing = False
+                    self.current_fix_target = ""
+                return
+
+            loop = asyncio.get_running_loop()
+            analyzer = EssentiaAnalyzer()
+
+            with SQLiteManager(str(db_path)) as db:
+                pending_tracks = db.get_tracks_without_audio_features()
+
+                if not pending_tracks:
+                    async with self:
+                        self.fix_message = "All tracks already have audio features."
+                        self.is_fixing = False
+                        self.current_fix_target = ""
+                    return
+
+                async with self:
+                    self.fix_total = len(pending_tracks)
+
+                analyzed = 0
+                for track in pending_tracks:
+                    def analyze_track(t=track):
+                        resolved = settings.audio.resolve_path(t.file_path)
+                        features = analyzer.analyze(resolved, duration_limit=duration_limit)
+                        return features.to_dict()
+
+                    try:
+                        features_dict = await loop.run_in_executor(None, analyze_track)
+                        db.insert_audio_features(track.id, features_dict)
+                        analyzed += 1
+                    except Exception as exc:
+                        logger.warning("Audio analysis failed for track %s: %s", track.id, exc)
+
+                    async with self:
+                        self.fix_progress = analyzed
+                        self.fix_message = f"Analyzing audio... {analyzed}/{self.fix_total}"
+
+                async with self:
+                    self.fix_message = f"✓ Analyzed audio features for {analyzed} tracks"
+                    self.is_fixing = False
+                    self.fix_progress = 0
+                    self.fix_total = 0
+                    self.current_fix_target = ""
+
+            return DoctorState.run_health_check
+
+        except Exception as e:
+            async with self:
+                self.fix_message = f"Error analyzing audio: {str(e)}"
+                self.is_fixing = False
+                self.current_fix_target = ""
+
     async def _generate_embeddings_for_tracks(
         self,
         tracks_to_embed,
@@ -506,6 +601,14 @@ class DoctorState(AppState):
     @rx.var(cache=True)
     def tag_job_running(self) -> bool:
         return self.current_fix_target == "tags"
+
+    @rx.var(cache=True)
+    def missing_audio_label(self) -> str:
+        return f"{self.doctor_tracks_without_audio} Tracks Need Audio Analysis"
+
+    @rx.var(cache=True)
+    def audio_job_running(self) -> bool:
+        return self.current_fix_target == "audio_analysis"
 
     @rx.var(cache=True)
     def untagged_tracks_message(self) -> str:

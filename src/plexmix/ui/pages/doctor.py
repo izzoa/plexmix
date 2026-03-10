@@ -256,7 +256,66 @@ def doctor() -> rx.Component:
                 ),
                 width="100%",
             ),
-            
+
+            # Audio Analysis
+            rx.heading("Audio Analysis", size="6", margin_top="6", margin_bottom="3"),
+            rx.card(
+                rx.vstack(
+                    rx.grid(
+                        stat_card("Tracks Analyzed", DoctorState.doctor_audio_features_count),
+                        stat_card("Tracks Pending", DoctorState.doctor_tracks_without_audio),
+                        columns=rx.breakpoints(initial="1", sm="2"),
+                        spacing="4",
+                        width="100%",
+                    ),
+                    rx.cond(
+                        DoctorState.doctor_tracks_without_audio > 0,
+                        rx.callout(
+                            DoctorState.missing_audio_label,
+                            icon="music",
+                            color_scheme="orange",
+                            size="2",
+                        ),
+                        rx.callout(
+                            "All eligible tracks have been analyzed.",
+                            icon="circle_check",
+                            color_scheme="green",
+                            size="2",
+                        ),
+                    ),
+                    rx.button(
+                        "Analyze Missing Tracks",
+                        size="3",
+                        color_scheme="blue",
+                        variant="soft",
+                        on_click=DoctorState.analyze_missing_audio,
+                        loading=DoctorState.audio_job_running,
+                        disabled=DoctorState.is_fixing,
+                    ),
+                    rx.cond(
+                        DoctorState.audio_job_running,
+                        rx.vstack(
+                            rx.progress(
+                                value=(DoctorState.fix_progress / DoctorState.fix_total) * 100,
+                                max=100,
+                            ),
+                            rx.text(
+                                DoctorState.fix_progress_label,
+                                size="2",
+                                color_scheme="gray",
+                            ),
+                            spacing="2",
+                            width="100%",
+                        ),
+                        rx.box(),
+                    ),
+                    spacing="3",
+                    align="start",
+                    width="100%",
+                ),
+                width="100%",
+            ),
+
             spacing="4",
             width="100%",
         ),

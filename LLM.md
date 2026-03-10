@@ -243,6 +243,43 @@ poetry run pytest tests/test_database.py -v
 poetry run pytest tests/ -v -k "not benchmark"
 ```
 
+## CI/CD Pipelines (GitHub Actions)
+
+Three workflows live in `.github/workflows/`:
+
+| Workflow | File | Trigger | Purpose |
+|----------|------|---------|---------|
+| Tests | `test.yml` | Push / PR | Run test suite |
+| Publish | `publish.yml` | GitHub Release | Publish to PyPI |
+| Docker | `docker.yml` | `v*` tag push | Build & push Docker image to GHCR |
+
+### Docker Image Build (`docker.yml`)
+
+Triggered automatically when a `v*` tag is pushed (e.g., `v0.5.0`). This happens as part of the normal release flow (step 4: push tag).
+
+**What it does:**
+1. Builds multi-platform Docker images (`linux/amd64` + `linux/arm64`) using `docker buildx`
+2. Pushes to GHCR at `ghcr.io/izzoa/plexmix`
+3. Tags the image using semver from the git tag:
+   - `v0.5.0` → `:0.5.0`, `:0.5`, `:latest`
+
+**Authentication:** Uses the automatic `GITHUB_TOKEN` with `packages: write` permission — no extra secrets needed.
+
+**Verification after a release:**
+```bash
+# Check the Actions tab for build status
+gh run list --workflow=docker.yml --limit=3
+
+# Verify the image exists in GHCR
+docker pull ghcr.io/izzoa/plexmix:0.5.0
+```
+
+**Testing with a pre-release tag:**
+```bash
+git tag v0.4.0-rc1 && git push origin v0.4.0-rc1
+# Verify the action runs in the Actions tab
+```
+
 ## Building and Publishing to PyPI
 
 **Note:** Only do this after GitHub release is published and verified.
@@ -366,6 +403,10 @@ poetry run pytest tests/ -v --lf
 
 ```
 plexmix/
+├── .github/workflows/     # CI/CD pipelines
+│   ├── test.yml           # Run tests on push/PR
+│   ├── publish.yml        # Publish to PyPI on release
+│   └── docker.yml         # Build & push Docker image on tag
 ├── src/plexmix/           # Main source code
 │   ├── __init__.py        # Version defined here
 │   ├── cli/               # CLI commands
@@ -373,6 +414,8 @@ plexmix/
 │   ├── plex/              # Plex integration
 │   └── ai/                # AI providers
 ├── tests/                 # Test suite
+├── Dockerfile             # Docker image definition
+├── docker-compose.yml     # Docker Compose config
 ├── README.md              # User documentation
 ├── pyproject.toml         # Version and dependencies
 ├── LLM.md                 # This file

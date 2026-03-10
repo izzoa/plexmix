@@ -18,6 +18,7 @@ class AppState(rx.State):
 
     total_tracks: str = "0"
     embedded_tracks: str = "0"
+    audio_analyzed_tracks: str = "0"
     last_sync: Optional[str] = None
     
     embedding_dimension_warning: str = ""
@@ -116,6 +117,7 @@ class AppState(rx.State):
             if not db_path.exists():
                 self.total_tracks = "0"
                 self.embedded_tracks = "0"
+                self.audio_analyzed_tracks = "0"
                 self.last_sync = None
                 self.embedding_dimension_warning = ""
                 return
@@ -130,6 +132,13 @@ class AppState(rx.State):
                 # Get embedded tracks count from DB (consistent with doctor)
                 cursor.execute("SELECT COUNT(DISTINCT track_id) FROM embeddings")
                 self.embedded_tracks = str(cursor.fetchone()[0])
+
+                # Get audio analyzed tracks count
+                try:
+                    audio_count = db.get_audio_features_count()
+                    self.audio_analyzed_tracks = str(audio_count)
+                except Exception:
+                    self.audio_analyzed_tracks = "0"
 
                 # Check for dimension mismatch using metadata file
                 import pickle
@@ -163,5 +172,6 @@ class AppState(rx.State):
             print(f"Error loading library stats: {e}")
             self.total_tracks = "0"
             self.embedded_tracks = "0"
+            self.audio_analyzed_tracks = "0"
             self.last_sync = None
             self.embedding_dimension_warning = ""

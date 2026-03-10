@@ -564,7 +564,14 @@ class SyncEngine:
                     }
                     track_data_list.append(track_data)
 
-                texts = [create_track_text(td) for td in track_data_list]
+                # Fetch audio features for this batch if available
+                batch_track_ids = [td['id'] for td in track_data_list]
+                audio_features_map = self.db.get_audio_features_by_track_ids(batch_track_ids)
+
+                texts = [
+                    create_track_text(td, audio_features_map.get(td['id']))
+                    for td in track_data_list
+                ]
                 logger.debug(f"Generating embeddings for batch {batch_num}/{total_batches} ({len(texts)} tracks)")
 
                 embeddings = self.embedding_generator.generate_batch_embeddings(texts, batch_size=50)

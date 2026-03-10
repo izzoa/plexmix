@@ -11,12 +11,14 @@ class GeminiProvider(AIProvider):
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash", temperature: float = 0.7):
         super().__init__(api_key, model, temperature)
         try:
-            import google.generativeai as genai
-            genai.configure(api_key=api_key)
-            self.genai = genai
+            from google import genai
+            from google.genai import types
+
+            self.client = genai.Client(api_key=api_key)
+            self.types = types
             logger.info(f"Initialized Gemini AI provider with model {model}")
         except ImportError:
-            raise ImportError("google-generativeai not installed. Run: pip install google-generativeai")
+            raise ImportError("google-genai not installed. Run: pip install google-genai")
 
     def complete(
         self,
@@ -28,12 +30,9 @@ class GeminiProvider(AIProvider):
         """Send a prompt to Gemini and return the text response."""
         temp = temperature if temperature is not None else self.temperature
 
-        model = self.genai.GenerativeModel(
-            model_name=self.model,
-            generation_config={
-                "temperature": temp,
-                "max_output_tokens": max_tokens,
-            }
+        config = self.types.GenerateContentConfig(
+            temperature=temp,
+            max_output_tokens=max_tokens,
         )
 
         # Retry with exponential backoff
@@ -43,15 +42,15 @@ class GeminiProvider(AIProvider):
         for attempt in range(max_retries):
             try:
                 logger.debug(f"[Gemini] API call attempt {attempt + 1}/{max_retries}")
-                response = model.generate_content(
-                    prompt,
-                    request_options={"timeout": timeout}
+                response = self.client.models.generate_content(
+                    model=self.model,
+                    contents=prompt,
+                    config=config,
                 )
 
                 if not response:
                     raise ValueError("Empty response from Gemini")
 
-                # Extract text from response
                 try:
                     return response.text
                 except (ValueError, AttributeError):

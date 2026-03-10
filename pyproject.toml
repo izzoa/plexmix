@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "plexmix"
-version = "0.4.0"
+version = "0.5.0"
 description = "AI-powered Plex playlist generator using mood-based queries"
 authors = ["Anthony Izzo"]
 license = "MIT"
@@ -17,17 +17,21 @@ pydantic = "^2.5.0"
 pydantic-settings = "^2.1.0"
 python-dotenv = "^1.0.0"
 keyring = "^24.3.0"
-openai = "^1.6.0"
-google-generativeai = "^0.3.0"
-anthropic = "^0.8.0"
+openai = "^1.60.0"
+google-genai = "^1.0.0"
+anthropic = "^0.84.0"
+cohere = "^5.20.0"
 faiss-cpu = "^1.7.4"
 numpy = "^1.26.0"
 sentence-transformers = "^2.2.0"
 pyyaml = "^6.0.1"
 reflex = {version = "^0.8.23", optional = true}
 
+essentia = {version = "^2.1b6", optional = true}
+
 [tool.poetry.extras]
 ui = ["reflex"]
+audio = ["essentia"]
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

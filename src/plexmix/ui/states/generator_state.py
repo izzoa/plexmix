@@ -18,6 +18,12 @@ class GeneratorState(AppState):
     exclude_artists: str = ""
     candidate_pool_multiplier: int = 25
 
+    tempo_min: str = ""
+    tempo_max: str = ""
+    energy_level: str = ""
+    key_filter: str = ""
+    danceability_min: str = ""
+
     is_generating: bool = False
     generation_progress: int = 0
     generation_message: str = ""
@@ -67,6 +73,21 @@ class GeneratorState(AppState):
     def set_year_max(self, value: str):
         self.year_max = int(value) if value else None
 
+    def set_tempo_min(self, value: str):
+        self.tempo_min = value
+
+    def set_tempo_max(self, value: str):
+        self.tempo_max = value
+
+    def set_energy_level(self, value: str):
+        self.energy_level = value
+
+    def set_key_filter(self, value: str):
+        self.key_filter = value
+
+    def set_danceability_min(self, value: str):
+        self.danceability_min = value
+
     @rx.event(background=True)
     async def generate_playlist(self):
         async with self:
@@ -115,6 +136,25 @@ class GeneratorState(AppState):
                 filters['year_min'] = self.year_min
             if self.year_max is not None:
                 filters['year_max'] = self.year_max
+            if self.tempo_min:
+                try:
+                    filters['tempo_min'] = float(self.tempo_min)
+                except ValueError:
+                    pass
+            if self.tempo_max:
+                try:
+                    filters['tempo_max'] = float(self.tempo_max)
+                except ValueError:
+                    pass
+            if self.energy_level:
+                filters['energy_level'] = self.energy_level
+            if self.key_filter:
+                filters['key'] = self.key_filter
+            if self.danceability_min:
+                try:
+                    filters['danceability_min'] = float(self.danceability_min)
+                except ValueError:
+                    pass
 
             loop = asyncio.get_running_loop()
 

@@ -68,6 +68,14 @@ def action_bar() -> rx.Component:
                 color_scheme="orange",
                 size="3",
             ),
+            rx.button(
+                "Analyze Audio",
+                on_click=LibraryState.analyze_audio,
+                disabled=LibraryState.is_analyzing_audio,
+                loading=LibraryState.is_analyzing_audio,
+                color_scheme="purple",
+                size="3",
+            ),
             spacing="3",
         ),
         justify="between",
@@ -199,6 +207,13 @@ def library() -> rx.Component:
         on_cancel=None,
     )
 
+    audio_modal = progress_modal(
+        is_open=LibraryState.is_analyzing_audio,
+        progress=LibraryState.audio_analysis_progress,
+        message=LibraryState.audio_analysis_message,
+        on_cancel=None,
+    )
+
     confirm_regenerate_dialog = rx.alert_dialog.root(
         rx.alert_dialog.content(
             rx.alert_dialog.title("⚠️ Confirm Regenerate Sync"),
@@ -238,4 +253,4 @@ def library() -> rx.Component:
         open=LibraryState.show_regenerate_confirm,
     )
 
-    return layout(rx.fragment(content, sync_modal, embedding_modal, confirm_regenerate_dialog))
+    return layout(rx.fragment(content, sync_modal, embedding_modal, audio_modal, confirm_regenerate_dialog))

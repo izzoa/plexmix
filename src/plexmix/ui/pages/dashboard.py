@@ -113,8 +113,9 @@ def dashboard() -> rx.Component:
             rx.grid(
                 stats_card("Total Tracks", DashboardState.total_tracks),
                 stats_card("Embedded Tracks", DashboardState.embedded_tracks),
+                stats_card("Audio Analyzed", DashboardState.audio_analyzed_tracks),
                 stats_card("Last Sync", rx.cond(DashboardState.last_sync, DashboardState.last_sync, "Never")),
-                columns=rx.breakpoints(initial="1", sm="2", lg="3"),
+                columns=rx.breakpoints(initial="1", sm="2", lg="4"),
                 spacing="4",
                 width="100%",
             ),

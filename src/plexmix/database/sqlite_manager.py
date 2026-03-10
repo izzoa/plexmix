@@ -178,6 +178,28 @@ class SQLiteManager:
             )
         ''')
 
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS audio_features (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                track_id INTEGER NOT NULL UNIQUE,
+                tempo REAL,
+                tempo_confidence REAL,
+                key TEXT,
+                scale TEXT,
+                key_confidence REAL,
+                loudness REAL,
+                energy REAL,
+                energy_level TEXT,
+                danceability REAL,
+                spectral_centroid REAL,
+                mfcc TEXT,
+                zero_crossing_rate REAL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+            )
+        ''')
+
         self._create_indexes(cursor)
         self._create_fts_table(cursor)
         self._run_migrations(cursor)
@@ -200,6 +222,7 @@ class SQLiteManager:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_plex_key ON artists(plex_key)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_plex_key ON albums(plex_key)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_plex_key ON tracks(plex_key)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_audio_features_track ON audio_features(track_id)",
         ]
         for index_sql in indexes:
             cursor.execute(index_sql)
@@ -296,6 +319,39 @@ class SQLiteManager:
         cursor.execute("UPDATE sync_history SET status = 'success' WHERE status = 'completed'")
         if cursor.rowcount > 0:
             logger.info(f"Running migration: Fixed {cursor.rowcount} sync records with 'completed' -> 'success'")
+            migrations_run = True
+
+        # Add audio_features table if it doesn't exist
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='audio_features'"
+        )
+        if cursor.fetchone() is None:
+            logger.info("Running migration: Creating audio_features table")
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS audio_features (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    track_id INTEGER NOT NULL UNIQUE,
+                    tempo REAL,
+                    tempo_confidence REAL,
+                    key TEXT,
+                    scale TEXT,
+                    key_confidence REAL,
+                    loudness REAL,
+                    energy REAL,
+                    energy_level TEXT,
+                    danceability REAL,
+                    spectral_centroid REAL,
+                    mfcc TEXT,
+                    zero_crossing_rate REAL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+                )
+            ''')
+            cursor.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_audio_features_track "
+                "ON audio_features(track_id)"
+            )
             migrations_run = True
 
         if migrations_run:
@@ -556,6 +612,91 @@ class SQLiteManager:
         if row:
             return SyncHistory(**dict(row))
         return None
+
+    # ---- Audio features CRUD ----
+
+    def insert_audio_features(self, track_id: int, features: dict) -> int:
+        cursor = self.get_connection().cursor()
+        mfcc_json = json.dumps(features.get("mfcc")) if features.get("mfcc") else None
+        cursor.execute('''
+            INSERT INTO audio_features (
+                track_id, tempo, tempo_confidence, key, scale, key_confidence,
+                loudness, energy, energy_level, danceability,
+                spectral_centroid, mfcc, zero_crossing_rate
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(track_id) DO UPDATE SET
+                tempo = excluded.tempo,
+                tempo_confidence = excluded.tempo_confidence,
+                key = excluded.key,
+                scale = excluded.scale,
+                key_confidence = excluded.key_confidence,
+                loudness = excluded.loudness,
+                energy = excluded.energy,
+                energy_level = excluded.energy_level,
+                danceability = excluded.danceability,
+                spectral_centroid = excluded.spectral_centroid,
+                mfcc = excluded.mfcc,
+                zero_crossing_rate = excluded.zero_crossing_rate,
+                updated_at = CURRENT_TIMESTAMP
+        ''', (
+            track_id,
+            features.get("tempo"),
+            features.get("tempo_confidence"),
+            features.get("key"),
+            features.get("scale"),
+            features.get("key_confidence"),
+            features.get("loudness"),
+            features.get("energy"),
+            features.get("energy_level"),
+            features.get("danceability"),
+            features.get("spectral_centroid"),
+            mfcc_json,
+            features.get("zero_crossing_rate"),
+        ))
+        self.get_connection().commit()
+        return cursor.lastrowid
+
+    def get_audio_features(self, track_id: int) -> Optional[Dict[str, Any]]:
+        cursor = self.get_connection().cursor()
+        cursor.execute('SELECT * FROM audio_features WHERE track_id = ?', (track_id,))
+        row = cursor.fetchone()
+        if row:
+            d = dict(row)
+            if d.get("mfcc"):
+                d["mfcc"] = json.loads(d["mfcc"])
+            return d
+        return None
+
+    def get_tracks_without_audio_features(self) -> List[Track]:
+        cursor = self.get_connection().cursor()
+        cursor.execute('''
+            SELECT t.* FROM tracks t
+            LEFT JOIN audio_features af ON t.id = af.track_id
+            WHERE af.id IS NULL AND t.file_path IS NOT NULL
+        ''')
+        return [Track(**dict(row)) for row in cursor.fetchall()]
+
+    def get_audio_features_by_track_ids(self, track_ids: List[int]) -> Dict[int, Dict[str, Any]]:
+        if not track_ids:
+            return {}
+        cursor = self.get_connection().cursor()
+        placeholders = ','.join('?' * len(track_ids))
+        cursor.execute(
+            f'SELECT * FROM audio_features WHERE track_id IN ({placeholders})',
+            track_ids,
+        )
+        result = {}
+        for row in cursor.fetchall():
+            d = dict(row)
+            if d.get("mfcc"):
+                d["mfcc"] = json.loads(d["mfcc"])
+            result[d["track_id"]] = d
+        return result
+
+    def get_audio_features_count(self) -> int:
+        cursor = self.get_connection().cursor()
+        cursor.execute('SELECT COUNT(*) FROM audio_features')
+        return cursor.fetchone()[0]
 
     def insert_playlist(self, playlist: Playlist) -> int:
         cursor = self.get_connection().cursor()
