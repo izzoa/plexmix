@@ -45,6 +45,8 @@ class SQLiteManager:
             self.create_tables()
         else:
             logger.info(f"Connected to database at {self.db_path}")
+            self._create_indexes(cursor)
+            self._create_fts_table(cursor)
             self._run_migrations(cursor)
 
     def get_connection(self) -> sqlite3.Connection:
@@ -223,6 +225,10 @@ class SQLiteManager:
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_albums_plex_key ON albums(plex_key)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_tracks_plex_key ON tracks(plex_key)",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_audio_features_track ON audio_features(track_id)",
+            "CREATE INDEX IF NOT EXISTS idx_tracks_file_path ON tracks(file_path)",
+            "CREATE INDEX IF NOT EXISTS idx_tracks_tags ON tracks(tags)",
+            "CREATE INDEX IF NOT EXISTS idx_tracks_environments ON tracks(environments)",
+            "CREATE INDEX IF NOT EXISTS idx_tracks_instruments ON tracks(instruments)",
         ]
         for index_sql in indexes:
             cursor.execute(index_sql)
@@ -353,6 +359,26 @@ class SQLiteManager:
                 "ON audio_features(track_id)"
             )
             migrations_run = True
+
+        # Backfill FTS table if it exists but is empty while tracks exist
+        cursor.execute("SELECT COUNT(*) FROM tracks")
+        track_count = cursor.fetchone()[0]
+        if track_count > 0:
+            cursor.execute("SELECT COUNT(*) FROM tracks_fts")
+            fts_count = cursor.fetchone()[0]
+            if fts_count == 0:
+                logger.info("Running migration: Backfilling FTS index for existing tracks")
+                cursor.execute('''
+                    INSERT INTO tracks_fts(title, artist_name, album_title, genres, track_id)
+                    SELECT
+                        t.title,
+                        (SELECT name FROM artists WHERE id = t.artist_id),
+                        (SELECT title FROM albums WHERE id = t.album_id),
+                        t.genre,
+                        t.id
+                    FROM tracks t
+                ''')
+                migrations_run = True
 
         if migrations_run:
             self.get_connection().commit()
@@ -580,6 +606,30 @@ class SQLiteManager:
         row = cursor.fetchone()
         return row['id'] if row else cursor.lastrowid
 
+    def insert_embeddings_batch(self, embeddings: List[Embedding]) -> None:
+        if not embeddings:
+            return
+        conn = self.get_connection()
+        data = [
+            (e.track_id, e.embedding_model, e.embedding_dim,
+             json.dumps(e.vector), e.created_at, e.updated_at)
+            for e in embeddings
+        ]
+        try:
+            conn.execute("BEGIN")
+            conn.executemany('''
+                INSERT INTO embeddings (track_id, embedding_model, embedding_dim, vector, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(track_id, embedding_model) DO UPDATE SET
+                    embedding_dim = excluded.embedding_dim,
+                    vector = excluded.vector,
+                    updated_at = excluded.updated_at
+            ''', data)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
     def get_embedding_by_track_id(self, track_id: int) -> Optional[Embedding]:
         cursor = self.get_connection().cursor()
         cursor.execute('SELECT * FROM embeddings WHERE track_id = ?', (track_id,))
@@ -589,6 +639,11 @@ class SQLiteManager:
             data['vector'] = json.loads(data['vector'])
             return Embedding(**data)
         return None
+
+    def get_track_ids_with_embeddings(self) -> set:
+        cursor = self.get_connection().cursor()
+        cursor.execute('SELECT track_id FROM embeddings')
+        return {row['track_id'] for row in cursor.fetchall()}
 
     def get_all_embeddings(self) -> List[Tuple[int, List[float]]]:
         cursor = self.get_connection().cursor()
@@ -716,6 +771,22 @@ class SQLiteManager:
         ''', (playlist_id, track_id, position))
         self.get_connection().commit()
 
+    def add_tracks_to_playlist(self, playlist_id: int, track_ids: List[int]) -> None:
+        if not track_ids:
+            return
+        conn = self.get_connection()
+        data = [(playlist_id, track_id, pos) for pos, track_id in enumerate(track_ids)]
+        try:
+            conn.execute("BEGIN")
+            conn.executemany('''
+                INSERT INTO playlist_tracks (playlist_id, track_id, position)
+                VALUES (?, ?, ?)
+            ''', data)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
     def get_playlists(self) -> List[Playlist]:
         cursor = self.get_connection().cursor()
         cursor.execute('''
@@ -830,14 +901,16 @@ class SQLiteManager:
             JOIN artists a ON t.artist_id = a.id
             JOIN albums al ON t.album_id = al.id
             LEFT JOIN embeddings e ON t.id = e.track_id
-            WHERE 1=1
         '''
-        params = []
+        params: list = []
 
-        if search:
-            query += " AND (t.title LIKE ? OR a.name LIKE ? OR al.title LIKE ?)"
-            search_pattern = f"%{search}%"
-            params.extend([search_pattern, search_pattern, search_pattern])
+        fts_term = self._build_fts_query(search) if search else None
+        if fts_term:
+            # Use FTS5 for fast full-text search across title, artist, album, genres
+            query += " JOIN tracks_fts fts ON t.id = fts.track_id WHERE tracks_fts MATCH ?"
+            params.append(fts_term)
+        else:
+            query += " WHERE 1=1"
 
         if genre:
             query += " AND t.genre LIKE ?"
@@ -866,6 +939,14 @@ class SQLiteManager:
         cursor.execute(query, params)
         return [dict(row) for row in cursor.fetchall()]
 
+    @staticmethod
+    def _build_fts_query(search: str) -> Optional[str]:
+        tokens = search.strip().split()
+        if not tokens:
+            return None
+        escaped = ['"' + t.replace('"', '""') + '"' + '*' for t in tokens]
+        return ' '.join(escaped)
+
     def count_tracks(
         self,
         search: Optional[str] = None,
@@ -880,14 +961,15 @@ class SQLiteManager:
             FROM tracks t
             JOIN artists a ON t.artist_id = a.id
             JOIN albums al ON t.album_id = al.id
-            WHERE 1=1
         '''
-        params = []
+        params: list = []
 
-        if search:
-            query += " AND (t.title LIKE ? OR a.name LIKE ? OR al.title LIKE ?)"
-            search_pattern = f"%{search}%"
-            params.extend([search_pattern, search_pattern, search_pattern])
+        fts_term = self._build_fts_query(search) if search else None
+        if fts_term:
+            query += " JOIN tracks_fts fts ON t.id = fts.track_id WHERE tracks_fts MATCH ?"
+            params.append(fts_term)
+        else:
+            query += " WHERE 1=1"
 
         if genre:
             query += " AND t.genre LIKE ?"

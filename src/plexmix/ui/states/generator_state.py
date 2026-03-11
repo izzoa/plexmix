@@ -380,9 +380,7 @@ class GeneratorState(AppState):
             )
 
             playlist_id = db.insert_playlist(playlist)
-
-            for position, track_id in enumerate(track_ids):
-                db.add_track_to_playlist(playlist_id, track_id, position)
+            db.add_tracks_to_playlist(playlist_id, track_ids)
 
             db.close()
 

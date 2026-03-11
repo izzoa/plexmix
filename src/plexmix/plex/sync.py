@@ -511,12 +511,8 @@ class SyncEngine:
             return
 
         all_tracks = self.db.get_all_tracks()
-        tracks_needing_embeddings = []
-
-        for track in all_tracks:
-            existing_embedding = self.db.get_embedding_by_track_id(track.id)
-            if not existing_embedding:
-                tracks_needing_embeddings.append(track)
+        existing_track_ids = self.db.get_track_ids_with_embeddings()
+        tracks_needing_embeddings = [t for t in all_tracks if t.id not in existing_track_ids]
 
         if not tracks_needing_embeddings:
             progress.update(task, description="No new tracks need embeddings")
@@ -530,6 +526,7 @@ class SyncEngine:
         batch_size = 50
         embeddings_saved = 0
         total_batches = (len(tracks_needing_embeddings) + batch_size - 1) // batch_size
+        saved_vectors = []  # Collect (track_id, vector) in-memory for FAISS update
 
         try:
             for i in range(0, len(tracks_needing_embeddings), batch_size):
@@ -576,20 +573,23 @@ class SyncEngine:
 
                 embeddings = self.embedding_generator.generate_batch_embeddings(texts, batch_size=50)
 
+                batch_embedding_objects = []
                 for track, embedding_vector in zip(batch_tracks, embeddings):
-                    embedding = Embedding(
+                    batch_embedding_objects.append(Embedding(
                         track_id=track.id,
                         embedding_model=self.embedding_generator.provider_name,
                         embedding_dim=self.embedding_generator.get_dimension(),
                         vector=embedding_vector
-                    )
-                    self.db.insert_embedding(embedding)
+                    ))
+                    saved_vectors.append((track.id, embedding_vector))
                     embeddings_saved += 1
                     progress.update(task, advance=1)
 
                     if progress_callback and embeddings_saved % 10 == 0:
                         current_progress = progress_start + (progress_end - progress_start) * (embeddings_saved / len(tracks_needing_embeddings))
                         progress_callback(current_progress, f"Generating embeddings... ({embeddings_saved}/{len(tracks_needing_embeddings)})")
+
+                self.db.insert_embeddings_batch(batch_embedding_objects)
 
                 logger.debug(f"Completed batch {batch_num}/{total_batches}")
 
@@ -599,15 +599,9 @@ class SyncEngine:
 
         # Use incremental FAISS updates if index already exists with correct dimension
         if self.vector_index.index is not None and not self.vector_index.dimension_mismatch:
-            # Get only the newly generated embeddings
-            new_track_ids = [t.id for t in tracks_needing_embeddings[:embeddings_saved]]
-            new_embeddings = []
-            for track_id in new_track_ids:
-                emb = self.db.get_embedding_by_track_id(track_id)
-                if emb:
-                    new_embeddings.append(emb.vector)
-
-            if new_embeddings:
+            if saved_vectors:
+                new_track_ids = [tv[0] for tv in saved_vectors]
+                new_embeddings = [tv[1] for tv in saved_vectors]
                 self.vector_index.add_vectors(new_embeddings, new_track_ids)
                 logger.info(f"Incrementally added {len(new_embeddings)} vectors to FAISS index")
         else:

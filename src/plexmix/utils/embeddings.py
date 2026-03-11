@@ -115,10 +115,12 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
                 try:
                     logger.debug(f"[{self.provider_name}] Generating embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
 
-                    for text in batch:
-                        embedding = self.generate_embedding(text)
-                        embeddings.append(embedding)
-                        time.sleep(0.1)
+                    result = self.client.models.embed_content(
+                        model=self.model_name,
+                        contents=batch,
+                    )
+                    batch_embeddings = [list(emb.values) for emb in result.embeddings]
+                    embeddings.extend(batch_embeddings)
 
                     logger.debug(f"[{self.provider_name}] Completed batch {batch_num}/{total_batches}")
                     break

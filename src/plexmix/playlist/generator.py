@@ -283,9 +283,7 @@ class PlaylistGenerator:
         )
 
         playlist_id = self.db.insert_playlist(playlist)
-
-        for position, track_id in enumerate(track_ids):
-            self.db.add_track_to_playlist(playlist_id, track_id, position)
+        self.db.add_tracks_to_playlist(playlist_id, track_ids)
 
         logger.info(f"Saved playlist '{name}' with {len(track_ids)} tracks")
         return playlist_id

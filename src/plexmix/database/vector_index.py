@@ -99,7 +99,11 @@ class VectorIndex:
 
         k_search = min(k, self.index.ntotal)
 
-        if track_id_filter:
+        filter_set = None
+        if track_id_filter is not None:
+            filter_set = set(track_id_filter) if not isinstance(track_id_filter, set) else track_id_filter
+            if not filter_set:
+                return []
             k_search = min(k_search * 3, self.index.ntotal)
 
         distances, indices = self.index.search(query_normalized, k_search)
@@ -108,7 +112,7 @@ class VectorIndex:
         for idx, distance in zip(indices[0], distances[0]):
             if idx < len(self.track_ids):
                 track_id = self.track_ids[idx]
-                if track_id_filter is None or track_id in track_id_filter:
+                if filter_set is None or track_id in filter_set:
                     results.append((track_id, float(distance)))
                     if len(results) >= k:
                         break
