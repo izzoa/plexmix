@@ -1,6 +1,7 @@
 import reflex as rx
 from plexmix.ui.components.navbar import layout
 from plexmix.ui.components.progress_modal import progress_modal
+from plexmix.ui.components.error import empty_state as shared_empty_state
 from plexmix.ui.states.generator_state import GeneratorState
 
 
@@ -20,23 +21,25 @@ def mood_query_input() -> rx.Component:
 
 
 def example_queries() -> rx.Component:
-    return rx.vstack(
-        rx.text("Example Queries", size="4", weight="bold"),
-        rx.vstack(
+    return rx.hstack(
+        rx.text("Try:", size="2", color_scheme="gray", white_space="nowrap"),
+        rx.hstack(
             rx.foreach(
                 GeneratorState.mood_examples,
-                lambda example: rx.button(
+                lambda example: rx.badge(
                     example,
                     on_click=lambda e=example: GeneratorState.use_example(e),
-                    variant="soft",
-                    size="2",
-                    width="100%",
+                    variant="outline",
+                    color_scheme="orange",
+                    cursor="pointer",
+                    size="1",
                 ),
             ),
+            wrap="wrap",
             spacing="2",
-            width="100%",
         ),
-        spacing="3",
+        spacing="2",
+        align="start",
         width="100%",
     )
 
@@ -47,6 +50,8 @@ def advanced_options() -> rx.Component:
             header=rx.accordion.header("Advanced Options"),
             content=rx.accordion.content(
                 rx.vstack(
+                    # General Filters group
+                    rx.text("General Filters", size="3", weight="bold"),
                     rx.hstack(
                         rx.text("Max Tracks:", size="3"),
                         rx.slider(
@@ -105,7 +110,9 @@ def advanced_options() -> rx.Component:
                         spacing="2",
                         align="center",
                     ),
-                    rx.text("Audio Filters", size="3", weight="bold", margin_top="2"),
+                    rx.divider(margin_y="2"),
+                    # Audio Filters group
+                    rx.text("Audio Filters", size="3", weight="bold"),
                     rx.hstack(
                         rx.text("Tempo (BPM):", size="3"),
                         rx.input(
@@ -178,8 +185,8 @@ def advanced_options() -> rx.Component:
 
 def input_section() -> rx.Component:
     return rx.vstack(
-        mood_query_input(),
         example_queries(),
+        mood_query_input(),
         advanced_options(),
         rx.button(
             "Generate Playlist",
@@ -189,6 +196,7 @@ def input_section() -> rx.Component:
             color_scheme="orange",
             size="4",
             width="100%",
+            title=rx.cond(GeneratorState.mood_query == "", "Enter a mood description", ""),
         ),
         rx.cond(
             GeneratorState.is_generating | (GeneratorState.generation_message != ""),
@@ -218,6 +226,7 @@ def input_section() -> rx.Component:
                 ),
                 width="100%",
                 variant="surface",
+                class_name="fade-in",
             ),
             rx.box(),
         ),
@@ -296,6 +305,7 @@ def playlist_actions() -> rx.Component:
                 disabled=GeneratorState.playlist_name == "",
                 color_scheme="blue",
                 size="3",
+                title=rx.cond(GeneratorState.playlist_name == "", "Enter a playlist name", ""),
             ),
             rx.button(
                 "Save Locally",
@@ -303,6 +313,7 @@ def playlist_actions() -> rx.Component:
                 disabled=GeneratorState.playlist_name == "",
                 color_scheme="green",
                 size="3",
+                title=rx.cond(GeneratorState.playlist_name == "", "Enter a playlist name", ""),
             ),
             spacing="3",
             align="center",
@@ -351,13 +362,10 @@ def loading_state() -> rx.Component:
 
 
 def empty_state() -> rx.Component:
-    return rx.vstack(
-        rx.text("No playlist generated yet", size="5", weight="bold", color_scheme="gray"),
-        rx.text("Enter a mood query and click 'Generate Playlist' to get started", size="3", color_scheme="gray"),
-        spacing="2",
-        align="center",
-        justify="center",
-        height="400px",
+    return shared_empty_state(
+        icon="sparkles",
+        title="No playlist generated yet",
+        description="Enter a mood query and click 'Generate Playlist' to get started.",
     )
 
 

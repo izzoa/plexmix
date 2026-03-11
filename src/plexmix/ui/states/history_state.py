@@ -22,6 +22,7 @@ class HistoryState(AppState):
     # Sorting/filtering
     sort_by: str = "created_date"  # created_date, name, track_count
     sort_descending: bool = True
+    search_query: str = ""
 
     # UI feedback
     loading_playlists: bool = False
@@ -32,6 +33,9 @@ class HistoryState(AppState):
     error_message: str = ""
 
     def on_load(self):
+        if not self.check_auth():
+            self.is_page_loading = False
+            return
         super().on_load()
         return HistoryState.load_playlists
 
@@ -140,7 +144,7 @@ class HistoryState(AppState):
                 db.close()
         except Exception as e:
             logger.error(f"Error selecting playlist: {e}")
-            self.action_message = f"Error loading playlist: {str(e)}"
+            return rx.toast.error(f"Error loading playlist: {str(e)}")
 
     def close_detail_modal(self):
         self.is_detail_modal_open = False
@@ -169,6 +173,12 @@ class HistoryState(AppState):
     def cancel_delete(self):
         self.playlist_to_delete = None
         self.is_delete_confirmation_open = False
+
+    def set_delete_confirmation_open(self, is_open: bool):
+        """Handle dialog open/close via on_open_change."""
+        self.is_delete_confirmation_open = is_open
+        if not is_open:
+            self.playlist_to_delete = None
 
     @rx.event(background=True)
     async def confirm_delete(self):
@@ -199,7 +209,6 @@ class HistoryState(AppState):
 
             async with self:
                 self.playlist_to_delete = None
-                self.action_message = "Playlist deleted successfully!"
 
                 # Close detail modal if it was open for this playlist
                 if self.selected_playlist and self.selected_playlist.get('id') == playlist_id:
@@ -207,14 +216,15 @@ class HistoryState(AppState):
                     self.selected_playlist = None
                     self.selected_playlist_tracks = []
 
+            yield rx.toast.success("Playlist deleted successfully!")
+
         except Exception as e:
-            async with self:
-                self.action_message = f"Error deleting playlist: {str(e)}"
+            yield rx.toast.error(f"Error deleting playlist: {str(e)}")
 
     @rx.event(background=True)
     async def export_to_plex(self, playlist_id: int):
         async with self:
-            self.action_message = "Exporting to Plex..."
+            self.exporting = True
 
         try:
             from plexmix.config.settings import Settings
@@ -226,8 +236,7 @@ class HistoryState(AppState):
             plex_token = get_plex_token()
 
             if not settings.plex.url or not plex_token:
-                async with self:
-                    self.action_message = "Plex not configured. Please configure in Settings."
+                yield rx.toast.error("Plex not configured. Please configure in Settings.")
                 return
 
             db_path = settings.database.get_db_path()
@@ -237,8 +246,7 @@ class HistoryState(AppState):
             # Get playlist details
             playlist = db.get_playlist_by_id(playlist_id)
             if not playlist:
-                async with self:
-                    self.action_message = "Playlist not found"
+                yield rx.toast.error("Playlist not found")
                 db.close()
                 return
 
@@ -256,12 +264,10 @@ class HistoryState(AppState):
             playlist_name = playlist.name or f"PlexMix Playlist {playlist_id}"
             plex_client.create_playlist(playlist_name, track_plex_keys)
 
-            async with self:
-                self.action_message = f"Exported '{playlist_name}' to Plex!"
+            yield rx.toast.success(f"Exported '{playlist_name}' to Plex!")
 
         except Exception as e:
-            async with self:
-                self.action_message = f"Error exporting to Plex: {str(e)}"
+            yield rx.toast.error(f"Error exporting to Plex: {str(e)}")
 
     def export_to_m3u(self, playlist_id: int):
         """Export playlist to M3U format and trigger download.
@@ -283,9 +289,8 @@ class HistoryState(AppState):
             # Get playlist details
             playlist = db.get_playlist_by_id(playlist_id)
             if not playlist:
-                self.action_message = "Playlist not found"
                 db.close()
-                return None
+                return rx.toast.error("Playlist not found")
 
             # Get playlist tracks
             tracks = db.get_playlist_tracks(playlist_id)
@@ -309,8 +314,36 @@ class HistoryState(AppState):
             return rx.download(data=m3u_content, filename=filename)
 
         except Exception as e:
-            self.action_message = f"Error exporting M3U: {str(e)}"
-            return None
+            return rx.toast.error(f"Error exporting M3U: {str(e)}")
+
+    @rx.var(cache=True)
+    def filtered_playlists(self) -> List[Dict[str, Any]]:
+        if not self.search_query:
+            return self.playlists
+        q = self.search_query.lower()
+        return [
+            p for p in self.playlists
+            if q in (p.get("name") or "").lower()
+            or q in (p.get("mood_query") or "").lower()
+        ]
+
+    def set_search_query(self, query: str):
+        self.search_query = query
+
+    _SORT_LABEL_TO_KEY = {
+        "Date Created": "created_date",
+        "Name": "name",
+        "Track Count": "track_count",
+    }
+    _SORT_KEY_TO_LABEL = {v: k for k, v in _SORT_LABEL_TO_KEY.items()}
+
+    @rx.var(cache=True)
+    def sort_by_label(self) -> str:
+        return self._SORT_KEY_TO_LABEL.get(self.sort_by, "Date Created")
+
+    def sort_playlists_by_label(self, label: str):
+        key = self._SORT_LABEL_TO_KEY.get(label, "created_date")
+        self.sort_playlists(key)
 
     def sort_playlists(self, sort_by: str):
         self.sort_by = sort_by

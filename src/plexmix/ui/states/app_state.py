@@ -1,9 +1,19 @@
+import hmac
+import logging
 import reflex as rx
 from pathlib import Path
 from typing import Optional
 
+logger = logging.getLogger(__name__)
+
 
 class AppState(rx.State):
+    # Authentication state
+    is_authenticated: bool = False
+    auth_required: bool = False
+    login_password: str = ""
+    login_error: str = ""
+
     plex_configured: bool = False
     ai_provider_configured: bool = False
     embedding_provider_configured: bool = False
@@ -26,6 +36,9 @@ class AppState(rx.State):
     current_task: Optional[str] = None
     task_progress: int = 0
 
+    # Mobile navigation state
+    is_mobile_nav_open: bool = False
+
     # Page loading state for navigation transitions
     is_page_loading: bool = True
 
@@ -35,9 +48,83 @@ class AppState(rx.State):
         self.is_page_loading = loading
 
     @rx.event
+    def toggle_mobile_nav(self):
+        """Toggle the mobile navigation sidebar."""
+        self.is_mobile_nav_open = not self.is_mobile_nav_open
+
+    @rx.event
+    def close_mobile_nav(self):
+        """Close the mobile navigation sidebar."""
+        self.is_mobile_nav_open = False
+
+    def check_auth(self) -> bool:
+        """Check if authentication is required and whether user is authenticated.
+
+        Returns True if the user is authenticated (or no password is set).
+        Returns False if the user needs to log in.
+        """
+        import os
+
+        try:
+            from plexmix.config.settings import Settings
+
+            settings = Settings.load_from_file()
+            configured_password = settings.ui.password
+        except Exception:
+            configured_password = None
+
+        # Also check env var directly as fallback
+        if not configured_password:
+            configured_password = os.environ.get("PLEXMIX_UI_PASSWORD")
+
+        if not configured_password:
+            # No password configured — auto-authenticate
+            self.auth_required = False
+            self.is_authenticated = True
+            return True
+
+        self.auth_required = True
+        return self.is_authenticated
+
+    @rx.event
+    def attempt_login(self, form_data: dict):
+        """Validate the submitted password."""
+        import os
+
+        password = form_data.get("password", "")
+
+        try:
+            from plexmix.config.settings import Settings
+
+            settings = Settings.load_from_file()
+            configured_password = settings.ui.password
+        except Exception:
+            configured_password = None
+
+        if not configured_password:
+            configured_password = os.environ.get("PLEXMIX_UI_PASSWORD", "")
+
+        if configured_password and hmac.compare_digest(password, configured_password):
+            self.is_authenticated = True
+            self.login_error = ""
+            self.login_password = ""
+        else:
+            self.login_error = "Incorrect password"
+            self.login_password = ""
+
+    @rx.event
+    def logout(self):
+        """Clear authentication state."""
+        self.is_authenticated = False
+        self.login_password = ""
+
+    @rx.event
     def on_load(self):
         """Load app data when the page loads."""
-        print("AppState.on_load called")
+        logger.debug("AppState.on_load called")
+        if not self.check_auth():
+            self.is_page_loading = False
+            return
         self.check_configuration_status()
         self.load_library_stats()
         return rx.console_log("App state loaded")
@@ -52,7 +139,10 @@ class AppState(rx.State):
 
             # Check Plex configuration
             plex_token = get_plex_token()
-            print(f"Plex URL: {settings.plex.url}, Token: {bool(plex_token)}, Library: {settings.plex.library_name}")
+            logger.debug(
+                "Plex URL: %s, Token: %s, Library: %s",
+                settings.plex.url, bool(plex_token), settings.plex.library_name,
+            )
             self.plex_configured = bool(
                 settings.plex.url and
                 plex_token and
@@ -100,7 +190,7 @@ class AppState(rx.State):
             self.embedding_model_name = settings.embedding.model or ""
 
         except Exception as e:
-            print(f"Error checking configuration: {e}")
+            logger.error("Error checking configuration: %s", e)
             self.plex_configured = False
             self.ai_provider_configured = False
             self.embedding_provider_configured = False
@@ -169,7 +259,7 @@ class AppState(rx.State):
                 self.last_sync = last_update if last_update else None
 
         except Exception as e:
-            print(f"Error loading library stats: {e}")
+            logger.error("Error loading library stats: %s", e)
             self.total_tracks = "0"
             self.embedded_tracks = "0"
             self.audio_analyzed_tracks = "0"

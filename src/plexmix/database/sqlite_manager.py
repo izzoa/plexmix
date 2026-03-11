@@ -806,7 +806,9 @@ class SQLiteManager:
         search: Optional[str] = None,
         genre: Optional[str] = None,
         year_min: Optional[int] = None,
-        year_max: Optional[int] = None
+        year_max: Optional[int] = None,
+        sort_column: str = "title",
+        sort_ascending: bool = True,
     ) -> List[Dict[str, Any]]:
         cursor = self.get_connection().cursor()
 
@@ -849,7 +851,16 @@ class SQLiteManager:
             query += " AND t.year <= ?"
             params.append(year_max)
 
-        query += " ORDER BY t.title LIMIT ? OFFSET ?"
+        allowed_sort_columns = {
+            "title": "t.title",
+            "artist": "a.name",
+            "album": "al.title",
+            "genre": "t.genre",
+            "year": "t.year",
+        }
+        order_col = allowed_sort_columns.get(sort_column, "t.title")
+        order_dir = "ASC" if sort_ascending else "DESC"
+        query += f" ORDER BY {order_col} {order_dir} LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
         cursor.execute(query, params)

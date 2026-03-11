@@ -91,7 +91,7 @@ def doctor() -> rx.Component:
                 ~DoctorState.is_healthy,
                 rx.vstack(
                     rx.heading("Issues Found", size="6", margin_top="6", margin_bottom="3"),
-                    
+
                     # Orphaned Embeddings Issue
                     rx.cond(
                         DoctorState.doctor_orphaned_embeddings > 0,
@@ -115,6 +115,7 @@ def doctor() -> rx.Component:
                                     on_click=DoctorState.delete_orphaned_embeddings,
                                     loading=DoctorState.current_fix_target == "cleanup",
                                     disabled=DoctorState.is_fixing,
+                                    title=rx.cond(DoctorState.is_fixing, "Another operation is in progress", ""),
                                 ),
                                 spacing="3",
                                 align="start",
@@ -148,6 +149,7 @@ def doctor() -> rx.Component:
                                         on_click=DoctorState.generate_missing_embeddings,
                                         loading=DoctorState.incremental_embedding_running,
                                         disabled=DoctorState.is_fixing,
+                                        title=rx.cond(DoctorState.is_fixing, "Another operation is in progress", ""),
                                     ),
                                     rx.button(
                                         "Rebuild All Embeddings",
@@ -157,6 +159,7 @@ def doctor() -> rx.Component:
                                         on_click=DoctorState.regenerate_all_embeddings,
                                         loading=DoctorState.full_embedding_running,
                                         disabled=DoctorState.is_fixing,
+                                        title=rx.cond(DoctorState.is_fixing, "Another operation is in progress", ""),
                                     ),
                                     spacing="3",
                                     width="100%",
@@ -171,7 +174,7 @@ def doctor() -> rx.Component:
                                     DoctorState.embedding_job_running,
                                     rx.vstack(
                                         rx.progress(
-                                            value=(DoctorState.fix_progress / DoctorState.fix_total) * 100,
+                                            value=rx.cond(DoctorState.fix_total > 0, (DoctorState.fix_progress / DoctorState.fix_total) * 100, 0),
                                             max=100,
                                         ),
                                         rx.text(
@@ -193,24 +196,13 @@ def doctor() -> rx.Component:
                         rx.box(),
                     ),
                     
-                    # Fix Status Message
-                    rx.cond(
-                        DoctorState.fix_message != "",
-                        rx.callout(
-                            DoctorState.fix_message,
-                            icon="info",
-                            color_scheme="blue",
-                            size="2",
-                        ),
-                        rx.box(),
-                    ),
-                    
                     spacing="4",
                     width="100%",
+                    class_name="fade-in",
                 ),
                 rx.box(),
             ),
-            
+
             # Tag Maintenance
             rx.heading("Tag Maintenance", size="6", margin_top="6", margin_bottom="3"),
             rx.card(
@@ -229,7 +221,12 @@ def doctor() -> rx.Component:
                             variant="soft",
                             on_click=DoctorState.regenerate_missing_tags,
                             loading=DoctorState.tag_job_running,
-                            disabled=DoctorState.is_fixing,
+                            disabled=DoctorState.is_fixing | (DoctorState.doctor_untagged_tracks == 0),
+                            title=rx.cond(
+                                DoctorState.is_fixing,
+                                "Another operation is in progress",
+                                rx.cond(DoctorState.doctor_untagged_tracks == 0, "No untagged tracks", ""),
+                            ),
                         ),
                         align="start",
                     ),
@@ -237,7 +234,7 @@ def doctor() -> rx.Component:
                         DoctorState.tag_job_running,
                         rx.vstack(
                             rx.progress(
-                                value=(DoctorState.fix_progress / DoctorState.fix_total) * 100,
+                                value=rx.cond(DoctorState.fix_total > 0, (DoctorState.fix_progress / DoctorState.fix_total) * 100, 0),
                                 max=100,
                             ),
                             rx.text(
@@ -291,12 +288,13 @@ def doctor() -> rx.Component:
                         on_click=DoctorState.analyze_missing_audio,
                         loading=DoctorState.audio_job_running,
                         disabled=DoctorState.is_fixing,
+                        title=rx.cond(DoctorState.is_fixing, "Another operation is in progress", ""),
                     ),
                     rx.cond(
                         DoctorState.audio_job_running,
                         rx.vstack(
                             rx.progress(
-                                value=(DoctorState.fix_progress / DoctorState.fix_total) * 100,
+                                value=rx.cond(DoctorState.fix_total > 0, (DoctorState.fix_progress / DoctorState.fix_total) * 100, 0),
                                 max=100,
                             ),
                             rx.text(

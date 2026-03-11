@@ -1,7 +1,11 @@
+import json
+import logging
 import reflex as rx
 import asyncio
 from typing import Optional, List
 from plexmix.ui.states.app_state import AppState
+
+logger = logging.getLogger(__name__)
 from plexmix.ui.utils.validation import (
     validate_url, validate_plex_token, validate_api_key,
     validate_temperature, validate_batch_size
@@ -54,6 +58,7 @@ class SettingsState(AppState):
     embedding_test_status: str = ""
     save_status: str = ""
     active_tab: str = "plex"
+    _settings_snapshot: str = ""
 
     # Validation errors
     plex_url_error: str = ""
@@ -65,6 +70,9 @@ class SettingsState(AppState):
     local_endpoint_error: str = ""
 
     def on_load(self):
+        if not self.check_auth():
+            self.is_page_loading = False
+            return
         super().on_load()
         self.load_settings()
         self.update_model_lists()
@@ -132,9 +140,10 @@ class SettingsState(AppState):
             self.audio_duration_limit = settings.audio.duration_limit
 
         except Exception as e:
-            print(f"Error loading settings: {e}")
+            logger.error("Error loading settings: %s", e)
         finally:
             self._sync_embedding_dimension()
+            self._settings_snapshot = self._get_settings_snapshot()
 
     def update_model_lists(self):
         ai_model_map = {
@@ -577,11 +586,14 @@ class SettingsState(AppState):
 
             settings.save_to_file()
 
-            self.save_status = "✓ Settings saved successfully!"
+            self.save_status = ""
+            self._settings_snapshot = self._get_settings_snapshot()
             self.check_configuration_status()
+            return rx.toast.success("Settings saved successfully!")
 
         except Exception as e:
-            self.save_status = f"✗ Failed to save settings: {str(e)}"
+            self.save_status = ""
+            return rx.toast.error(f"Failed to save settings: {str(e)}")
 
     def validate_plex_url(self, url: str):
         self.plex_url = url
@@ -745,6 +757,34 @@ class SettingsState(AppState):
                 "cohere": 1024,
             }
             self.embedding_dimension = dimension_map.get(self.embedding_provider, self.embedding_dimension)
+
+    def _get_settings_snapshot(self) -> str:
+        """Return a JSON string of key settings fields for change detection."""
+        return json.dumps({
+            "plex_url": self.plex_url,
+            "plex_token": self.plex_token,
+            "plex_library": self.plex_library,
+            "ai_provider": self.ai_provider,
+            "ai_api_key": self.ai_api_key,
+            "ai_model": self.ai_model,
+            "ai_temperature": self.ai_temperature,
+            "ai_local_mode": self.ai_local_mode,
+            "ai_local_endpoint": self.ai_local_endpoint,
+            "ai_local_auth_token": self.ai_local_auth_token,
+            "embedding_provider": self.embedding_provider,
+            "embedding_api_key": self.embedding_api_key,
+            "embedding_model": self.embedding_model,
+            "log_level": self.log_level,
+            "audio_enabled": self.audio_enabled,
+            "audio_analyze_on_sync": self.audio_analyze_on_sync,
+            "audio_duration_limit": self.audio_duration_limit,
+        }, sort_keys=True)
+
+    @rx.var(cache=True)
+    def has_unsaved_changes(self) -> bool:
+        if not self._settings_snapshot:
+            return False
+        return self._get_settings_snapshot() != self._settings_snapshot
 
     def is_form_valid(self) -> bool:
         """Check if all form fields are valid."""

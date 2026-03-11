@@ -1,6 +1,9 @@
+import logging
 import reflex as rx
 from typing import List, Dict
 from plexmix.ui.states.app_state import AppState
+
+logger = logging.getLogger(__name__)
 
 
 class DashboardState(AppState):
@@ -9,7 +12,10 @@ class DashboardState(AppState):
     @rx.event
     def on_load(self):
         """Load dashboard data when the page loads."""
-        print("DashboardState.on_load called")
+        logger.debug("DashboardState.on_load called")
+        if not self.check_auth():
+            self.is_page_loading = False
+            return
         self.check_configuration_status()
         self.load_library_stats()
         self.load_recent_playlists()
@@ -52,7 +58,7 @@ class DashboardState(AppState):
             conn.close()
 
         except Exception as e:
-            print(f"Error loading recent playlists: {e}")
+            logger.error("Error loading recent playlists: %s", e)
             self.recent_playlists = []
 
     def refresh_stats(self):

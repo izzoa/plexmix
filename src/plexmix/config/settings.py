@@ -125,6 +125,13 @@ class AudioSettings(BaseSettings):
         return file_path
 
 
+class UISettings(BaseSettings):
+    password: Optional[str] = Field(default=None, description="Password to protect the web UI")
+
+    class Config:
+        env_prefix = "PLEXMIX_UI_"
+
+
 class PlaylistSettings(BaseSettings):
     default_length: int = Field(default=50, description="Default playlist length")
     candidate_pool_size: Optional[int] = Field(default=None, description="Explicit candidate pool size (overrides multiplier)")
@@ -158,6 +165,7 @@ class Settings(BaseSettings):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     playlist: PlaylistSettings = Field(default_factory=PlaylistSettings)
     audio: AudioSettings = Field(default_factory=AudioSettings)
+    ui: UISettings = Field(default_factory=UISettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
     model_config = {

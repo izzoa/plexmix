@@ -15,6 +15,7 @@ def plex_tab() -> rx.Component:
                 on_change=SettingsState.set_plex_url,
                 width="100%",
             ),
+            rx.text("e.g., http://localhost:32400", size="1", color_scheme="gray"),
             rx.text("Plex Token", size="3", weight="bold", margin_top="3"),
             rx.input(
                 type="password",
@@ -22,6 +23,11 @@ def plex_tab() -> rx.Component:
                 value=SettingsState.plex_token,
                 on_change=SettingsState.set_plex_token,
                 width="100%",
+            ),
+            rx.text(
+                "Find at app.plex.tv/desktop \u2192 Settings \u2192 Account, or in Plex app XML settings",
+                size="1",
+                color_scheme="gray",
             ),
             rx.text("Music Library", size="3", weight="bold", margin_top="3"),
             rx.select(
@@ -31,6 +37,7 @@ def plex_tab() -> rx.Component:
                 placeholder="Select library...",
                 width="100%",
             ),
+            rx.text("Test your connection first to load available libraries", size="1", color_scheme="gray"),
             rx.hstack(
                 rx.button(
                     "Test Connection",
@@ -41,7 +48,7 @@ def plex_tab() -> rx.Component:
                 rx.button(
                     "Save",
                     on_click=SettingsState.save_all_settings,
-                    color_scheme="green",
+                    color_scheme=rx.cond(SettingsState.has_unsaved_changes, "yellow", "green"),
                 ),
                 spacing="3",
                 margin_top="4",
@@ -88,6 +95,7 @@ def ai_provider_tab() -> rx.Component:
                         on_change=SettingsState.set_ai_api_key,
                         width="100%",
                     ),
+                    rx.text("Get your key from the provider's developer dashboard", size="1", color_scheme="gray"),
                     spacing="2",
                     width="100%",
                 ),
@@ -174,6 +182,7 @@ def ai_provider_tab() -> rx.Component:
                 rx.text(SettingsState.ai_temperature, size="3"),
                 width="100%",
             ),
+            rx.text("Higher = more creative, lower = more consistent", size="1", color_scheme="gray"),
             rx.cond(
                 SettingsState.ai_provider == "local",
                 rx.vstack(
@@ -274,7 +283,7 @@ def ai_provider_tab() -> rx.Component:
                 rx.button(
                     "Save",
                     on_click=SettingsState.save_all_settings,
-                    color_scheme="green",
+                    color_scheme=rx.cond(SettingsState.has_unsaved_changes, "yellow", "green"),
                 ),
                 spacing="3",
                 margin_top="4",
@@ -328,6 +337,7 @@ def embedding_tab() -> rx.Component:
                 width="100%",
             ),
             rx.text(f"Embedding Dimension: {SettingsState.embedding_dimension}", size="2", color_scheme="gray", margin_top="2"),
+            rx.text("Auto-set by provider. Must match existing embeddings or regenerate.", size="1", color_scheme="gray"),
             rx.cond(
                 SettingsState.embedding_provider == "local",
                 rx.vstack(
@@ -374,7 +384,7 @@ def embedding_tab() -> rx.Component:
                 rx.button(
                     "Save",
                     on_click=SettingsState.save_all_settings,
-                    color_scheme="green",
+                    color_scheme=rx.cond(SettingsState.has_unsaved_changes, "yellow", "green"),
                 ),
                 spacing="3",
                 margin_top="4",
@@ -410,7 +420,7 @@ def advanced_tab() -> rx.Component:
             rx.button(
                 "Save",
                 on_click=SettingsState.save_all_settings,
-                color_scheme="green",
+                color_scheme=rx.cond(SettingsState.has_unsaved_changes, "yellow", "green"),
                 margin_top="4",
             ),
             rx.cond(
@@ -478,7 +488,7 @@ def audio_tab() -> rx.Component:
             rx.button(
                 "Save",
                 on_click=SettingsState.save_all_settings,
-                color_scheme="green",
+                color_scheme=rx.cond(SettingsState.has_unsaved_changes, "yellow", "green"),
                 margin_top="4",
             ),
             rx.cond(
@@ -498,6 +508,17 @@ def settings() -> rx.Component:
     content = rx.container(
         rx.vstack(
             rx.heading("Settings", size="8", margin_bottom="6"),
+            rx.cond(
+                SettingsState.has_unsaved_changes,
+                rx.callout(
+                    "You have unsaved changes. Click Save to apply them.",
+                    icon="triangle_alert",
+                    color_scheme="yellow",
+                    size="2",
+                    width="100%",
+                ),
+                rx.box(),
+            ),
             rx.tabs.root(
                 rx.tabs.list(
                     rx.tabs.trigger("Plex", value="plex"),

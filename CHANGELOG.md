@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-03-11
+
+### Added
+- Add optional password protection for the web UI (`PLEXMIX_UI_PASSWORD` env var)
+- Add clickable column sorting (title, artist, album, genre, year) to the Library track table
+- Add search filter to Playlist History page
+- Add confirmation dialog before "Tag All Untagged Tracks" action with untagged track count
+- Add auto-scroll to top on pagination (next/previous/go-to-page and sort changes)
+- Add auto-dismiss of generation success messages after 5 seconds
+- Add skeleton table loader on Library page during initial load
+- Add unsaved changes warning (yellow callout + yellow Save buttons) on Settings page
+- Add cancel confirmation dialog before cancelling a sync operation
+- Add fade-in CSS transition animations for progress sections and data tables
+- Add clickable mood example chips (badges) above textarea in Playlist Generator
+- Add "General Filters" and "Audio Filters" labeled groups with divider in Generator advanced options
+
+### Changed
+- Replace `print()` statements with proper `logging` module calls in all UI state handlers
+- Display tags as colored badge pills instead of raw comma-separated strings in Library and Tagging pages
+- Use human-friendly sort labels ("Date Created", "Name", "Track Count") in History page
+- Dashboard "Sync Library" button now navigates to the Library page instead of only refreshing stats
+- Disable "Regenerate Missing Tags" button in Doctor page when there are no untagged tracks
+- Replace hardcoded light-mode colors with `rx.color_mode_cond` and Radix tokens for dark mode support in History and Tagging pages
+- Add proper `on_open_change` handlers to History delete dialog and Tagging tag-all dialog for correct state cleanup
+
+### Fixed
+- Fix potential division-by-zero in Doctor page progress bars when `fix_total` is 0
+- Remove dead CSS classes (`.nav-link`, `.table-*`, `.btn-*`, `.card-hover`, `.input-focus`) and fix `--navbar-width` variable to match actual 240px value
+
 ## [0.5.0] - 2026-03-10
 
 ### Added

@@ -30,6 +30,7 @@ def error_message(
                     on_click=on_dismiss,
                     variant="ghost",
                     size="1",
+                    title="Dismiss",
                 ),
                 rx.box(),
             ),

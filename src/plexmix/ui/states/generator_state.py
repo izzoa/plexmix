@@ -33,6 +33,8 @@ class GeneratorState(AppState):
     playlist_name: str = ""
     total_duration_ms: int = 0
 
+    _generation_id: int = 0
+
     mood_examples: List[str] = [
         "Chill rainy day vibes with acoustic guitar",
         "Energetic workout music to pump me up",
@@ -42,6 +44,9 @@ class GeneratorState(AppState):
     ]
 
     def on_load(self):
+        if not self.check_auth():
+            self.is_page_loading = False
+            return
         super().on_load()
         self.is_page_loading = False
 
@@ -94,12 +99,15 @@ class GeneratorState(AppState):
             if not self.mood_query.strip():
                 return
 
+            self._generation_id += 1
             self.is_generating = True
             self.generation_progress = 0
             self.generation_message = "Starting playlist generation..."
             self.generation_log = ["Starting playlist generation..."]
             self.generated_playlist = []
             self.total_duration_ms = 0
+
+        current_gen = self._generation_id
 
         try:
             from plexmix.config.settings import Settings
@@ -274,6 +282,14 @@ class GeneratorState(AppState):
                 self.generation_message = final_msg
                 self.generation_log = (self.generation_log + [final_msg])[-25:]
 
+            # Auto-dismiss success message after 5 seconds (keep errors/warnings visible)
+            if len(playlist_tracks) > 0:
+                await asyncio.sleep(5)
+                async with self:
+                    if self._generation_id == current_gen and not self.is_generating:
+                        self.generation_message = ""
+                        self.generation_log = []
+
         except Exception as e:
             import traceback
             logger.error("Playlist generation failed: %s", e, exc_info=True)
@@ -310,8 +326,9 @@ class GeneratorState(AppState):
 
             if not settings.plex.url or not plex_token:
                 async with self:
-                    self.generation_message = "Plex not configured"
+                    self.generation_message = ""
                     self.is_generating = False
+                yield rx.toast.error("Plex not configured")
                 return
 
             plex_client = PlexClient(settings.plex.url, plex_token)
@@ -323,12 +340,16 @@ class GeneratorState(AppState):
 
             async with self:
                 self.is_generating = False
-                self.generation_message = f"Saved to Plex: {self.playlist_name}"
+                self.generation_message = ""
+
+            yield rx.toast.success(f"Saved to Plex: {self.playlist_name}")
 
         except Exception as e:
             async with self:
                 self.is_generating = False
-                self.generation_message = f"Failed to save to Plex: {str(e)}"
+                self.generation_message = ""
+
+            yield rx.toast.error(f"Failed to save to Plex: {str(e)}")
 
     @rx.event(background=True)
     async def save_locally(self):
@@ -367,12 +388,16 @@ class GeneratorState(AppState):
 
             async with self:
                 self.is_generating = False
-                self.generation_message = f"Saved locally: {self.playlist_name}"
+                self.generation_message = ""
+
+            yield rx.toast.success(f"Saved locally: {self.playlist_name}")
 
         except Exception as e:
             async with self:
                 self.is_generating = False
-                self.generation_message = f"Failed to save locally: {str(e)}"
+                self.generation_message = ""
+
+            yield rx.toast.error(f"Failed to save locally: {str(e)}")
 
     def format_duration(self, duration_ms: int) -> str:
         """Format duration from milliseconds to mm:ss"""

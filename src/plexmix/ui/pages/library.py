@@ -2,6 +2,8 @@ import reflex as rx
 from plexmix.ui.components.navbar import layout
 from plexmix.ui.components.track_table import track_table
 from plexmix.ui.components.progress_modal import progress_modal
+from plexmix.ui.components.loading import skeleton_table
+from plexmix.ui.components.error import empty_state
 from plexmix.ui.states.library_state import LibraryState
 
 
@@ -24,6 +26,7 @@ def action_bar() -> rx.Component:
                     loading=LibraryState.is_syncing,
                     color_scheme="red",
                     size="3",
+                    title=rx.cond(~LibraryState.plex_configured, "Configure Plex first", ""),
                 ),
                 rx.button(
                     "Sync Library",
@@ -32,6 +35,7 @@ def action_bar() -> rx.Component:
                     loading=LibraryState.is_syncing,
                     color_scheme="blue",
                     size="3",
+                    title=rx.cond(~LibraryState.plex_configured, "Configure Plex first", ""),
                 ),
             ),
             rx.button(
@@ -67,6 +71,7 @@ def action_bar() -> rx.Component:
                 loading=LibraryState.is_embedding,
                 color_scheme="orange",
                 size="3",
+                title=rx.cond(LibraryState.selected_tracks.length() == 0, "Select tracks first", ""),
             ),
             rx.button(
                 "Analyze Audio",
@@ -75,6 +80,7 @@ def action_bar() -> rx.Component:
                 loading=LibraryState.is_analyzing_audio,
                 color_scheme="purple",
                 size="3",
+                title=rx.cond(LibraryState.is_analyzing_audio, "Analysis in progress", ""),
             ),
             spacing="3",
         ),
@@ -139,6 +145,7 @@ def pagination_controls() -> rx.Component:
             disabled=LibraryState.current_page == 1,
             variant="soft",
             size="2",
+            title=rx.cond(LibraryState.current_page == 1, "First page", ""),
         ),
         rx.text(
             f"Page {LibraryState.current_page} of {total_pages}",
@@ -155,6 +162,7 @@ def pagination_controls() -> rx.Component:
             disabled=LibraryState.current_page >= total_pages,
             variant="soft",
             size="2",
+            title=rx.cond(LibraryState.current_page >= total_pages, "Last page", ""),
         ),
         justify="center",
         align="center",
@@ -172,19 +180,33 @@ def library() -> rx.Component:
             search_and_filters(),
             rx.divider(),
             rx.cond(
-                LibraryState.tracks.length() > 0,
-                rx.vstack(
-                    track_table(LibraryState.tracks, LibraryState.selected_tracks, LibraryState.toggle_track_selection),
-                    pagination_controls(),
-                    spacing="4",
-                    width="100%",
-                ),
-                rx.text(
-                    "No tracks found. Try syncing your library or adjusting filters.",
-                    size="4",
-                    color_scheme="gray",
-                    text_align="center",
-                    padding="8",
+                LibraryState.is_page_loading,
+                skeleton_table(rows=10),
+                rx.cond(
+                    LibraryState.tracks.length() > 0,
+                    rx.vstack(
+                        track_table(
+                            LibraryState.tracks,
+                            LibraryState.selected_tracks,
+                            LibraryState.toggle_track_selection,
+                            sort_column=LibraryState.sort_column,
+                            sort_ascending=LibraryState.sort_ascending,
+                            on_sort=LibraryState.set_sort,
+                            all_selected=LibraryState.all_page_selected,
+                            on_toggle_all=LibraryState.toggle_select_all,
+                        ),
+                        pagination_controls(),
+                        spacing="4",
+                        width="100%",
+                        class_name="fade-in",
+                    ),
+                    empty_state(
+                        icon="library",
+                        title="No tracks found",
+                        description="Sync your library from Plex, or adjust your search filters.",
+                        action_text="Go to Settings",
+                        on_action=lambda: rx.redirect("/settings"),
+                    ),
                 ),
             ),
             spacing="4",
@@ -197,7 +219,32 @@ def library() -> rx.Component:
         is_open=LibraryState.is_syncing,
         progress=LibraryState.sync_progress,
         message=LibraryState.sync_message,
-        on_cancel=LibraryState.cancel_sync,
+        on_cancel=LibraryState.request_cancel_sync,
+    )
+
+    cancel_confirm_dialog = rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("Cancel Sync?"),
+            rx.alert_dialog.description(
+                "Progress will be lost. Are you sure you want to cancel?"
+            ),
+            rx.hstack(
+                rx.alert_dialog.cancel(
+                    rx.button("Continue Sync", variant="soft"),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        "Yes, Cancel",
+                        on_click=LibraryState.cancel_sync,
+                        color_scheme="red",
+                    ),
+                ),
+                spacing="3",
+                justify="end",
+            ),
+        ),
+        open=LibraryState.show_cancel_confirm,
+        on_open_change=LibraryState.dismiss_cancel_confirm,
     )
 
     embedding_modal = progress_modal(
@@ -253,4 +300,4 @@ def library() -> rx.Component:
         open=LibraryState.show_regenerate_confirm,
     )
 
-    return layout(rx.fragment(content, sync_modal, embedding_modal, audio_modal, confirm_regenerate_dialog))
+    return layout(rx.fragment(content, sync_modal, cancel_confirm_dialog, embedding_modal, audio_modal, confirm_regenerate_dialog))

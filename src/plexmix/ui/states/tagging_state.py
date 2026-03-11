@@ -1,3 +1,4 @@
+import logging
 import reflex as rx
 import asyncio
 import threading
@@ -5,6 +6,8 @@ import time
 import atexit
 from typing import List, Dict, Any, Optional
 from plexmix.ui.states.app_state import AppState
+
+logger = logging.getLogger(__name__)
 
 # Per-client cancel events for tagging operations
 _tagging_cancel_events: Dict[str, threading.Event] = {}
@@ -46,6 +49,10 @@ class TaggingState(AppState):
     estimated_time_remaining: int = 0
     tagging_message: str = ""
 
+    # Confirmation dialog
+    show_tag_all_confirm: bool = False
+    untagged_track_count: int = 0
+
     # Recently tagged tracks
     recently_tagged_tracks: List[Dict[str, Any]] = []
 
@@ -56,6 +63,9 @@ class TaggingState(AppState):
     edit_instruments: str = ""
 
     def on_load(self):
+        if not self.check_auth():
+            self.is_page_loading = False
+            return
         super().on_load()
         self.load_recently_tagged()
         self.is_page_loading = False
@@ -74,7 +84,7 @@ class TaggingState(AppState):
                 self.recently_tagged_tracks = db.get_recently_tagged_tracks(limit=100)
                 db.close()
         except Exception as e:
-            print(f"Error loading recently tagged tracks: {e}")
+            logger.error("Error loading recently tagged tracks: %s", e)
 
     def set_genre_filter(self, value: str):
         self.genre_filter = value
@@ -282,7 +292,9 @@ class TaggingState(AppState):
             async with self:
                 self.is_tagging = False
                 self.tagging_progress = 100
-                self.tagging_message = f"Successfully tagged {self.tags_generated_count} tracks!"
+                self.tagging_message = ""
+
+            yield rx.toast.success(f"Successfully tagged {self.tags_generated_count} tracks!")
 
         except Exception as e:
             # Clean up cancel event on error
@@ -290,7 +302,9 @@ class TaggingState(AppState):
                 del _tagging_cancel_events[token]
             async with self:
                 self.is_tagging = False
-                self.tagging_message = f"Error during tagging: {str(e)}"
+                self.tagging_message = ""
+
+            yield rx.toast.error(f"Error during tagging: {str(e)}")
 
     def cancel_tagging(self):
         token = self.router.session.client_token
@@ -354,15 +368,43 @@ class TaggingState(AppState):
                 self.edit_tags = ""
                 self.edit_environments = ""
                 self.edit_instruments = ""
-                self.tagging_message = "Tags updated successfully!"
+
+            yield rx.toast.success("Tags updated successfully!")
 
         except Exception as e:
-            async with self:
-                self.tagging_message = f"Error saving tags: {str(e)}"
+            yield rx.toast.error(f"Error saving tags: {str(e)}")
+
+    def show_tag_all_confirmation(self):
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+
+            if db_path.exists():
+                with SQLiteManager(str(db_path)) as db:
+                    self.untagged_track_count = db.count_untagged_tracks()
+            else:
+                self.untagged_track_count = 0
+        except Exception as e:
+            logger.error("Error counting untagged tracks: %s", e)
+            self.untagged_track_count = 0
+
+        self.show_tag_all_confirm = True
+
+    def cancel_tag_all_confirm(self):
+        self.show_tag_all_confirm = False
+
+    def set_tag_all_confirm_open(self, is_open: bool):
+        """Handle dialog open/close via on_open_change."""
+        if not is_open:
+            self.show_tag_all_confirm = False
 
     @rx.event(background=True)
     async def tag_all_untagged(self):
         async with self:
+            self.show_tag_all_confirm = False
             self.genre_filter = ""
             self.year_min = None
             self.year_max = None

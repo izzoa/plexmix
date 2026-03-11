@@ -24,7 +24,7 @@ def progress_modal(
                     )
                 ) if on_cancel else rx.box(),
                 spacing="3",
-                width="400px",
+                width=rx.breakpoints(initial="90vw", sm="400px"),
             )
         ),
         open=is_open,

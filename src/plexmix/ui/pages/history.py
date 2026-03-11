@@ -17,7 +17,7 @@ def playlist_card(playlist: Dict) -> rx.Component:
                 rx.icon("music", size=48, color="gray.500"),
                 width="100%",
                 height="150px",
-                background="gray.100",
+                background=rx.color_mode_cond(light="gray.3", dark="gray.5"),
                 border_radius="8px",
                 display="flex",
                 align_items="center",
@@ -114,7 +114,7 @@ def playlist_card(playlist: Dict) -> rx.Component:
         ),
         width="100%",
         _hover={
-            "box_shadow": "0 4px 12px rgba(0, 0, 0, 0.1)",
+            "box_shadow": rx.color_mode_cond(light="0 4px 12px rgba(0,0,0,0.1)", dark="0 4px 12px rgba(0,0,0,0.3)"),
             "transform": "translateY(-2px)",
             "transition": "all 0.2s ease",
         },
@@ -137,10 +137,10 @@ def playlist_grid() -> rx.Component:
             width="100%",
         ),
         rx.cond(
-            HistoryState.playlists.length() > 0,
+            HistoryState.filtered_playlists.length() > 0,
             rx.grid(
                 rx.foreach(
-                    HistoryState.playlists,
+                    HistoryState.filtered_playlists,
                     playlist_card,
                 ),
                 columns=rx.breakpoints(
@@ -192,6 +192,7 @@ def detail_modal() -> rx.Component:
                             rx.icon("x", size=20),
                             variant="ghost",
                             size="2",
+                            title="Close",
                         ),
                     ),
                     width="100%",
@@ -274,6 +275,7 @@ def detail_modal() -> rx.Component:
                         width="100%",
                     ),
                     max_height="400px",
+                    overflow_x="auto",
                     overflow_y="auto",
                     width="100%",
                 ),
@@ -320,7 +322,7 @@ def detail_modal() -> rx.Component:
                 spacing="4",
                 width="100%",
             ),
-            max_width="900px",
+            max_width=rx.breakpoints(initial="95vw", md="900px"),
             padding="6",
         ),
         open=HistoryState.is_detail_modal_open,
@@ -356,6 +358,7 @@ def delete_confirmation_dialog() -> rx.Component:
             ),
         ),
         open=HistoryState.is_delete_confirmation_open,
+        on_open_change=HistoryState.set_delete_confirmation_open,
     )
 
 
@@ -374,24 +377,21 @@ def history() -> rx.Component:
                 rx.box(),
             ),
 
-            # Action message
-            rx.cond(
-                HistoryState.action_message != "",
-                rx.callout.root(
-                    rx.callout.text(HistoryState.action_message),
-                    color="blue",
-                ),
-                rx.box(),
-            ),
-
-            # Sort controls
+            # Search and sort controls
             rx.hstack(
+                rx.input(
+                    placeholder="Search playlists...",
+                    value=HistoryState.search_query,
+                    on_change=HistoryState.set_search_query,
+                    width="300px",
+                    size="2",
+                ),
+                rx.spacer(),
                 rx.text("Sort by:", size="3"),
                 rx.select(
-                    items=["created_date", "name", "track_count"],
-                    placeholder="Sort by",
-                    value=HistoryState.sort_by,
-                    on_change=HistoryState.sort_playlists,
+                    ["Date Created", "Name", "Track Count"],
+                    value=HistoryState.sort_by_label,
+                    on_change=HistoryState.sort_playlists_by_label,
                     size="2",
                 ),
                 rx.button(
@@ -403,9 +403,11 @@ def history() -> rx.Component:
                     on_click=HistoryState.toggle_sort_order,
                     variant="soft",
                     size="2",
+                    title="Toggle sort order",
                 ),
                 spacing="3",
                 align="center",
+                width="100%",
             ),
 
             # Playlist grid

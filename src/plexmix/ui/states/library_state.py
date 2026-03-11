@@ -67,6 +67,18 @@ class LibraryState(AppState):
     selected_tracks: List[int] = []
     sort_column: str = "title"
     sort_ascending: bool = True
+    show_cancel_confirm: bool = False
+
+    def set_sort(self, column: str):
+        """Toggle sort direction if same column, otherwise sort ascending by new column."""
+        if self.sort_column == column:
+            self.sort_ascending = not self.sort_ascending
+        else:
+            self.sort_column = column
+            self.sort_ascending = True
+        self.current_page = 1
+        self.load_tracks()
+        return rx.call_script("window.scrollTo({top: 0, behavior: 'smooth'})")
 
     def set_sync_mode(self, mode: str):
         self.sync_mode = mode
@@ -78,6 +90,9 @@ class LibraryState(AppState):
         self.show_regenerate_confirm = False
 
     def on_load(self):
+        if not self.check_auth():
+            self.is_page_loading = False
+            return
         super().on_load()
         self.load_tracks()
         self.is_page_loading = False
@@ -104,7 +119,9 @@ class LibraryState(AppState):
                     search=self.search_query if self.search_query else None,
                     genre=self.genre_filter if self.genre_filter else None,
                     year_min=self.year_min,
-                    year_max=self.year_max
+                    year_max=self.year_max,
+                    sort_column=self.sort_column,
+                    sort_ascending=self.sort_ascending,
                 )
 
                 self.total_filtered_tracks = db.count_tracks(
@@ -115,7 +132,7 @@ class LibraryState(AppState):
                 )
 
         except Exception as e:
-            print(f"Error loading tracks: {e}")
+            logger.error("Error loading tracks: %s", e)
             self.tracks = []
             self.total_filtered_tracks = 0
 
@@ -169,17 +186,40 @@ class LibraryState(AppState):
         if self.current_page < total_pages:
             self.current_page += 1
             self.load_tracks()
+            return rx.call_script("window.scrollTo({top: 0, behavior: 'smooth'})")
 
     def previous_page(self):
         if self.current_page > 1:
             self.current_page -= 1
             self.load_tracks()
+            return rx.call_script("window.scrollTo({top: 0, behavior: 'smooth'})")
 
     def go_to_page(self, page: int):
         total_pages = (self.total_filtered_tracks + self.page_size - 1) // self.page_size
         if 1 <= page <= total_pages:
             self.current_page = page
             self.load_tracks()
+            return rx.call_script("window.scrollTo({top: 0, behavior: 'smooth'})")
+
+    @rx.var(cache=True)
+    def all_page_selected(self) -> bool:
+        """Returns True when all current-page track IDs are in selected_tracks."""
+        if not self.tracks:
+            return False
+        page_ids = {track['id'] for track in self.tracks}
+        return page_ids.issubset(set(self.selected_tracks))
+
+    def toggle_select_all(self, checked: bool):
+        """Toggle selection of all tracks on the current page, preserving off-page selections."""
+        page_ids = {track['id'] for track in self.tracks}
+        if checked:
+            # Add current page IDs without removing off-page selections
+            existing = set(self.selected_tracks)
+            existing.update(page_ids)
+            self.selected_tracks = list(existing)
+        else:
+            # Remove only current page IDs, keep off-page selections
+            self.selected_tracks = [tid for tid in self.selected_tracks if tid not in page_ids]
 
     def toggle_track_selection(self, track_id: int):
         if track_id in self.selected_tracks:
@@ -294,10 +334,12 @@ class LibraryState(AppState):
             async with self:
                 self.is_syncing = False
                 self.sync_progress = 100
-                self.sync_message = "Sync completed!"
+                self.sync_message = ""
                 self.load_tracks()
                 self.check_configuration_status()
                 self.load_library_stats()
+
+            yield rx.toast.success("Sync completed!")
 
             if token in _sync_cancel_events:
                 del _sync_cancel_events[token]
@@ -314,12 +356,22 @@ class LibraryState(AppState):
         except Exception as e:
             async with self:
                 self.is_syncing = False
-                self.sync_message = f"Sync failed: {str(e)}"
+                self.sync_message = ""
+
+            yield rx.toast.error(f"Sync failed: {str(e)}")
 
             if token in _sync_cancel_events:
                 del _sync_cancel_events[token]
 
+    def request_cancel_sync(self):
+        self.show_cancel_confirm = True
+
+    def dismiss_cancel_confirm(self, open: bool = False):
+        if not open:
+            self.show_cancel_confirm = False
+
     def cancel_sync(self):
+        self.show_cancel_confirm = False
         token = self.router.session.client_token
         if token in _sync_cancel_events:
             _sync_cancel_events[token].set()
@@ -417,15 +469,19 @@ class LibraryState(AppState):
             async with self:
                 self.is_embedding = False
                 self.embedding_progress = 100
-                self.embedding_message = "Embeddings generated successfully!"
+                self.embedding_message = ""
                 self.clear_selection()
                 self.load_tracks()
                 self.load_library_stats()
 
+            yield rx.toast.success("Embeddings generated successfully!")
+
         except Exception as e:
             async with self:
                 self.is_embedding = False
-                self.embedding_message = f"Embedding generation failed: {str(e)}"
+                self.embedding_message = ""
+
+            yield rx.toast.error(f"Embedding generation failed: {str(e)}")
 
     @rx.event(background=True)
     async def analyze_audio(self):
@@ -493,10 +549,14 @@ class LibraryState(AppState):
             async with self:
                 self.is_analyzing_audio = False
                 self.audio_analysis_progress = 100
-                self.audio_analysis_message = f"Audio analysis complete! Analyzed {analyzed} tracks."
+                self.audio_analysis_message = ""
                 self.load_library_stats()
+
+            yield rx.toast.success(f"Audio analysis complete! Analyzed {analyzed} tracks.")
 
         except Exception as e:
             async with self:
                 self.is_analyzing_audio = False
-                self.audio_analysis_message = f"Audio analysis failed: {str(e)}"
+                self.audio_analysis_message = ""
+
+            yield rx.toast.error(f"Audio analysis failed: {str(e)}")

@@ -1,5 +1,7 @@
 import reflex as rx
 from plexmix.ui.components.navbar import layout
+from plexmix.ui.components.track_table import tag_badges
+from plexmix.ui.components.error import empty_state
 from plexmix.ui.states.tagging_state import TaggingState
 
 
@@ -10,10 +12,12 @@ def selection_panel() -> rx.Component:
         # Quick action button
         rx.button(
             "Tag All Untagged Tracks",
-            on_click=TaggingState.tag_all_untagged,
+            on_click=TaggingState.show_tag_all_confirmation,
             color_scheme="orange",
             size="3",
             width="100%",
+            disabled=TaggingState.is_tagging,
+            title=rx.cond(TaggingState.is_tagging, "Tagging in progress", ""),
         ),
 
         rx.divider(margin_y="4"),
@@ -103,6 +107,11 @@ def selection_panel() -> rx.Component:
             color_scheme="blue",
             size="4",
             width="100%",
+            title=rx.cond(
+                TaggingState.is_tagging,
+                "Tagging in progress",
+                rx.cond(TaggingState.preview_count == 0, "Preview selection first", ""),
+            ),
         ),
 
         spacing="4",
@@ -167,21 +176,12 @@ def progress_section() -> rx.Component:
             width="100%",
             padding="4",
             border="1px solid",
-            border_color="blue.200",
+            border_color="blue.6",
             border_radius="8px",
-            background_color="blue.50",
+            background_color=rx.color_mode_cond(light="blue.2", dark="blue.3"),
+            class_name="fade-in",
         ),
         rx.box(),  # Empty when not tagging
-    )
-
-
-def format_tags_cell(tags) -> rx.Component:
-    # Since tags can be a Reflex variable, we need to handle it with rx.cond
-    # For now, just display the tags as text since we can't split Reflex variables
-    return rx.cond(
-        tags == "",
-        rx.text("-", color_scheme="gray", size="2"),
-        rx.text(tags, size="2", color_scheme="blue")
     )
 
 
@@ -191,98 +191,102 @@ def recent_tags_table() -> rx.Component:
 
         rx.cond(
             TaggingState.recently_tagged_tracks.length() > 0,
-            rx.table.root(
-                rx.table.header(
-                    rx.table.row(
-                        rx.table.column_header_cell("Title"),
-                        rx.table.column_header_cell("Artist"),
-                        rx.table.column_header_cell("Tags"),
-                        rx.table.column_header_cell("Environments"),
-                        rx.table.column_header_cell("Instruments"),
-                        rx.table.column_header_cell("Actions"),
-                    )
-                ),
-                rx.table.body(
-                    rx.foreach(
-                        TaggingState.recently_tagged_tracks,
-                        lambda track: rx.cond(
-                            TaggingState.editing_track_id == track["id"],
-                            # Edit mode
-                            rx.table.row(
-                                rx.table.cell(track["title"]),
-                                rx.table.cell(track["artist"]),
-                                rx.table.cell(
-                                    rx.input(
-                                        value=TaggingState.edit_tags,
-                                        on_change=TaggingState.set_edit_tags,
-                                        size="1",
-                                        width="150px",
-                                    )
-                                ),
-                                rx.table.cell(
-                                    rx.input(
-                                        value=TaggingState.edit_environments,
-                                        on_change=TaggingState.set_edit_environments,
-                                        size="1",
-                                        width="150px",
-                                    )
-                                ),
-                                rx.table.cell(
-                                    rx.input(
-                                        value=TaggingState.edit_instruments,
-                                        on_change=TaggingState.set_edit_instruments,
-                                        size="1",
-                                        width="150px",
-                                    )
-                                ),
-                                rx.table.cell(
-                                    rx.hstack(
-                                        rx.button(
-                                            "Save",
-                                            on_click=TaggingState.save_tag_edit,
-                                            variant="soft",
-                                            color_scheme="green",
+            rx.box(
+                rx.table.root(
+                    rx.table.header(
+                        rx.table.row(
+                            rx.table.column_header_cell("Title"),
+                            rx.table.column_header_cell("Artist"),
+                            rx.table.column_header_cell("Tags"),
+                            rx.table.column_header_cell("Environments", class_name="hide-mobile"),
+                            rx.table.column_header_cell("Instruments", class_name="hide-mobile"),
+                            rx.table.column_header_cell("Actions"),
+                        )
+                    ),
+                    rx.table.body(
+                        rx.foreach(
+                            TaggingState.recently_tagged_tracks,
+                            lambda track: rx.cond(
+                                TaggingState.editing_track_id == track["id"],
+                                # Edit mode
+                                rx.table.row(
+                                    rx.table.cell(track["title"]),
+                                    rx.table.cell(track["artist"]),
+                                    rx.table.cell(
+                                        rx.input(
+                                            value=TaggingState.edit_tags,
+                                            on_change=TaggingState.set_edit_tags,
                                             size="1",
+                                            width="150px",
+                                        )
+                                    ),
+                                    rx.table.cell(
+                                        rx.input(
+                                            value=TaggingState.edit_environments,
+                                            on_change=TaggingState.set_edit_environments,
+                                            size="1",
+                                            width="150px",
                                         ),
+                                        class_name="hide-mobile",
+                                    ),
+                                    rx.table.cell(
+                                        rx.input(
+                                            value=TaggingState.edit_instruments,
+                                            on_change=TaggingState.set_edit_instruments,
+                                            size="1",
+                                            width="150px",
+                                        ),
+                                        class_name="hide-mobile",
+                                    ),
+                                    rx.table.cell(
+                                        rx.hstack(
+                                            rx.button(
+                                                "Save",
+                                                on_click=TaggingState.save_tag_edit,
+                                                variant="soft",
+                                                color_scheme="green",
+                                                size="1",
+                                            ),
+                                            rx.button(
+                                                "Cancel",
+                                                on_click=TaggingState.cancel_edit,
+                                                variant="soft",
+                                                size="1",
+                                            ),
+                                            spacing="1",
+                                        )
+                                    ),
+                                ),
+                                # View mode
+                                rx.table.row(
+                                    rx.table.cell(track["title"]),
+                                    rx.table.cell(track["artist"]),
+                                    rx.table.cell(tag_badges(track["tags"])),
+                                    rx.table.cell(tag_badges(track["environments"]), class_name="hide-mobile"),
+                                    rx.table.cell(tag_badges(track["instruments"]), class_name="hide-mobile"),
+                                    rx.table.cell(
                                         rx.button(
-                                            "Cancel",
-                                            on_click=TaggingState.cancel_edit,
+                                            "Edit",
+                                            on_click=lambda t=track: TaggingState.start_edit_tag(t),
                                             variant="soft",
                                             size="1",
-                                        ),
-                                        spacing="1",
-                                    )
+                                        )
+                                    ),
                                 ),
                             ),
-                            # View mode
-                            rx.table.row(
-                                rx.table.cell(track["title"]),
-                                rx.table.cell(track["artist"]),
-                                rx.table.cell(format_tags_cell(rx.cond(track["tags"], track["tags"], ""))),
-                                rx.table.cell(format_tags_cell(rx.cond(track["environments"], track["environments"], ""))),
-                                rx.table.cell(format_tags_cell(rx.cond(track["instruments"], track["instruments"], ""))),
-                                rx.table.cell(
-                                    rx.button(
-                                        "Edit",
-                                        on_click=lambda t=track: TaggingState.start_edit_tag(t),
-                                        variant="soft",
-                                        size="1",
-                                    )
-                                ),
-                            ),
-                        ),
-                    )
+                        )
+                    ),
+                    variant="surface",
+                    size="2",
+                    width="100%",
                 ),
-                variant="surface",
-                size="2",
+                overflow_x="auto",
                 width="100%",
             ),
-            rx.text(
-                "No recently tagged tracks",
-                size="3",
-                color_scheme="gray",
-                text_align="center",
-                padding="4",
+            empty_state(
+                icon="tags",
+                title="No recently tagged tracks",
+                description="Use the filters above to select tracks and generate AI tags.",
             ),
         ),
 
@@ -291,20 +295,60 @@ def recent_tags_table() -> rx.Component:
     )
 
 
+def tag_all_confirm_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("Tag All Untagged Tracks"),
+            rx.alert_dialog.description(
+                rx.vstack(
+                    rx.text(
+                        rx.cond(
+                            TaggingState.untagged_track_count > 0,
+                            f"This will generate AI tags for {TaggingState.untagged_track_count} untagged tracks. "
+                            "Depending on library size, this may take a while and consume API credits.",
+                            "There are no untagged tracks in your library.",
+                        ),
+                    ),
+                    rx.cond(
+                        TaggingState.untagged_track_count > 0,
+                        rx.text("Are you sure you want to continue?", weight="bold"),
+                        rx.box(),
+                    ),
+                    spacing="2",
+                    align_items="start",
+                ),
+            ),
+            rx.hstack(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        "Cancel",
+                        variant="soft",
+                        color_scheme="gray",
+                        on_click=TaggingState.cancel_tag_all_confirm,
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        "Yes, Start Tagging",
+                        on_click=TaggingState.tag_all_untagged,
+                        color_scheme="orange",
+                        disabled=TaggingState.untagged_track_count == 0,
+                    ),
+                ),
+                spacing="3",
+                margin_top="4",
+                justify="end",
+            ),
+        ),
+        open=TaggingState.show_tag_all_confirm,
+        on_open_change=TaggingState.set_tag_all_confirm_open,
+    )
+
+
 def tagging() -> rx.Component:
     content = rx.container(
         rx.vstack(
             rx.heading("AI Tagging", size="8", margin_bottom="6"),
-
-            # Info message if tagging not in progress
-            rx.cond(
-                ~TaggingState.is_tagging & (TaggingState.tagging_message != ""),
-                rx.callout.root(
-                    rx.callout.text(TaggingState.tagging_message),
-                    color="blue",
-                ),
-                rx.box(),
-            ),
 
             # Main layout
             rx.vstack(
@@ -321,4 +365,4 @@ def tagging() -> rx.Component:
         size="4",
     )
 
-    return layout(content)
+    return layout(rx.fragment(content, tag_all_confirm_dialog()))

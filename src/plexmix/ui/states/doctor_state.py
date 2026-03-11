@@ -29,6 +29,9 @@ class DoctorState(AppState):
     
     @rx.event
     def on_load(self):
+        if not self.check_auth():
+            self.is_page_loading = False
+            return
         super().on_load()
         return DoctorState.run_health_check
     
@@ -133,17 +136,19 @@ class DoctorState(AppState):
                 db.get_connection().commit()
                 
                 async with self:
-                    self.fix_message = f"✓ Deleted {deleted} orphaned embeddings"
+                    self.fix_message = ""
                     self.is_fixing = False
                     self.current_fix_target = ""
-                    
-            return DoctorState.run_health_check
-        
+
+            yield rx.toast.success(f"Deleted {deleted} orphaned embeddings")
+            yield DoctorState.run_health_check()
+
         except Exception as e:
             async with self:
-                self.fix_message = f"Error deleting orphaned embeddings: {str(e)}"
+                self.fix_message = ""
                 self.is_fixing = False
                 self.current_fix_target = ""
+            yield rx.toast.error(f"Error deleting orphaned embeddings: {str(e)}")
     
     @rx.event(background=True)
     async def generate_missing_embeddings(self):
@@ -175,10 +180,10 @@ class DoctorState(AppState):
             
             if not api_key and provider != "local":
                 async with self:
-                    self.fix_message = f"API key required for {provider} provider"
                     self.is_fixing = False
+                yield rx.toast.error(f"API key required for {provider} provider")
                 return
-            
+
             embedding_generator = EmbeddingGenerator(
                 provider=provider,
                 api_key=api_key,
@@ -194,24 +199,27 @@ class DoctorState(AppState):
             with SQLiteManager(str(db_path)) as db:
                 all_tracks = db.get_all_tracks()
                 tracks_to_embed = [t for t in all_tracks if not db.get_embedding_by_track_id(t.id)]
-                await self._generate_embeddings_for_tracks(
+                count = await self._generate_embeddings_for_tracks(
                     tracks_to_embed=tracks_to_embed,
                     embedding_generator=embedding_generator,
                     vector_index=vector_index,
                     db=db,
                     index_path=index_path,
                     progress_label="Generating embeddings...",
-                    success_message="✓ Successfully generated {count} embeddings!",
-                    empty_message="All tracks already have embeddings."
                 )
-        
-            return DoctorState.run_health_check
-        
+
+            if count > 0:
+                yield rx.toast.success(f"Successfully generated {count} embeddings!")
+            else:
+                yield rx.toast.info("All tracks already have embeddings.")
+            yield DoctorState.run_health_check()
+
         except Exception as e:
             async with self:
-                self.fix_message = f"Error generating embeddings: {str(e)}"
+                self.fix_message = ""
                 self.is_fixing = False
                 self.current_fix_target = ""
+            yield rx.toast.error(f"Error generating embeddings: {str(e)}")
     
     @rx.event(background=True)
     async def regenerate_all_embeddings(self):
@@ -242,9 +250,9 @@ class DoctorState(AppState):
 
             if not api_key and provider != "local":
                 async with self:
-                    self.fix_message = f"API key required for {provider} provider"
                     self.is_fixing = False
                     self.current_fix_target = ""
+                yield rx.toast.error(f"API key required for {provider} provider")
                 return
 
             embedding_generator = EmbeddingGenerator(
@@ -272,24 +280,27 @@ class DoctorState(AppState):
 
                 tracks_to_embed = db.get_all_tracks()
 
-                await self._generate_embeddings_for_tracks(
+                count = await self._generate_embeddings_for_tracks(
                     tracks_to_embed=tracks_to_embed,
                     embedding_generator=embedding_generator,
                     vector_index=vector_index,
                     db=db,
                     index_path=index_path,
                     progress_label="Regenerating embeddings...",
-                    success_message="✓ Rebuilt embedding index with {count} vectors!",
-                    empty_message="No tracks available to embed.",
                 )
 
-            return DoctorState.run_health_check
+            if count > 0:
+                yield rx.toast.success(f"Rebuilt embedding index with {count} vectors!")
+            else:
+                yield rx.toast.info("No tracks available to embed.")
+            yield DoctorState.run_health_check()
 
         except Exception as e:
             async with self:
-                self.fix_message = f"Error regenerating embeddings: {str(e)}"
+                self.fix_message = ""
                 self.is_fixing = False
                 self.current_fix_target = ""
+            yield rx.toast.error(f"Error regenerating embeddings: {str(e)}")
 
     @rx.event(background=True)
     async def regenerate_missing_tags(self):
@@ -316,9 +327,9 @@ class DoctorState(AppState):
 
             if not db_path.exists():
                 async with self:
-                    self.fix_message = "Database not found. Please run a sync first."
                     self.is_fixing = False
                     self.current_fix_target = ""
+                yield rx.toast.error("Database not found. Please run a sync first.")
                 return
 
             ai_provider_name = settings.ai.default_provider or "gemini"
@@ -346,9 +357,9 @@ class DoctorState(AppState):
                 )
             except ValueError:
                 async with self:
-                    self.fix_message = f"AI provider '{ai_provider_name}' is not fully configured."
                     self.is_fixing = False
                     self.current_fix_target = ""
+                yield rx.toast.error(f"AI provider '{ai_provider_name}' is not fully configured.")
                 return
 
             tag_generator = TagGenerator(ai_provider)
@@ -358,9 +369,9 @@ class DoctorState(AppState):
 
                 if not untagged_tracks:
                     async with self:
-                        self.fix_message = "All tracks already have AI-generated tags."
                         self.is_fixing = False
                         self.current_fix_target = ""
+                    yield rx.toast.info("All tracks already have AI-generated tags.")
                     return
 
                 async with self:
@@ -396,19 +407,22 @@ class DoctorState(AppState):
                         updated += 1
 
                 async with self:
-                    self.fix_message = f"✓ Regenerated tags for {updated} tracks"
+                    self.fix_message = ""
                     self.is_fixing = False
                     self.fix_progress = 0
                     self.fix_total = 0
                     self.current_fix_target = ""
 
-            return DoctorState.run_health_check
+                yield rx.toast.success(f"Regenerated tags for {updated} tracks")
+
+            yield DoctorState.run_health_check()
 
         except Exception as e:
             async with self:
-                self.fix_message = f"Error regenerating tags: {str(e)}"
+                self.fix_message = ""
                 self.is_fixing = False
                 self.current_fix_target = ""
+            yield rx.toast.error(f"Error regenerating tags: {str(e)}")
     
     @rx.event(background=True)
     async def analyze_missing_audio(self):
@@ -426,12 +440,9 @@ class DoctorState(AppState):
                 from plexmix.audio.analyzer import EssentiaAnalyzer
             except ImportError:
                 async with self:
-                    self.fix_message = (
-                        "Essentia is not installed. "
-                        "Run: poetry install -E audio"
-                    )
                     self.is_fixing = False
                     self.current_fix_target = ""
+                yield rx.toast.error("Essentia is not installed. Run: poetry install -E audio")
                 return
 
             settings = Settings.load_from_file()
@@ -440,9 +451,9 @@ class DoctorState(AppState):
 
             if not db_path.exists():
                 async with self:
-                    self.fix_message = "Database not found. Please run a sync first."
                     self.is_fixing = False
                     self.current_fix_target = ""
+                yield rx.toast.error("Database not found. Please run a sync first.")
                 return
 
             loop = asyncio.get_running_loop()
@@ -453,9 +464,9 @@ class DoctorState(AppState):
 
                 if not pending_tracks:
                     async with self:
-                        self.fix_message = "All tracks already have audio features."
                         self.is_fixing = False
                         self.current_fix_target = ""
+                    yield rx.toast.info("All tracks already have audio features.")
                     return
 
                 async with self:
@@ -480,19 +491,22 @@ class DoctorState(AppState):
                         self.fix_message = f"Analyzing audio... {analyzed}/{self.fix_total}"
 
                 async with self:
-                    self.fix_message = f"✓ Analyzed audio features for {analyzed} tracks"
+                    self.fix_message = ""
                     self.is_fixing = False
                     self.fix_progress = 0
                     self.fix_total = 0
                     self.current_fix_target = ""
 
-            return DoctorState.run_health_check
+                yield rx.toast.success(f"Analyzed audio features for {analyzed} tracks")
+
+            yield DoctorState.run_health_check()
 
         except Exception as e:
             async with self:
-                self.fix_message = f"Error analyzing audio: {str(e)}"
+                self.fix_message = ""
                 self.is_fixing = False
                 self.current_fix_target = ""
+            yield rx.toast.error(f"Error analyzing audio: {str(e)}")
 
     async def _generate_embeddings_for_tracks(
         self,
@@ -502,18 +516,16 @@ class DoctorState(AppState):
         db,
         index_path: Path,
         progress_label: str,
-        success_message: str,
-        empty_message: str,
-    ):
+    ) -> int:
+        """Generate embeddings for tracks. Returns count of embeddings saved."""
         from plexmix.database.models import Embedding
         from plexmix.utils.embeddings import create_track_text
 
         if not tracks_to_embed:
             async with self:
-                self.fix_message = empty_message
                 self.is_fixing = False
                 self.current_fix_target = ""
-            return
+            return 0
 
         async with self:
             self.fix_total = len(tracks_to_embed)
@@ -566,11 +578,13 @@ class DoctorState(AppState):
             vector_index.save_index(str(index_path))
 
         async with self:
-            self.fix_message = success_message.format(count=embeddings_saved)
+            self.fix_message = ""
             self.is_fixing = False
             self.fix_progress = 0
             self.fix_total = 0
             self.current_fix_target = ""
+
+        return embeddings_saved
 
     @rx.var(cache=True)
     def orphaned_embeddings_label(self) -> str:

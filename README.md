@@ -108,6 +108,12 @@ plexmix ui --host 0.0.0.0 --port 8000
 
 Then open your browser to `http://localhost:3000`
 
+**Password Protection:** Set `PLEXMIX_UI_PASSWORD` to require a password before accessing the UI. This is recommended when binding to `0.0.0.0` or exposing the UI on a network.
+
+```bash
+PLEXMIX_UI_PASSWORD=mysecret plexmix ui --host 0.0.0.0
+```
+
 #### Screenshots
 
 <div align="center">
@@ -692,6 +698,7 @@ All credentials can be passed as environment variables (no keyring required in c
 | `COHERE_API_KEY` | Cohere API key (optional) |
 | `PLEXMIX_DATA_DIR` | Data directory override (default: `/data` in Docker, `~/.plexmix` locally) |
 | `PLEXMIX_UI_HOST` | UI bind address (default: `0.0.0.0` in Docker, `127.0.0.1` locally) |
+| `PLEXMIX_UI_PASSWORD` | Optional password to protect the web UI |
 | `AUDIO_ENABLED` | Enable audio analysis (default: `false`) |
 | `AUDIO_ANALYZE_ON_SYNC` | Run audio analysis during sync (default: `false`) |
 | `AUDIO_PATH_PREFIX_FROM` | Plex file path prefix to replace (for path remapping) |
