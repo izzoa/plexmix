@@ -117,7 +117,7 @@ def track_table_row(track: dict[str, str], is_selected: bool, on_toggle: Callabl
         rx.table.cell(tag_badges(track["tags"])),
         rx.table.cell(
             rx.cond(
-                track["has_embedding"],
+                track["has_embedding"] == "1",
                 rx.badge("Yes", color_scheme="green"),
                 rx.badge("No", color_scheme="gray")
             ),
