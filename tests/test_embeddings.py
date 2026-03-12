@@ -4,6 +4,16 @@ from unittest.mock import Mock, patch, MagicMock
 
 from plexmix.utils.embeddings import create_track_text, EmbeddingGenerator
 
+_has_sentence_transformers = True
+try:
+    import sentence_transformers  # noqa: F401
+except ImportError:
+    _has_sentence_transformers = False
+
+requires_local = pytest.mark.skipif(
+    not _has_sentence_transformers, reason="sentence-transformers not installed"
+)
+
 
 def test_create_track_text_basic():
     track_data = {
@@ -84,6 +94,7 @@ def mock_gemini_model():
         yield mock_client
 
 
+@requires_local
 def test_embedding_generator_local():
     generator = EmbeddingGenerator(provider='local')
 
@@ -134,6 +145,7 @@ def test_embedding_generator_cohere_custom_dimension():
         sys.modules.pop('cohere', None)
 
 
+@requires_local
 def test_embedding_generator_local_generate():
     generator = EmbeddingGenerator(provider='local')
 
@@ -144,6 +156,7 @@ def test_embedding_generator_local_generate():
     assert all(isinstance(x, float) for x in embedding)
 
 
+@requires_local
 def test_embedding_generator_local_batch():
     generator = EmbeddingGenerator(provider='local')
 
