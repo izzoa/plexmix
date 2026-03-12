@@ -167,6 +167,36 @@ def test_embedding_generator_local_batch():
     assert all(len(emb) == 384 for emb in embeddings)
 
 
+def test_embedding_generator_custom_dimension():
+    with patch('openai.OpenAI'):
+        generator = EmbeddingGenerator(
+            provider='custom',
+            model='nomic-embed-text',
+            custom_endpoint='http://localhost:11434/v1',
+            custom_dimension=768,
+        )
+        assert generator.get_dimension() == 768
+        assert generator.provider_name == 'custom'
+
+
+def test_embedding_generator_custom_requires_endpoint():
+    with pytest.raises(ValueError, match="Endpoint URL required"):
+        EmbeddingGenerator(
+            provider='custom',
+            model='test-model',
+            custom_dimension=768,
+        )
+
+
+def test_embedding_generator_custom_requires_model():
+    with pytest.raises(ValueError, match="Model name required"):
+        EmbeddingGenerator(
+            provider='custom',
+            custom_endpoint='http://localhost:11434/v1',
+            custom_dimension=768,
+        )
+
+
 def test_embedding_generator_invalid_provider():
     with pytest.raises(ValueError, match="Unknown provider"):
         EmbeddingGenerator(provider='invalid')

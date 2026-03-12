@@ -66,6 +66,18 @@ class AISettings(BaseSettings):
         default=800,
         description="Max new tokens to request from local LLM responses",
     )
+    custom_endpoint: Optional[str] = Field(
+        default=None,
+        description="OpenAI-compatible endpoint URL for custom AI provider",
+    )
+    custom_model: Optional[str] = Field(
+        default=None,
+        description="Model name for custom AI endpoint",
+    )
+    custom_api_key: Optional[str] = Field(
+        default=None,
+        description="Optional API key for custom AI endpoint",
+    )
 
     class Config:
         env_prefix = "AI_"
@@ -75,6 +87,22 @@ class EmbeddingSettings(BaseSettings):
     default_provider: str = Field(default="gemini", description="Default embedding provider")
     model: str = Field(default="gemini-embedding-001", description="Embedding model")
     dimension: int = Field(default=3072, description="Embedding dimension")
+    custom_endpoint: Optional[str] = Field(
+        default=None,
+        description="OpenAI-compatible endpoint URL for custom embedding provider",
+    )
+    custom_model: Optional[str] = Field(
+        default=None,
+        description="Model name for custom embedding endpoint",
+    )
+    custom_api_key: Optional[str] = Field(
+        default=None,
+        description="Optional API key for custom embedding endpoint",
+    )
+    custom_dimension: int = Field(
+        default=1536,
+        description="Embedding dimension for custom endpoint",
+    )
 
     class Config:
         env_prefix = "EMBEDDING_"
@@ -85,6 +113,9 @@ class EmbeddingSettings(BaseSettings):
             "openai": 1536,
             "cohere": 1024,
         }
+
+        if provider == "custom":
+            return self.custom_dimension
 
         if provider == "local":
             local_dimensions = {

@@ -8,6 +8,7 @@ from .openai_provider import OpenAIProvider
 from .claude_provider import ClaudeProvider
 from .cohere_provider import CohereProvider
 from .local_provider import LocalLLMProvider, LOCAL_LLM_MODELS, LOCAL_LLM_DEFAULT_MODEL
+from .custom_provider import CustomProvider
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,8 @@ def get_ai_provider(
     local_endpoint: Optional[str] = None,
     local_auth_token: Optional[str] = None,
     local_max_output_tokens: Optional[int] = None,
+    custom_endpoint: Optional[str] = None,
+    custom_api_key: Optional[str] = None,
 ) -> AIProvider:
     alias_map = {"anthropic": "claude"}
     provider_name = alias_map.get(provider_name.lower(), provider_name.lower())
@@ -62,9 +65,21 @@ def get_ai_provider(
             auth_token=local_auth_token,
             max_output_tokens=local_max_output_tokens or 800,
         )
+    elif provider_name == "custom":
+        if not custom_endpoint:
+            raise ValueError("Endpoint URL required for custom provider")
+        if not model:
+            raise ValueError("Model name required for custom provider")
+        return CustomProvider(
+            base_url=custom_endpoint,
+            model=model,
+            api_key=custom_api_key,
+            temperature=temperature,
+        )
     else:
         raise ValueError(
-            f"Unknown provider: {provider_name}. Choose from: gemini, openai, claude, cohere, local"
+            f"Unknown provider: {provider_name}. "
+            f"Choose from: gemini, openai, claude, cohere, local, custom"
         )
 
 
@@ -75,6 +90,7 @@ __all__ = [
     "ClaudeProvider",
     "CohereProvider",
     "LocalLLMProvider",
+    "CustomProvider",
     "LOCAL_LLM_MODELS",
     "LOCAL_LLM_DEFAULT_MODEL",
     "get_ai_provider"

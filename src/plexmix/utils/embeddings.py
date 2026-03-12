@@ -406,8 +406,75 @@ def _local_embedding_worker(model_name: str, trust_remote_code: bool, device: st
             pass
 
 
+class CustomEmbeddingProvider(EmbeddingProvider):
+    """Embedding provider for any OpenAI-compatible API endpoint."""
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        dimension: int,
+        api_key: Optional[str] = None,
+    ):
+        super().__init__()
+        self.provider_name = "Custom"
+        try:
+            from openai import OpenAI
+            self.client = OpenAI(base_url=base_url, api_key=api_key or "no-key-required")
+            self.model_name = model
+            self.dimension = dimension
+            logger.info(
+                f"[{self.provider_name}] Initialized custom embedding provider: "
+                f"{base_url} model={model} dim={dimension}"
+            )
+        except ImportError:
+            raise ImportError("openai not installed. Run: pip install openai")
+
+    def generate_embedding(self, text: str) -> List[float]:
+        try:
+            response = self.client.embeddings.create(
+                model=self.model_name,
+                input=text,
+            )
+            return response.data[0].embedding
+        except Exception as e:
+            logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
+            raise
+
+    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+        embeddings = []
+        for i in range(0, len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            try:
+                response = self.client.embeddings.create(
+                    model=self.model_name,
+                    input=batch,
+                )
+                batch_embeddings = [item.embedding for item in response.data]
+                embeddings.extend(batch_embeddings)
+                logger.debug(
+                    f"[{self.provider_name}] Generated {len(batch)} embeddings "
+                    f"(batch {i // batch_size + 1})"
+                )
+            except Exception as e:
+                logger.error(f"[{self.provider_name}] Failed to generate batch embeddings: {e}")
+                raise
+        return embeddings
+
+    def get_dimension(self) -> int:
+        return self.dimension
+
+
 class EmbeddingGenerator:
-    def __init__(self, provider: str, api_key: Optional[str] = None, model: Optional[str] = None):
+    def __init__(
+        self,
+        provider: str,
+        api_key: Optional[str] = None,
+        model: Optional[str] = None,
+        custom_endpoint: Optional[str] = None,
+        custom_api_key: Optional[str] = None,
+        custom_dimension: int = 1536,
+    ):
         self.provider_name = provider.lower()
 
         if self.provider_name == "gemini":
@@ -428,6 +495,17 @@ class EmbeddingGenerator:
         elif self.provider_name == "local":
             model = model or "all-MiniLM-L6-v2"
             self.provider = LocalEmbeddingProvider(model)
+        elif self.provider_name == "custom":
+            if not custom_endpoint:
+                raise ValueError("Endpoint URL required for custom embedding provider")
+            if not model:
+                raise ValueError("Model name required for custom embedding provider")
+            self.provider = CustomEmbeddingProvider(
+                base_url=custom_endpoint,
+                model=model,
+                dimension=custom_dimension,
+                api_key=custom_api_key,
+            )
         else:
             raise ValueError(f"Unknown provider: {provider}")
 

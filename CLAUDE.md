@@ -16,8 +16,8 @@ This file is the **project-specific playbook** for using Claude (or any coding a
   - Plex integration via **PlexAPI** (`src/plexmix/plex/`)
   - Local store: **SQLite** (`src/plexmix/database/sqlite_manager.py`)
   - Vector search: **FAISS** (`src/plexmix/database/vector_index.py`)
-  - Embeddings: Gemini/OpenAI/Cohere/Local (`src/plexmix/utils/embeddings.py`)
-  - AI providers: Gemini/OpenAI/Claude/Cohere/Local LLM (`src/plexmix/ai/`)
+  - Embeddings: Gemini/OpenAI/Cohere/Custom (OpenAI-compatible)/Local (`src/plexmix/utils/embeddings.py`)
+  - AI providers: Gemini/OpenAI/Claude/Cohere/Custom (OpenAI-compatible)/Local LLM (`src/plexmix/ai/`)
 
 ---
 
@@ -123,6 +123,7 @@ Dimension mapping by provider:
 - **Gemini**: 3072
 - **OpenAI**: 1536
 - **Cohere**: 1024
+- **Custom**: user-specified (default 1536)
 - **Local models**:
   - `all-MiniLM-L6-v2`: 384 (default)
   - `mixedbread-ai/mxbai-embed-large-v1`: 1024
@@ -173,6 +174,7 @@ Default models (may change as new versions release):
 - **OpenAI**: `gpt-5-mini`
 - **Claude**: `claude-sonnet-4-5-20250929`
 - **Cohere**: `command-r7b-12-2024`
+- **Custom**: user-specified model name (any OpenAI-compatible endpoint)
 - **Local**: see `LOCAL_LLM_MODELS` in `local_provider.py`
 
 Conventions:

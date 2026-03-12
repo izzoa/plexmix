@@ -390,7 +390,10 @@ class LibraryState(AppState):
             from plexmix.database.sqlite_manager import SQLiteManager
             from plexmix.utils.embeddings import EmbeddingGenerator, create_track_text
             from plexmix.database.models import Embedding
-            from plexmix.config.credentials import get_google_api_key, get_openai_api_key, get_cohere_api_key
+            from plexmix.config.credentials import (
+                get_google_api_key, get_openai_api_key, get_cohere_api_key,
+                get_custom_embedding_api_key,
+            )
 
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
@@ -403,17 +406,31 @@ class LibraryState(AppState):
 
             api_key = None
             provider = settings.embedding.default_provider
+            embed_kwargs = {}
             if provider == "gemini":
                 api_key = get_google_api_key()
             elif provider == "openai":
                 api_key = get_openai_api_key()
             elif provider == "cohere":
                 api_key = get_cohere_api_key()
+            elif provider == "custom":
+                embed_kwargs = {
+                    "custom_endpoint": settings.embedding.custom_endpoint,
+                    "custom_api_key": (
+                        settings.embedding.custom_api_key or get_custom_embedding_api_key()
+                    ),
+                    "custom_dimension": settings.embedding.custom_dimension,
+                }
+
+            embed_model = settings.embedding.model
+            if provider == "custom":
+                embed_model = settings.embedding.custom_model or embed_model
 
             embedding_generator = EmbeddingGenerator(
                 provider=provider,
                 api_key=api_key,
-                model=settings.embedding.model
+                model=embed_model,
+                **embed_kwargs,
             )
 
             db = SQLiteManager(str(db_path))

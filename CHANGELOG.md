@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-03-12
+
+### Added
+- Custom OpenAI-compatible endpoint support for both AI and embedding providers
+  - Works with Ollama, LM Studio, vLLM, Together AI, Groq, Fireworks, and any OpenAI-compatible API
+  - Configurable endpoint URL, model name, API key (optional), and embedding dimension
+  - Full UI settings page support with test connectivity buttons
+- `CUSTOM_AI_API_KEY` and `CUSTOM_EMBEDDING_API_KEY` environment variable support
+- `_build_embedding_generator()` CLI helper to centralize embedding provider construction
+
+### Fixed
+- Add `unzip` to Docker runtime image (required by Reflex to install Bun)
+
 ## [0.5.3] - 2026-03-12
 
 ### Added
@@ -273,7 +286,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI interface with Rich formatting
 - Tag generation and management
 
-[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/izzoa/plexmix/compare/v0.5.3...v0.5.4
 [0.4.0]: https://github.com/izzoa/plexmix/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/izzoa/plexmix/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/izzoa/plexmix/compare/v0.2.11...v0.3.0

@@ -13,6 +13,8 @@ _ENV_VAR_MAP = {
     "openai_api_key": ["OPENAI_API_KEY"],
     "anthropic_api_key": ["ANTHROPIC_API_KEY"],
     "cohere_api_key": ["COHERE_API_KEY"],
+    "custom_ai_api_key": ["CUSTOM_AI_API_KEY"],
+    "custom_embedding_api_key": ["CUSTOM_EMBEDDING_API_KEY"],
 }
 
 
@@ -117,3 +119,19 @@ def get_cohere_api_key() -> Optional[str]:
 
 def store_cohere_api_key(api_key: str) -> bool:
     return store_credential("cohere_api_key", api_key)
+
+
+def get_custom_ai_api_key() -> Optional[str]:
+    return get_credential("custom_ai_api_key")
+
+
+def store_custom_ai_api_key(api_key: str) -> bool:
+    return store_credential("custom_ai_api_key", api_key)
+
+
+def get_custom_embedding_api_key() -> Optional[str]:
+    return get_credential("custom_embedding_api_key")
+
+
+def store_custom_embedding_api_key(api_key: str) -> bool:
+    return store_credential("custom_embedding_api_key", api_key)

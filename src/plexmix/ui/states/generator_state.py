@@ -111,7 +111,10 @@ class GeneratorState(AppState):
 
         try:
             from plexmix.config.settings import Settings
-            from plexmix.config.credentials import get_google_api_key, get_openai_api_key
+            from plexmix.config.credentials import (
+                get_google_api_key, get_openai_api_key, get_cohere_api_key,
+                get_custom_embedding_api_key,
+            )
             from plexmix.database.sqlite_manager import SQLiteManager
             from plexmix.database.vector_index import VectorIndex
             from plexmix.utils.embeddings import EmbeddingGenerator
@@ -132,10 +135,22 @@ class GeneratorState(AppState):
             index_path = settings.database.faiss_index_path
 
             embedding_api_key = None
+            embedding_kwargs = {}
             if embedding_provider == "gemini":
                 embedding_api_key = get_google_api_key()
             elif embedding_provider == "openai":
                 embedding_api_key = get_openai_api_key()
+            elif embedding_provider == "cohere":
+                embedding_api_key = get_cohere_api_key()
+            elif embedding_provider == "custom":
+                embedding_model = settings.embedding.custom_model or embedding_model
+                embedding_kwargs = {
+                    "custom_endpoint": settings.embedding.custom_endpoint,
+                    "custom_api_key": (
+                        settings.embedding.custom_api_key or get_custom_embedding_api_key()
+                    ),
+                    "custom_dimension": settings.embedding.custom_dimension,
+                }
 
             filters = {}
             if self.genre_filter:
@@ -194,6 +209,7 @@ class GeneratorState(AppState):
                     provider=embedding_provider,
                     api_key=embedding_api_key,
                     model=embedding_model,
+                    **embedding_kwargs,
                 )
                 dimension = embedding_generator.get_dimension()
 

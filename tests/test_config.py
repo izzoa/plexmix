@@ -139,6 +139,16 @@ class TestEmbeddingSettings:
         s = EmbeddingSettings(dimension=999)
         assert s.get_dimension_for_provider("unknown_provider") == 999
 
+    def test_dimension_custom_uses_custom_dimension(self):
+        from plexmix.config.settings import EmbeddingSettings
+        s = EmbeddingSettings(custom_dimension=768)
+        assert s.get_dimension_for_provider("custom") == 768
+
+    def test_dimension_custom_default(self):
+        from plexmix.config.settings import EmbeddingSettings
+        s = EmbeddingSettings()
+        assert s.get_dimension_for_provider("custom") == 1536
+
 
 class TestAudioSettings:
     def test_defaults(self):

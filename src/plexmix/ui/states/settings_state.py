@@ -29,6 +29,9 @@ class SettingsState(AppState):
     ai_local_mode: str = "builtin"
     ai_local_endpoint: str = ""
     ai_local_auth_token: str = ""
+    ai_custom_endpoint: str = ""
+    ai_custom_model: str = ""
+    ai_custom_api_key: str = ""
     is_downloading_local_llm: bool = False
     local_llm_download_status: str = ""
     local_llm_download_progress: int = 0
@@ -38,6 +41,10 @@ class SettingsState(AppState):
     embedding_model: str = "gemini-embedding-001"
     embedding_dimension: int = 3072
     embedding_models: List[str] = []
+    embedding_custom_endpoint: str = ""
+    embedding_custom_model: str = ""
+    embedding_custom_api_key: str = ""
+    embedding_custom_dimension: int = 1536
     is_downloading_local_model: bool = False
     local_download_status: str = ""
     local_download_progress: int = 0
@@ -86,7 +93,9 @@ class SettingsState(AppState):
                 get_google_api_key,
                 get_openai_api_key,
                 get_anthropic_api_key,
-                get_cohere_api_key
+                get_cohere_api_key,
+                get_custom_ai_api_key,
+                get_custom_embedding_api_key,
             )
 
             settings = Settings.load_from_file()
@@ -105,6 +114,9 @@ class SettingsState(AppState):
             self.ai_local_mode = settings.ai.local_mode
             self.ai_local_endpoint = settings.ai.local_endpoint or ""
             self.ai_local_auth_token = settings.ai.local_auth_token or ""
+            self.ai_custom_endpoint = settings.ai.custom_endpoint or ""
+            self.ai_custom_model = settings.ai.custom_model or ""
+            self.ai_custom_api_key = settings.ai.custom_api_key or get_custom_ai_api_key() or ""
             self.local_llm_download_status = ""
             self.local_llm_download_progress = 0
             self.is_downloading_local_llm = False
@@ -123,6 +135,12 @@ class SettingsState(AppState):
             self.embedding_provider = settings.embedding.default_provider
             self.embedding_model = settings.embedding.model
             self.embedding_dimension = settings.embedding.dimension
+            self.embedding_custom_endpoint = settings.embedding.custom_endpoint or ""
+            self.embedding_custom_model = settings.embedding.custom_model or ""
+            self.embedding_custom_api_key = (
+                settings.embedding.custom_api_key or get_custom_embedding_api_key() or ""
+            )
+            self.embedding_custom_dimension = settings.embedding.custom_dimension
 
             if self.embedding_provider == "gemini":
                 self.embedding_api_key = get_google_api_key() or ""
@@ -169,6 +187,8 @@ class SettingsState(AppState):
                 LOCAL_LLM_MODELS.keys(),
                 key=lambda k: LOCAL_LLM_MODELS[k]["display_name"].lower(),
             ),
+            # Custom: no preset models — user types model name
+            "custom": [],
         }
         models = ai_model_map.get(self.ai_provider, [])
         self.ai_models = models
@@ -191,6 +211,8 @@ class SettingsState(AppState):
             ),
             # Sort local embedding model ids alphabetically by key name
             "local": sorted(list(LOCAL_EMBEDDING_MODELS.keys()), key=str.lower),
+            # Custom: no preset models
+            "custom": [],
         }
         models = embedding_model_map.get(self.embedding_provider, [])
         self.embedding_models = models
@@ -211,6 +233,10 @@ class SettingsState(AppState):
             self.ai_local_auth_token = ""
             self.local_llm_download_status = ""
             self.local_llm_download_progress = 0
+        if provider != "custom":
+            self.ai_custom_endpoint = ""
+            self.ai_custom_model = ""
+            self.ai_custom_api_key = ""
         self.ai_api_key = ""
 
     def set_embedding_provider(self, provider: str):
@@ -222,6 +248,11 @@ class SettingsState(AppState):
             self.is_downloading_local_model = False
             self.local_download_status = ""
             self.local_download_progress = 0
+        if provider != "custom":
+            self.embedding_custom_endpoint = ""
+            self.embedding_custom_model = ""
+            self.embedding_custom_api_key = ""
+            self.embedding_custom_dimension = 1536
         self._sync_embedding_dimension()
 
     def set_plex_url(self, url: str):
@@ -253,6 +284,15 @@ class SettingsState(AppState):
     def set_ai_local_auth_token(self, token: str):
         self.ai_local_auth_token = token
 
+    def set_ai_custom_endpoint(self, endpoint: str):
+        self.ai_custom_endpoint = endpoint
+
+    def set_ai_custom_model(self, model: str):
+        self.ai_custom_model = model
+
+    def set_ai_custom_api_key(self, key: str):
+        self.ai_custom_api_key = key
+
     def set_ai_temperature(self, temperature: float):
         self.ai_temperature = temperature
 
@@ -261,6 +301,23 @@ class SettingsState(AppState):
 
     def set_embedding_model(self, model: str):
         self.embedding_model = model
+        self._sync_embedding_dimension()
+
+    def set_embedding_custom_endpoint(self, endpoint: str):
+        self.embedding_custom_endpoint = endpoint
+
+    def set_embedding_custom_model(self, model: str):
+        self.embedding_custom_model = model
+
+    def set_embedding_custom_api_key(self, key: str):
+        self.embedding_custom_api_key = key
+
+    def set_embedding_custom_dimension(self, value: str):
+        try:
+            v = int(value)
+            self.embedding_custom_dimension = max(1, v)
+        except (ValueError, TypeError):
+            self.embedding_custom_dimension = 1536
         self._sync_embedding_dimension()
 
     def set_log_level(self, level: str):
@@ -374,6 +431,31 @@ class SettingsState(AppState):
                     return response.generations[0].text
 
                 await loop.run_in_executor(None, test_cohere)
+
+            elif provider == "custom":
+                async with self:
+                    self.ai_test_status = "Testing custom endpoint..."
+
+                def test_custom():
+                    from openai import OpenAI
+                    endpoint = self.ai_custom_endpoint
+                    if not endpoint:
+                        raise ValueError("No endpoint URL configured")
+                    model = self.ai_custom_model
+                    if not model:
+                        raise ValueError("No model name configured")
+                    client = OpenAI(
+                        base_url=endpoint,
+                        api_key=self.ai_custom_api_key or "no-key-required",
+                    )
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=[{"role": "user", "content": "Say 'test' in one word."}],
+                        max_tokens=10,
+                    )
+                    return response.choices[0].message.content
+
+                await loop.run_in_executor(None, test_custom)
 
             elif provider == "local":
                 if self.ai_local_mode == "builtin":
@@ -490,6 +572,30 @@ class SettingsState(AppState):
 
                 dim = await loop.run_in_executor(None, test_cohere_embed)
 
+            elif provider == "custom":
+                async with self:
+                    self.embedding_test_status = "Testing custom embedding endpoint..."
+
+                def test_custom_embed():
+                    from openai import OpenAI
+                    endpoint = self.embedding_custom_endpoint
+                    if not endpoint:
+                        raise ValueError("No endpoint URL configured")
+                    model = self.embedding_custom_model
+                    if not model:
+                        raise ValueError("No model name configured")
+                    client = OpenAI(
+                        base_url=endpoint,
+                        api_key=self.embedding_custom_api_key or "no-key-required",
+                    )
+                    response = client.embeddings.create(
+                        model=model,
+                        input=test_text,
+                    )
+                    return len(response.data[0].embedding)
+
+                dim = await loop.run_in_executor(None, test_custom_embed)
+
             elif provider == "local":
                 async with self:
                     self.embedding_test_status = "Testing local embedding model..."
@@ -539,7 +645,9 @@ class SettingsState(AppState):
                 store_google_api_key,
                 store_openai_api_key,
                 store_anthropic_api_key,
-                store_cohere_api_key
+                store_cohere_api_key,
+                store_custom_ai_api_key,
+                store_custom_embedding_api_key,
             )
 
             settings = Settings.load_from_file()
@@ -555,6 +663,9 @@ class SettingsState(AppState):
             settings.ai.local_mode = self.ai_local_mode
             settings.ai.local_endpoint = self.ai_local_endpoint or None
             settings.ai.local_auth_token = self.ai_local_auth_token or None
+            settings.ai.custom_endpoint = self.ai_custom_endpoint or None
+            settings.ai.custom_model = self.ai_custom_model or None
+            settings.ai.custom_api_key = self.ai_custom_api_key or None
 
             if self.ai_api_key:
                 if self.ai_provider == "gemini":
@@ -565,18 +676,26 @@ class SettingsState(AppState):
                     store_anthropic_api_key(self.ai_api_key)
                 elif self.ai_provider == "cohere":
                     store_cohere_api_key(self.ai_api_key)
+            if self.ai_custom_api_key and self.ai_provider == "custom":
+                store_custom_ai_api_key(self.ai_custom_api_key)
 
             settings.embedding.default_provider = self.embedding_provider
             settings.embedding.model = self.embedding_model
             settings.embedding.dimension = self.embedding_dimension
+            settings.embedding.custom_endpoint = self.embedding_custom_endpoint or None
+            settings.embedding.custom_model = self.embedding_custom_model or None
+            settings.embedding.custom_api_key = self.embedding_custom_api_key or None
+            settings.embedding.custom_dimension = self.embedding_custom_dimension
 
-            if self.embedding_api_key and self.embedding_provider != "local":
+            if self.embedding_api_key and self.embedding_provider not in ("local", "custom"):
                 if self.embedding_provider == "gemini":
                     store_google_api_key(self.embedding_api_key)
                 elif self.embedding_provider == "openai":
                     store_openai_api_key(self.embedding_api_key)
                 elif self.embedding_provider == "cohere":
                     store_cohere_api_key(self.embedding_api_key)
+            if self.embedding_custom_api_key and self.embedding_provider == "custom":
+                store_custom_embedding_api_key(self.embedding_custom_api_key)
 
             settings.logging.level = self.log_level
 
@@ -607,7 +726,7 @@ class SettingsState(AppState):
 
     def validate_ai_api_key(self, key: str):
         self.ai_api_key = key
-        if self.ai_provider == "local":
+        if self.ai_provider in ("local", "custom"):
             self.ai_api_key_error = ""
             return
         provider_key = self.ai_provider
@@ -618,7 +737,7 @@ class SettingsState(AppState):
 
     def validate_embedding_api_key(self, key: str):
         self.embedding_api_key = key
-        if self.embedding_provider != "local":
+        if self.embedding_provider not in ("local", "custom"):
             is_valid, error = validate_api_key(key, self.embedding_provider)
             self.embedding_api_key_error = error if error else ""
         else:
@@ -744,7 +863,9 @@ class SettingsState(AppState):
                 self.is_downloading_local_model = False
 
     def _sync_embedding_dimension(self):
-        if self.embedding_provider == "local":
+        if self.embedding_provider == "custom":
+            self.embedding_dimension = self.embedding_custom_dimension
+        elif self.embedding_provider == "local":
             model_info = LOCAL_EMBEDDING_MODELS.get(self.embedding_model)
             if model_info:
                 self.embedding_dimension = int(model_info.get("dimension", 384))
@@ -771,9 +892,16 @@ class SettingsState(AppState):
             "ai_local_mode": self.ai_local_mode,
             "ai_local_endpoint": self.ai_local_endpoint,
             "ai_local_auth_token": self.ai_local_auth_token,
+            "ai_custom_endpoint": self.ai_custom_endpoint,
+            "ai_custom_model": self.ai_custom_model,
+            "ai_custom_api_key": self.ai_custom_api_key,
             "embedding_provider": self.embedding_provider,
             "embedding_api_key": self.embedding_api_key,
             "embedding_model": self.embedding_model,
+            "embedding_custom_endpoint": self.embedding_custom_endpoint,
+            "embedding_custom_model": self.embedding_custom_model,
+            "embedding_custom_api_key": self.embedding_custom_api_key,
+            "embedding_custom_dimension": self.embedding_custom_dimension,
             "log_level": self.log_level,
             "audio_enabled": self.audio_enabled,
             "audio_analyze_on_sync": self.audio_analyze_on_sync,

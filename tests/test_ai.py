@@ -195,3 +195,69 @@ def test_mock_ai_provider_complete():
     result = provider.complete("test prompt")
     assert "tags" in result
     assert "environments" in result
+
+
+def test_custom_provider_initialization():
+    with patch('openai.OpenAI'):
+        from plexmix.ai.custom_provider import CustomProvider
+        provider = CustomProvider(
+            base_url="http://localhost:11434/v1",
+            model="llama3",
+        )
+        assert provider.provider_name == "Custom"
+        assert provider.model == "llama3"
+
+
+def test_custom_provider_with_api_key():
+    with patch('openai.OpenAI') as mock_openai:
+        from plexmix.ai.custom_provider import CustomProvider
+        provider = CustomProvider(
+            base_url="http://api.example.com/v1",
+            model="my-model",
+            api_key="test-key",
+        )
+        assert provider.api_key == "test-key"
+        mock_openai.assert_called_once_with(
+            base_url="http://api.example.com/v1",
+            api_key="test-key",
+        )
+
+
+def test_custom_provider_without_api_key():
+    with patch('openai.OpenAI') as mock_openai:
+        from plexmix.ai.custom_provider import CustomProvider
+        provider = CustomProvider(
+            base_url="http://localhost:11434/v1",
+            model="llama3",
+        )
+        assert provider.api_key == "no-key-required"
+        mock_openai.assert_called_once_with(
+            base_url="http://localhost:11434/v1",
+            api_key="no-key-required",
+        )
+
+
+def test_get_ai_provider_custom():
+    with patch('openai.OpenAI'):
+        from plexmix.ai import get_ai_provider
+        provider = get_ai_provider(
+            provider_name="custom",
+            model="llama3",
+            custom_endpoint="http://localhost:11434/v1",
+        )
+        assert provider.provider_name == "Custom"
+
+
+def test_get_ai_provider_custom_requires_endpoint():
+    from plexmix.ai import get_ai_provider
+    with pytest.raises(ValueError, match="Endpoint URL required"):
+        get_ai_provider(provider_name="custom", model="llama3")
+
+
+def test_get_ai_provider_custom_requires_model():
+    from plexmix.ai import get_ai_provider
+    with pytest.raises(ValueError, match="Model name required"):
+        get_ai_provider(
+            provider_name="custom",
+            custom_endpoint="http://localhost:11434/v1",
+        )

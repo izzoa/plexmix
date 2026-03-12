@@ -44,6 +44,8 @@ def _resolve_ai_api_key(provider_name: Optional[str]) -> Optional[str]:
         return credentials.get_anthropic_api_key()
     if provider == "cohere":
         return credentials.get_cohere_api_key()
+    if provider == "custom":
+        return credentials.get_custom_ai_api_key()
     return None
 
 
@@ -56,6 +58,44 @@ def _local_provider_kwargs(settings: Settings) -> Dict[str, Any]:
     }
 
 
+def _resolve_embedding_api_key(provider: str) -> Optional[str]:
+    if provider == "gemini":
+        return credentials.get_google_api_key()
+    if provider == "openai":
+        return credentials.get_openai_api_key()
+    if provider == "cohere":
+        return credentials.get_cohere_api_key()
+    if provider == "custom":
+        return credentials.get_custom_embedding_api_key()
+    return None
+
+
+def _build_embedding_generator(settings: Settings) -> Optional[EmbeddingGenerator]:
+    """Build an EmbeddingGenerator from settings, resolving API keys automatically."""
+    provider = settings.embedding.default_provider
+    api_key = _resolve_embedding_api_key(provider)
+
+    requires_key = provider in {"gemini", "openai", "cohere"}
+    if requires_key and not api_key:
+        return None
+
+    kwargs: Dict[str, Any] = {
+        "provider": provider,
+        "api_key": api_key,
+        "model": settings.embedding.model,
+    }
+    if provider == "custom":
+        kwargs["model"] = settings.embedding.custom_model or settings.embedding.model
+        kwargs["custom_endpoint"] = settings.embedding.custom_endpoint
+        kwargs["custom_api_key"] = (
+            settings.embedding.custom_api_key
+            or credentials.get_custom_embedding_api_key()
+        )
+        kwargs["custom_dimension"] = settings.embedding.custom_dimension
+
+    return EmbeddingGenerator(**kwargs)
+
+
 def _build_ai_provider(
     settings: Settings,
     provider_name: Optional[str] = None,
@@ -64,13 +104,19 @@ def _build_ai_provider(
 ):
     name = provider_name or settings.ai.default_provider or "gemini"
     api_key = api_key_override if api_key_override is not None else _resolve_ai_api_key(name)
+    model = settings.ai.model
+    # Custom provider uses its own model/endpoint settings
+    if _canonical_ai_provider(name) == "custom":
+        model = settings.ai.custom_model or model
     try:
         return get_ai_provider(
             provider_name=name,
             api_key=api_key,
-            model=settings.ai.model,
+            model=model,
             temperature=settings.ai.temperature,
             **_local_provider_kwargs(settings),
+            custom_endpoint=settings.ai.custom_endpoint,
+            custom_api_key=settings.ai.custom_api_key or _resolve_ai_api_key("custom"),
         )
     except ValueError as exc:
         if not silent:
@@ -440,17 +486,11 @@ def embeddings_generate(
     settings = Settings.load_from_file()
     db_path = settings.database.get_db_path()
 
-    google_key = credentials.get_google_api_key()
-    if not google_key:
-        console.print("[red]Google API key required for embeddings.[/red]")
+    embedding_generator = _build_embedding_generator(settings)
+    if not embedding_generator:
+        console.print("[red]API key required for embedding provider.[/red]")
         console.print("Run: plexmix config init")
         raise typer.Exit(1)
-
-    embedding_generator = EmbeddingGenerator(
-        provider=settings.embedding.default_provider,
-        api_key=google_key,
-        model=settings.embedding.model
-    )
 
     index_path = settings.database.get_index_path()
     vector_index = VectorIndex(
@@ -579,13 +619,8 @@ def sync_incremental(
             )
 
         if embeddings:
-            google_key = credentials.get_google_api_key()
-            if google_key:
-                embedding_generator = EmbeddingGenerator(
-                    provider=settings.embedding.default_provider,
-                    api_key=google_key,
-                    model=settings.embedding.model
-                )
+            embedding_generator = _build_embedding_generator(settings)
+            if embedding_generator:
                 index_path = settings.database.get_index_path()
                 vector_index = VectorIndex(
                     dimension=embedding_generator.get_dimension(),
@@ -658,13 +693,8 @@ def sync_regenerate(
             )
 
         if embeddings:
-            google_key = credentials.get_google_api_key()
-            if google_key:
-                embedding_generator = EmbeddingGenerator(
-                    provider=settings.embedding.default_provider,
-                    api_key=google_key,
-                    model=settings.embedding.model
-                )
+            embedding_generator = _build_embedding_generator(settings)
+            if embedding_generator:
                 index_path = settings.database.get_index_path()
                 vector_index = VectorIndex(
                     dimension=embedding_generator.get_dimension(),
@@ -806,17 +836,11 @@ def doctor(
             if typer.confirm("\nRegenerate embeddings now?", default=True):
                 console.print("\n[bold]Regenerating embeddings...[/bold]")
 
-                google_key = credentials.get_google_api_key()
-                if not google_key:
-                    console.print("[red]Google API key required for embeddings.[/red]")
+                embedding_generator = _build_embedding_generator(settings)
+                if not embedding_generator:
+                    console.print("[red]API key required for embedding provider.[/red]")
                     console.print("Run: plexmix config init")
                     raise typer.Exit(1)
-
-                embedding_generator = EmbeddingGenerator(
-                    provider=settings.embedding.default_provider,
-                    api_key=google_key,
-                    model=settings.embedding.model
-                )
 
                 index_path = settings.database.get_index_path()
                 vector_index = VectorIndex(
@@ -1013,16 +1037,10 @@ def tags_generate(
         if regenerate_embeddings and updated_count > 0:
             console.print("\n[bold]Regenerating embeddings for newly tagged tracks...[/bold]")
 
-            google_key = credentials.get_google_api_key()
-            if not google_key:
-                console.print("[yellow]Google API key required for embeddings. Skipping.[/yellow]")
+            embedding_generator = _build_embedding_generator(settings)
+            if not embedding_generator:
+                console.print("[yellow]API key required for embedding provider. Skipping.[/yellow]")
                 return
-
-            embedding_generator = EmbeddingGenerator(
-                provider=settings.embedding.default_provider,
-                api_key=google_key,
-                model=settings.embedding.model
-            )
 
             index_path = settings.database.get_index_path()
             vector_index = VectorIndex(
@@ -1137,23 +1155,11 @@ def create_playlist(
     index_path = settings.database.get_index_path()
 
     with SQLiteManager(str(db_path)) as db:
-        embedding_provider = settings.embedding.default_provider
-        embedding_model = settings.embedding.model
-
-        # Get embedding provider API key (only needed for query embedding generation)
-        embedding_api_key = None
-        if embedding_provider == "gemini":
-            embedding_api_key = credentials.get_google_api_key()
-        elif embedding_provider == "openai":
-            embedding_api_key = credentials.get_openai_api_key()
-        elif embedding_provider == "cohere":
-            embedding_api_key = credentials.get_cohere_api_key()
-
-        embedding_generator = EmbeddingGenerator(
-            provider=embedding_provider,
-            api_key=embedding_api_key,
-            model=embedding_model,
-        )
+        embedding_generator = _build_embedding_generator(settings)
+        if not embedding_generator:
+            console.print("[red]API key required for embedding provider.[/red]")
+            console.print("Run: plexmix config init")
+            raise typer.Exit(1)
 
         vector_index = VectorIndex(
             dimension=embedding_generator.get_dimension(),
