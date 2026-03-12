@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import Optional
 import logging
 import time
 
@@ -59,26 +59,3 @@ class OpenAIProvider(AIProvider):
 
         raise RuntimeError("Failed to get response from OpenAI after retries")
 
-    def generate_playlist(
-        self,
-        mood_query: str,
-        candidate_tracks: List[Dict[str, Any]],
-        max_tracks: int = 50
-    ) -> List[int]:
-        try:
-            prompt = self._prepare_prompt(mood_query, candidate_tracks, max_tracks)
-            content = self.complete(prompt, max_tokens=4096, timeout=30)
-
-            if not content:
-                logger.error("[OpenAI] Empty response")
-                return []
-
-            track_ids = self._parse_response(content)
-            validated_ids = self._validate_selections(track_ids, candidate_tracks)
-
-            logger.info(f"[OpenAI] Selected {len(validated_ids)} tracks for mood: {mood_query}")
-            return validated_ids[:max_tracks]
-
-        except Exception as e:
-            logger.error(f"[OpenAI] Failed to generate playlist: {e}")
-            return []

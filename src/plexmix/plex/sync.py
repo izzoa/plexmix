@@ -256,82 +256,86 @@ class SyncEngine:
         db_albums = {a.plex_key: a for a in self.db.get_all_albums()}
         db_tracks = {t.plex_key: t for t in self.db.get_all_tracks()}
 
-        artist_map = {}
-        for plex_key, plex_artist in plex_library['artists'].items():
-            if plex_key in db_artists:
-                artist_map[plex_key] = db_artists[plex_key].id
-            else:
-                artist_id = self.db.insert_artist(plex_artist)
-                artist_map[plex_key] = artist_id
+        # Pre-cache known genres to avoid per-track DB lookups
+        known_genres: set = set()
+        for genre_obj in self.db.get_all_genres():
+            known_genres.add(genre_obj.name)
 
-        album_map = {}
-        for plex_key, plex_album in plex_library['albums'].items():
-            # Use the artist key from Plex API (stored as _artist_key)
-            artist_plex_key = plex_album.__dict__.get('_artist_key')
-            if artist_plex_key and artist_plex_key in artist_map:
-                plex_album.artist_id = artist_map[artist_plex_key]
-            else:
-                logger.warning(f"Album '{plex_album.title}' missing artist link; assigning to Unknown Artist")
-                plex_album.artist_id = unknown_artist_id
+        with self.db.deferred_commits():
+            artist_map = {}
+            for plex_key, plex_artist in plex_library['artists'].items():
+                if plex_key in db_artists:
+                    artist_map[plex_key] = db_artists[plex_key].id
+                else:
+                    artist_id = self.db.insert_artist(plex_artist)
+                    artist_map[plex_key] = artist_id
 
-            if plex_key in db_albums:
-                album_map[plex_key] = db_albums[plex_key].id
-            else:
-                album_id = self.db.insert_album(plex_album)
-                album_map[plex_key] = album_id
+            album_map = {}
+            for plex_key, plex_album in plex_library['albums'].items():
+                artist_plex_key = plex_album.__dict__.get('_artist_key')
+                if artist_plex_key and artist_plex_key in artist_map:
+                    plex_album.artist_id = artist_map[artist_plex_key]
+                else:
+                    logger.warning(f"Album '{plex_album.title}' missing artist link; assigning to Unknown Artist")
+                    plex_album.artist_id = unknown_artist_id
 
-        total_tracks = len(plex_library['tracks'])
-        processed = 0
+                if plex_key in db_albums:
+                    album_map[plex_key] = db_albums[plex_key].id
+                else:
+                    album_id = self.db.insert_album(plex_album)
+                    album_map[plex_key] = album_id
 
-        for plex_key, plex_track in plex_library['tracks'].items():
-            if cancel_event and cancel_event.is_set():
-                break
+            total_tracks = len(plex_library['tracks'])
+            processed = 0
 
-            artist_plex_key = plex_track.__dict__.get('_artist_key')
-            album_plex_key = plex_track.__dict__.get('_album_key')
+            for plex_key, plex_track in plex_library['tracks'].items():
+                if cancel_event and cancel_event.is_set():
+                    break
 
-            if artist_plex_key and artist_plex_key in artist_map:
-                plex_track.artist_id = artist_map[artist_plex_key]
-            else:
-                plex_track.artist_id = unknown_artist_id
+                artist_plex_key = plex_track.__dict__.get('_artist_key')
+                album_plex_key = plex_track.__dict__.get('_album_key')
 
-            if album_plex_key and album_plex_key in album_map:
-                plex_track.album_id = album_map[album_plex_key]
-            else:
-                plex_track.album_id = unknown_album_id
+                if artist_plex_key and artist_plex_key in artist_map:
+                    plex_track.artist_id = artist_map[artist_plex_key]
+                else:
+                    plex_track.artist_id = unknown_artist_id
 
-            if plex_key in db_tracks:
-                existing = db_tracks[plex_key]
-                if self._track_needs_update(existing, plex_track):
-                    plex_track.id = existing.id
-                    plex_track.tags = existing.tags
-                    plex_track.environments = existing.environments
-                    plex_track.instruments = existing.instruments
+                if album_plex_key and album_plex_key in album_map:
+                    plex_track.album_id = album_map[album_plex_key]
+                else:
+                    plex_track.album_id = unknown_album_id
+
+                if plex_key in db_tracks:
+                    existing = db_tracks[plex_key]
+                    if self._track_needs_update(existing, plex_track):
+                        plex_track.id = existing.id
+                        plex_track.tags = existing.tags
+                        plex_track.environments = existing.environments
+                        plex_track.instruments = existing.instruments
+                        self.db.insert_track(plex_track)
+                        stats['tracks_updated'] += 1
+                else:
                     self.db.insert_track(plex_track)
-                    stats['tracks_updated'] += 1
-            else:
-                self.db.insert_track(plex_track)
-                stats['tracks_added'] += 1
+                    stats['tracks_added'] += 1
 
-            if plex_track.genre:
-                for genre_name in plex_track.genre.split(','):
-                    genre_name = genre_name.strip().lower()
-                    genre = self.db.get_genre_by_name(genre_name)
-                    if not genre:
-                        genre = Genre(name=genre_name)
-                        self.db.insert_genre(genre)
+                if plex_track.genre:
+                    for genre_name in plex_track.genre.split(','):
+                        genre_name = genre_name.strip().lower()
+                        if genre_name not in known_genres:
+                            self.db.insert_genre(Genre(name=genre_name))
+                            known_genres.add(genre_name)
 
-            processed += 1
-            if processed % 10 == 0:
-                progress.update(task, advance=10)
-                if progress_callback:
-                    current_progress = progress_start + (progress_end - progress_start) * (processed / total_tracks)
-                    progress_callback(current_progress, f"Processing tracks... ({processed}/{total_tracks})")
+                processed += 1
+                if processed % 10 == 0:
+                    progress.update(task, advance=10)
+                    if progress_callback:
+                        current_progress = progress_start + (progress_end - progress_start) * (processed / total_tracks)
+                        progress_callback(current_progress, f"Processing tracks... ({processed}/{total_tracks})")
 
-        for db_plex_key in db_tracks.keys():
-            if db_plex_key not in plex_library['tracks']:
-                self.db.delete_track(db_tracks[db_plex_key].id)
-                stats['tracks_removed'] += 1
+            for db_plex_key in db_tracks.keys():
+                if db_plex_key not in plex_library['tracks']:
+                    self.db.delete_track(db_tracks[db_plex_key].id)
+                    stats['tracks_removed'] += 1
 
         progress.update(task, description=f"Changes: +{stats['tracks_added']} ~{stats['tracks_updated']} -{stats['tracks_removed']}")
         return stats
@@ -346,157 +350,6 @@ class SyncEngine:
             db_track.play_count != plex_track.play_count or
             db_track.last_played != plex_track.last_played
         )
-
-    def _sync_artists(
-        self,
-        progress: Progress,
-        task,
-        progress_callback: Optional[Callable[[float, str], None]] = None,
-        cancel_event: Optional[Event] = None,
-        progress_start: float = 0.0,
-        progress_end: float = 1.0
-    ) -> Dict[str, int]:
-        artist_map = {}
-        total_artists = 0
-
-        for artist_batch in self.plex.get_all_artists(batch_size=100):
-            if cancel_event and cancel_event.is_set():
-                break
-
-            for artist in artist_batch:
-                existing = self.db.get_artist_by_plex_key(artist.plex_key)
-                if existing:
-                    artist.id = existing.id
-                    artist_id = existing.id
-                else:
-                    artist_id = self.db.insert_artist(artist)
-
-                artist_map[artist.plex_key] = artist_id
-
-            total_artists += len(artist_batch)
-            progress.update(task, advance=len(artist_batch))
-
-            if progress_callback and total_artists % 10 == 0:
-                current_progress = progress_start + (progress_end - progress_start) * 0.5
-                progress_callback(current_progress, f"Syncing artists... ({total_artists} processed)")
-
-        progress.update(task, description=f"Synced {len(artist_map)} artists")
-        return artist_map
-
-    def _sync_albums(
-        self,
-        progress: Progress,
-        task,
-        artist_map: Dict[str, int],
-        unknown_artist_id: int,
-        progress_callback: Optional[Callable[[float, str], None]] = None,
-        cancel_event: Optional[Event] = None,
-        progress_start: float = 0.0,
-        progress_end: float = 1.0
-    ) -> Dict[str, int]:
-        album_map = {}
-        total_albums = 0
-
-        for album_batch in self.plex.get_all_albums(batch_size=100):
-            if cancel_event and cancel_event.is_set():
-                break
-
-            for album in album_batch:
-                # Use the artist key from Plex API (stored as _artist_key)
-                artist_plex_key = album.__dict__.get('_artist_key')
-                if artist_plex_key and artist_plex_key in artist_map:
-                    album.artist_id = artist_map[artist_plex_key]
-                else:
-                    album.artist_id = unknown_artist_id
-
-                existing = self.db.get_album_by_plex_key(album.plex_key)
-                if existing:
-                    album.id = existing.id
-                    album_id = existing.id
-                else:
-                    album_id = self.db.insert_album(album)
-
-                album_map[album.plex_key] = album_id
-
-            total_albums += len(album_batch)
-            progress.update(task, advance=len(album_batch))
-
-            if progress_callback and total_albums % 10 == 0:
-                current_progress = progress_start + (progress_end - progress_start) * 0.5
-                progress_callback(current_progress, f"Syncing albums... ({total_albums} processed)")
-
-        progress.update(task, description=f"Synced {len(album_map)} albums")
-        return album_map
-
-    def _sync_tracks(
-        self,
-        progress: Progress,
-        task,
-        artist_map: Dict[str, int],
-        album_map: Dict[str, int],
-        unknown_artist_id: int,
-        unknown_album_id: int,
-        progress_callback: Optional[Callable[[float, str], None]] = None,
-        cancel_event: Optional[Event] = None,
-        progress_start: float = 0.0,
-        progress_end: float = 1.0
-    ) -> Dict[str, int]:
-        stats = {'tracks_added': 0, 'tracks_updated': 0, 'tracks_removed': 0}
-        plex_track_keys = set()
-        total_processed = 0
-
-        for track_batch in self.plex.get_all_tracks(batch_size=100):
-            if cancel_event and cancel_event.is_set():
-                break
-
-            for track in track_batch:
-                plex_track_keys.add(track.plex_key)
-
-                artist_plex_key = track.__dict__.get('_artist_key')
-                album_plex_key = track.__dict__.get('_album_key')
-
-                if artist_plex_key and artist_plex_key in artist_map:
-                    track.artist_id = artist_map[artist_plex_key]
-                else:
-                    track.artist_id = unknown_artist_id
-
-                if album_plex_key and album_plex_key in album_map:
-                    track.album_id = album_map[album_plex_key]
-                else:
-                    track.album_id = unknown_album_id
-
-                existing = self.db.get_track_by_plex_key(track.plex_key)
-                if existing:
-                    track.id = existing.id
-                    self.db.insert_track(track)
-                    stats['tracks_updated'] += 1
-                else:
-                    self.db.insert_track(track)
-                    stats['tracks_added'] += 1
-
-                if track.genre:
-                    for genre_name in track.genre.split(','):
-                        genre_name = genre_name.strip().lower()
-                        genre = self.db.get_genre_by_name(genre_name)
-                        if not genre:
-                            genre = Genre(name=genre_name)
-                            self.db.insert_genre(genre)
-
-            total_processed += len(track_batch)
-            progress.update(task, advance=len(track_batch))
-
-            if progress_callback and total_processed % 10 == 0:
-                current_progress = progress_start + (progress_end - progress_start) * 0.6
-                progress_callback(current_progress, f"Syncing tracks... ({total_processed} processed)")
-
-        existing_tracks = self.db.get_all_tracks()
-        for existing_track in existing_tracks:
-            if existing_track.plex_key not in plex_track_keys:
-                self.db.delete_track(existing_track.id)
-                stats['tracks_removed'] += 1
-
-        progress.update(task, description=f"Synced {stats['tracks_added'] + stats['tracks_updated']} tracks")
-        return stats
 
     def _generate_embeddings_for_new_tracks(
         self,
@@ -681,10 +534,12 @@ class SyncEngine:
             for track in tracks_needing_tags:
                 if track.id in tag_results:
                     result = tag_results[track.id]
-                    track.tags = ','.join(result.get('tags', []))
-                    track.environments = ','.join(result.get('environments', []))
-                    track.instruments = ','.join(result.get('instruments', []))
-                    self.db.insert_track(track)
+                    self.db.update_track_tags(
+                        track.id,
+                        tags=','.join(result.get('tags', [])),
+                        environments=','.join(result.get('environments', [])),
+                        instruments=','.join(result.get('instruments', [])),
+                    )
                     tags_saved += 1
 
             progress.update(task, description=f"Generated tags for {tags_saved} tracks")

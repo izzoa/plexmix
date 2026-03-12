@@ -684,6 +684,38 @@ cp .env.example .env
 docker compose up -d
 ```
 
+### Sample `docker-compose.yml`
+
+```yaml
+services:
+  plexmix:
+    image: ghcr.io/izzoa/plexmix:latest
+    ports:
+      - "3000:3000"   # Web UI
+      - "8000:8000"   # Reflex backend
+    volumes:
+      - plexmix-data:/data
+      # Mount your music library read-only for audio analysis
+      # - /path/to/music:/music:ro
+    environment:
+      - PLEX_URL=http://host.docker.internal:32400
+      - PLEX_TOKEN=${PLEX_TOKEN}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      # Optional alternative AI providers
+      # - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # - COHERE_API_KEY=${COHERE_API_KEY:-}
+      # Optional: protect the web UI with a password
+      # - PLEXMIX_UI_PASSWORD=changeme
+      # Audio path remapping (translate Plex paths → container paths)
+      # - AUDIO_PATH_PREFIX_FROM=/data/music
+      # - AUDIO_PATH_PREFIX_TO=/music
+    restart: unless-stopped
+
+volumes:
+  plexmix-data:
+```
+
 ### Environment Variables
 
 All credentials can be passed as environment variables (no keyring required in containers):

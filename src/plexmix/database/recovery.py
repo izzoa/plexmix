@@ -68,9 +68,10 @@ class DatabaseRecovery:
                 cursor = db.get_connection().cursor()
                 
                 required_tables = [
-                    'artists', 'albums', 'tracks', 'genres', 
-                    'track_genres', 'embeddings', 'sync_history', 
-                    'playlists', 'playlist_tracks', 'tracks_fts'
+                    'artists', 'albums', 'tracks', 'genres',
+                    'track_genres', 'embeddings', 'sync_history',
+                    'playlists', 'playlist_tracks', 'tracks_fts',
+                    'audio_features'
                 ]
                 
                 cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")

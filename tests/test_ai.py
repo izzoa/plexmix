@@ -14,9 +14,6 @@ class MockAIProvider(AIProvider):
         """Mock complete method that returns a simple JSON response."""
         return '{"1": {"tags": ["test"], "environments": ["work"], "instruments": ["piano"]}}'
 
-    def generate_playlist(self, mood_query, candidates, max_tracks):
-        return [c['id'] for c in candidates[:max_tracks]]
-
 
 @pytest.fixture
 def mock_ai_provider():
@@ -193,16 +190,8 @@ def test_parse_tag_response_cleans_trailing_commas(tag_generator):
     assert result[1]['tags'] == ["jazz", "smooth"]
 
 
-def test_mock_ai_provider_generates_playlist():
+def test_mock_ai_provider_complete():
     provider = MockAIProvider()
-
-    candidates = [
-        {'id': 1, 'title': 'Track 1'},
-        {'id': 2, 'title': 'Track 2'},
-        {'id': 3, 'title': 'Track 3'}
-    ]
-
-    result = provider.generate_playlist("mood", candidates, 2)
-
-    assert len(result) == 2
-    assert result == [1, 2]
+    result = provider.complete("test prompt")
+    assert "tags" in result
+    assert "environments" in result

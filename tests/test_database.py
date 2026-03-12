@@ -426,6 +426,30 @@ def test_bulk_fetch_track_details_by_ids(db_manager):
     assert details[0]['title'] == "Test Track"
     assert details[0]['artist_name'] == "Test Artist"
     assert details[0]['album_title'] == "Test Album"
+    assert 'file_path' in details[0]
+
+
+def test_bulk_fetch_track_details_includes_file_path(db_manager):
+    """Test that file_path is included and correct in bulk track details."""
+    artist = Artist(plex_key="/library/metadata/10", name="Path Artist")
+    artist_id = db_manager.insert_artist(artist)
+
+    album = Album(plex_key="/library/metadata/11", title="Path Album", artist_id=artist_id)
+    album_id = db_manager.insert_album(album)
+
+    track = Track(
+        plex_key="/library/metadata/12",
+        title="Path Track",
+        artist_id=artist_id,
+        album_id=album_id,
+        file_path="/music/artist/album/track.flac"
+    )
+    track_id = db_manager.insert_track(track)
+
+    details = db_manager.get_track_details_by_ids([track_id])
+
+    assert len(details) == 1
+    assert details[0]['file_path'] == "/music/artist/album/track.flac"
 
 
 def _create_test_track(db_manager, title="Track", plex_key="t1", file_path=None):

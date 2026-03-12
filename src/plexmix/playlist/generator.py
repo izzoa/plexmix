@@ -99,7 +99,8 @@ class PlaylistGenerator:
                 'album': detail['album_title'] or 'Unknown',
                 'duration_ms': detail['duration_ms'],
                 'genre': detail['genre'],
-                'year': detail['year']
+                'year': detail['year'],
+                'file_path': detail.get('file_path'),
             })
 
         if progress_callback:

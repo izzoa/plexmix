@@ -411,12 +411,18 @@ class GeneratorState(AppState):
         if not self.generated_playlist:
             return
 
+        from plexmix.config.settings import Settings
+        settings = Settings.load_from_file()
+
         m3u_content = "#EXTM3U\n"
         for track in self.generated_playlist:
             duration_sec = track.get('duration_ms', 0) // 1000
             artist = track.get('artist', 'Unknown')
             title = track.get('title', 'Unknown')
             m3u_content += f"#EXTINF:{duration_sec},{artist} - {title}\n"
-            m3u_content += f"track_{track['id']}.mp3\n"
+            file_path = track.get('file_path')
+            if file_path:
+                file_path = settings.audio.resolve_path(file_path)
+            m3u_content += f"{file_path}\n" if file_path else f"track_{track['id']}.mp3\n"
 
         return rx.download(data=m3u_content, filename=f"{self.playlist_name or 'playlist'}.m3u")

@@ -1,5 +1,6 @@
 import sqlite3
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime
@@ -59,6 +60,27 @@ class SQLiteManager:
             self.conn.close()
             self.conn = None
             logger.info("Database connection closed")
+
+    @contextmanager
+    def deferred_commits(self):
+        """Batch multiple writes into a single transaction.
+
+        Individual insert/update methods call commit() per-row by default.
+        Inside this context manager those commits become no-ops; a single
+        commit is issued when the block exits (or rollback on error).
+        """
+        conn = self.get_connection()
+        original_commit = conn.commit
+        conn.commit = lambda: None  # suppress per-row commits
+        conn.execute("BEGIN")
+        try:
+            yield
+            original_commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.commit = original_commit
 
     def create_tables(self) -> None:
         cursor = self.get_connection().cursor()
@@ -555,6 +577,7 @@ class SQLiteManager:
                 t.tags,
                 t.environments,
                 t.instruments,
+                t.file_path,
                 t.artist_id,
                 t.album_id,
                 a.name as artist_name,
@@ -584,6 +607,11 @@ class SQLiteManager:
         if row:
             return Genre(**dict(row))
         return None
+
+    def get_all_genres(self) -> List[Genre]:
+        cursor = self.get_connection().cursor()
+        cursor.execute('SELECT * FROM genres')
+        return [Genre(**dict(row)) for row in cursor.fetchall()]
 
     def insert_embedding(self, embedding: Embedding) -> int:
         cursor = self.get_connection().cursor()

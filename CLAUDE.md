@@ -177,7 +177,7 @@ Default models (may change as new versions release):
 
 Conventions:
 - Prefer structured outputs (JSON-only responses) and robust parsing/validation.
-- Candidate truncation is enforced based on model context limits (`AIProvider.get_max_candidates()`).
+- Candidate pool sizing is controlled by the `candidate_pool_multiplier` parameter in playlist generation.
 - `TagGenerator` is defensive: retries on JSON issues/rate limits and normalizes output (caps tags/env/instruments counts).
 
 When adding a provider:

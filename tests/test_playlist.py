@@ -11,8 +11,8 @@ from plexmix.playlist.generator import PlaylistGenerator
 
 
 class MockAIProvider:
-    def generate_playlist(self, mood_query, candidates, max_tracks):
-        return [c['id'] for c in candidates[:max_tracks]]
+    def complete(self, prompt, temperature=None, max_tokens=4096, timeout=30):
+        return "mock response"
 
 
 class MockEmbeddingGenerator:

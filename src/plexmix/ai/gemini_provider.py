@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+from typing import Optional
 import logging
 import time
 
@@ -74,32 +74,3 @@ class GeminiProvider(AIProvider):
 
         raise RuntimeError("Failed to get response from Gemini after retries")
 
-    def generate_playlist(
-        self,
-        mood_query: str,
-        candidate_tracks: List[Dict[str, Any]],
-        max_tracks: int = 50
-    ) -> List[int]:
-        try:
-            # Reduce candidate count if needed to fit in context
-            max_candidates = self.get_max_candidates()
-            if len(candidate_tracks) > max_candidates:
-                logger.warning(f"[Gemini] Truncating {len(candidate_tracks)} candidates to {max_candidates}")
-                candidate_tracks = candidate_tracks[:max_candidates]
-
-            prompt = self._prepare_prompt(mood_query, candidate_tracks, max_tracks)
-            response_text = self.complete(prompt, max_tokens=8192, timeout=30)
-
-            if not response_text:
-                logger.error("[Gemini] Empty response text")
-                return []
-
-            track_ids = self._parse_response(response_text)
-            validated_ids = self._validate_selections(track_ids, candidate_tracks)
-
-            logger.info(f"[Gemini] Selected {len(validated_ids)} tracks for mood: {mood_query}")
-            return validated_ids[:max_tracks]
-
-        except Exception as e:
-            logger.error(f"[Gemini] Failed to generate playlist: {e}")
-            return []

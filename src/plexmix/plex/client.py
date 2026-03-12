@@ -216,8 +216,10 @@ class PlexClient:
         genres = [genre.tag for genre in plex_album.genres] if hasattr(plex_album, 'genres') else []
         genre_str = ", ".join(genres) if genres else None
 
-        # Get artist reference from Plex API
-        artist = plex_album.artist() if hasattr(plex_album, 'artist') else None
+        # Use parentRatingKey (available without extra API call) instead of plex_album.artist()
+        artist_key = None
+        if hasattr(plex_album, 'parentRatingKey') and plex_album.parentRatingKey:
+            artist_key = str(plex_album.parentRatingKey)
 
         album = Album(
             plex_key=str(plex_album.ratingKey),
@@ -229,7 +231,7 @@ class PlexClient:
         )
 
         # Store artist rating key as temporary attribute (not part of model schema)
-        album.__dict__['_artist_key'] = str(artist.ratingKey) if artist else None
+        album.__dict__['_artist_key'] = artist_key
 
         return album
 
@@ -240,9 +242,14 @@ class PlexClient:
         genres = [genre.tag for genre in plex_track.genres] if hasattr(plex_track, 'genres') else []
         genre_str = ", ".join(genres) if genres else None
 
-        # Get artist and album IDs directly from Plex relationships
-        artist = plex_track.artist() if hasattr(plex_track, 'artist') else None
-        album = plex_track.album() if hasattr(plex_track, 'album') else None
+        # Use grandparentRatingKey (artist) and parentRatingKey (album) — available
+        # without extra API calls, unlike plex_track.artist() / plex_track.album()
+        artist_key = None
+        if hasattr(plex_track, 'grandparentRatingKey') and plex_track.grandparentRatingKey:
+            artist_key = str(plex_track.grandparentRatingKey)
+        album_key = None
+        if hasattr(plex_track, 'parentRatingKey') and plex_track.parentRatingKey:
+            album_key = str(plex_track.parentRatingKey)
 
         track = Track(
             plex_key=str(plex_track.ratingKey),
@@ -259,8 +266,8 @@ class PlexClient:
         )
 
         # Store rating keys as temporary attributes (not part of model schema)
-        track.__dict__['_artist_key'] = str(artist.ratingKey) if artist else None
-        track.__dict__['_album_key'] = str(album.ratingKey) if album else None
+        track.__dict__['_artist_key'] = artist_key
+        track.__dict__['_album_key'] = album_key
 
         return track
 

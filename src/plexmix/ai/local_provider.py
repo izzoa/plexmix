@@ -7,7 +7,7 @@ import multiprocessing as mp
 import os
 import threading
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import requests
 
@@ -177,30 +177,6 @@ class LocalLLMProvider(AIProvider):
             raise RuntimeError(result.get("error", "Unknown local generation error"))
 
         return result.get("text", "")
-
-    def generate_playlist(
-        self,
-        mood_query: str,
-        candidate_tracks: List[Dict[str, Any]],
-        max_tracks: int = 50,
-    ) -> List[int]:
-        prompt = self._prepare_prompt(mood_query, candidate_tracks, max_tracks)
-
-        try:
-            if self.mode == "endpoint":
-                response_text = self._call_endpoint(prompt)
-            else:
-                response_text = self._generate_with_worker(prompt)
-
-            if not response_text:
-                return []
-
-            selections = self._parse_response(response_text)
-            validated = self._validate_selections(selections, candidate_tracks)
-            return validated[:max_tracks]
-        except Exception as exc:
-            logger.error(f"[LocalLLM] Failed to generate playlist: {exc}")
-            return []
 
     # ------------------------------------------------------------------
     # Builtin worker handling

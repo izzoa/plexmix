@@ -36,35 +36,25 @@ def test_cohere_provider_custom_model(mock_cohere_module):
     assert provider.temperature == 0.5
 
 
-def test_cohere_provider_generate_playlist(mock_cohere_module):
+def test_cohere_provider_complete(mock_cohere_module):
     from plexmix.ai.cohere_provider import CohereProvider
 
     mock_response = Mock()
     mock_message = Mock()
     mock_content = Mock()
-    mock_content.text = '[1, 2, 3]'
+    mock_content.text = 'Test response text'
     mock_message.content = [mock_content]
     mock_response.message = mock_message
     mock_cohere_module.chat.return_value = mock_response
 
     provider = CohereProvider(api_key='test-key')
+    result = provider.complete('test prompt')
 
-    candidates = [
-        {'id': 1, 'title': 'Track 1', 'artist': 'Artist 1'},
-        {'id': 2, 'title': 'Track 2', 'artist': 'Artist 2'},
-        {'id': 3, 'title': 'Track 3', 'artist': 'Artist 3'}
-    ]
-
-    result = provider.generate_playlist('upbeat mood', candidates, 3)
-
-    assert result == [1, 2, 3]
+    assert result == 'Test response text'
     mock_cohere_module.chat.assert_called_once()
-    call_args = mock_cohere_module.chat.call_args
-    assert call_args.kwargs['model'] == 'command-r7b-12-2024'
-    assert call_args.kwargs['temperature'] == 0.3
 
 
-def test_cohere_provider_handles_empty_response(mock_cohere_module):
+def test_cohere_provider_complete_empty_response(mock_cohere_module):
     from plexmix.ai.cohere_provider import CohereProvider
 
     mock_response = Mock()
@@ -73,25 +63,32 @@ def test_cohere_provider_handles_empty_response(mock_cohere_module):
 
     provider = CohereProvider(api_key='test-key')
 
-    candidates = [{'id': 1, 'title': 'Track 1', 'artist': 'Artist 1'}]
-
-    result = provider.generate_playlist('mood', candidates, 1)
-
-    assert result == []
+    with pytest.raises(ValueError, match="Empty response"):
+        provider.complete('test prompt')
 
 
-def test_cohere_provider_handles_exception(mock_cohere_module):
+@patch('plexmix.ai.cohere_provider.time.sleep')
+def test_cohere_provider_complete_retries_on_rate_limit(mock_sleep, mock_cohere_module):
     from plexmix.ai.cohere_provider import CohereProvider
 
-    mock_cohere_module.chat.side_effect = Exception('API Error')
+    mock_response = Mock()
+    mock_message = Mock()
+    mock_content = Mock()
+    mock_content.text = 'Success'
+    mock_message.content = [mock_content]
+    mock_response.message = mock_message
+
+    mock_cohere_module.chat.side_effect = [
+        Exception('429 rate limit'),
+        mock_response,
+    ]
 
     provider = CohereProvider(api_key='test-key')
+    result = provider.complete('test prompt')
 
-    candidates = [{'id': 1, 'title': 'Track 1', 'artist': 'Artist 1'}]
-
-    result = provider.generate_playlist('mood', candidates, 1)
-
-    assert result == []
+    assert result == 'Success'
+    assert mock_cohere_module.chat.call_count == 2
+    mock_sleep.assert_called_once()
 
 
 def test_cohere_embedding_provider_initialization(mock_cohere_module):
@@ -195,14 +192,12 @@ def test_get_ai_provider_cohere_custom_model(mock_cohere_module):
     assert provider.temperature == 0.5
 
 
-def test_cohere_provider_max_candidates(mock_cohere_module):
+def test_cohere_provider_complete_raises_on_non_retryable(mock_cohere_module):
     from plexmix.ai.cohere_provider import CohereProvider
 
-    provider = CohereProvider(api_key='test-key', model='command-r7b-12-2024')
-    assert provider.get_max_candidates() == 500
+    mock_cohere_module.chat.side_effect = Exception('Invalid API key')
 
-    provider = CohereProvider(api_key='test-key', model='command-r-plus-08-2024')
-    assert provider.get_max_candidates() == 500
+    provider = CohereProvider(api_key='test-key')
 
-    provider = CohereProvider(api_key='test-key', model='command-r-08-2024')
-    assert provider.get_max_candidates() == 400
+    with pytest.raises(Exception, match="Invalid API key"):
+        provider.complete('test prompt')
