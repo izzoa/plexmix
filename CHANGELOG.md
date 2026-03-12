@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-03-12
+
+### Added
+- Add dual-variant Docker builds: slim (`:latest`, ~434MB) and local (`:latest-local`, ~1.1GB with PyTorch)
+- Add `[local]` optional extra for sentence-transformers and PyTorch (`pip install "plexmix[local]"`)
+- Add `WITH_LOCAL` build arg to Dockerfile for toggling local AI dependencies
+
+### Changed
+- Bump numpy from `^1.26.0` to `^2.0.0` (fixes faiss-cpu `numpy.distutils` issue on Python 3.12 arm64)
+- Multi-stage Dockerfile reduces default image from 9.4GB to 434MB
+- Move sentence-transformers from required dependency to optional `[local]` extra
+- CI matrix builds and pushes both image variants on every release tag
+- Expand `.dockerignore` to exclude tests, docs, `.github/`, and coverage artifacts
+- Document Docker image variants and offline installation in README
+
 ## [0.5.2] - 2026-03-12
 
 ### Added
