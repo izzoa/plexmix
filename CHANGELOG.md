@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-03-12
+
+### Added
+- Add missing DB indexes on tracks.file_path, tags, environments, and instruments columns
+- Add FTS5 full-text search for library search (replaces LIKE %query% scans)
+- Add `insert_embeddings_batch()` and `add_tracks_to_playlist()` with atomic batch writes
+- Add `deferred_commits()` context manager for wrapping sync in a single transaction
+- Add `file_path` to playlist track data and M3U export with `resolve_path()` for Docker/remote path remapping
+- Add `audio_features` to database recovery required tables list
+- Add genre cache to avoid repeated DB lookups during sync
+- Add `get_track_ids_with_embeddings()` for bulk embedding existence checks
+- Add sample `docker-compose.yml` to README
+
+### Changed
+- Use Gemini native batch embedding API instead of per-text loop with sleep
+- Replace Plex API calls (`artist()`, `album()`) with `parentRatingKey`/`grandparentRatingKey` attribute access to eliminate N+1 HTTP roundtrips
+- Convert FAISS search `track_id_filter` to set for O(1) lookups with early return on empty filter
+- Use `update_track_tags()` instead of full `insert_track()` for tag saves
+- Collect embedding vectors in-memory during sync for FAISS instead of re-fetching from DB
+- Run `_create_indexes()` and `_create_fts_table()` on existing DB connect for seamless upgrades
+- Update stale `get_max_candidates` documentation reference in CLAUDE.md
+
+### Removed
+- Remove unused `generate_playlist()`, `get_max_candidates()`, `_prepare_prompt()`, `_parse_response()`, `_validate_selections()` from all AI providers and base class (dead code — playlist generation uses vector similarity search)
+- Remove dead `_sync_artists`, `_sync_albums`, `_sync_tracks` methods from sync engine
+- Remove dead `_call_endpoint` and `_generate_with_worker` methods from local provider
+
+### Fixed
+- Fix `VectorIndex.search()` treating empty filter list as no filter (`if track_id_filter:` → `if track_id_filter is not None:`)
+- Fix FTS query generating invalid MATCH for whitespace-only input
+- Fix batch insert atomicity with explicit BEGIN/COMMIT/ROLLBACK transactions
+
 ## [0.5.1] - 2026-03-11
 
 ### Added
