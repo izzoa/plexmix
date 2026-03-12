@@ -1,23 +1,28 @@
 import reflex as rx
 import asyncio
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Optional
 from datetime import datetime
 from plexmix.ui.states.app_state import AppState
+
+
+def _str_dict(d: dict) -> dict[str, str]:
+    """Convert a dict with mixed-type values to all-string values for Reflex."""
+    return {k: ("" if v is None else str(v)) for k, v in d.items()}
 
 logger = logging.getLogger(__name__)
 
 
 class HistoryState(AppState):
     # Playlist data - List of playlist dictionaries from database
-    playlists: List[Dict[str, Any]] = []  # Contains Playlist model data as dicts
-    selected_playlist: Optional[Dict[str, Any]] = None
-    selected_playlist_tracks: List[Dict[str, Any]] = []
+    playlists: list[dict[str, str]] = []
+    selected_playlist: dict[str, str] = {}
+    selected_playlist_tracks: list[dict[str, str]] = []
 
     # Modal visibility
     is_detail_modal_open: bool = False
     is_delete_confirmation_open: bool = False
-    playlist_to_delete: Optional[int] = None
+    playlist_to_delete: str = ""
 
     # Sorting/filtering
     sort_by: str = "created_date"  # created_date, name, track_count
@@ -56,9 +61,9 @@ class HistoryState(AppState):
                 db = SQLiteManager(str(db_path))
                 db.connect()
 
-                # Get all playlists and convert to dicts
+                # Get all playlists and convert to string dicts
                 playlist_objs = db.get_playlists()
-                playlists = [p.model_dump() for p in playlist_objs]
+                playlists = [_str_dict(p.model_dump()) for p in playlist_objs]
 
                 # Sort by created date (newest first) by default
                 playlists.sort(
@@ -86,30 +91,33 @@ class HistoryState(AppState):
                 self.is_page_loading = False
                 self.error_message = f"Error loading playlists: {str(e)}"
 
-    def select_playlist(self, playlist_id: int):
+    def select_playlist(self, playlist_id: str):
         try:
             from plexmix.config.settings import Settings
             from plexmix.database.sqlite_manager import SQLiteManager
 
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
+            pid = int(playlist_id)
 
             if db_path.exists():
                 db = SQLiteManager(str(db_path))
                 db.connect()
 
                 # Get playlist details
-                playlist = db.get_playlist_by_id(playlist_id)
+                playlist = db.get_playlist_by_id(pid)
                 if playlist:
-                    self.selected_playlist = playlist.model_dump()
+                    playlist_dict = _str_dict(playlist.model_dump())
 
                     # Get tracks for this playlist
-                    tracks = db.get_playlist_tracks(playlist_id)
+                    tracks = db.get_playlist_tracks(pid)
 
                     # Format track data for display
                     formatted_tracks = []
+                    total_duration_ms = 0
                     for i, track in enumerate(tracks):
-                        duration_ms = track.get('duration_ms', 0)
+                        duration_ms = track.get('duration_ms', 0) or 0
+                        total_duration_ms += duration_ms
                         if duration_ms:
                             minutes = duration_ms // 60000
                             seconds = (duration_ms // 1000) % 60
@@ -118,25 +126,25 @@ class HistoryState(AppState):
                             duration_formatted = "0:00"
 
                         formatted_tracks.append({
-                            'position': i + 1,
-                            'id': track.get('id'),
-                            'title': track.get('title', 'Unknown'),
-                            'artist': track.get('artist_name', 'Unknown'),
-                            'album': track.get('album_title', 'Unknown'),
-                            'duration_ms': duration_ms,
+                            'position': str(i + 1),
+                            'id': str(track.get('id', '')),
+                            'title': str(track.get('title', 'Unknown')),
+                            'artist': str(track.get('artist_name', 'Unknown')),
+                            'album': str(track.get('album_title', 'Unknown')),
+                            'duration_ms': str(duration_ms),
                             'duration_formatted': duration_formatted,
-                            'genre': track.get('genre', ''),
-                            'year': track.get('year', '')
+                            'genre': str(track.get('genre', '') or ''),
+                            'year': str(track.get('year', '') or ''),
                         })
 
                     self.selected_playlist_tracks = formatted_tracks
 
                     # Calculate and format total duration
-                    total_duration_ms = sum(t.get('duration_ms', 0) for t in formatted_tracks)
                     total_minutes = total_duration_ms // 60000
                     total_seconds = (total_duration_ms // 1000) % 60
-                    self.selected_playlist['total_duration_ms'] = total_duration_ms
-                    self.selected_playlist['total_duration_formatted'] = f"{total_minutes}:{total_seconds:02d}"
+                    playlist_dict['total_duration_ms'] = str(total_duration_ms)
+                    playlist_dict['total_duration_formatted'] = f"{total_minutes}:{total_seconds:02d}"
+                    self.selected_playlist = playlist_dict
 
                     # Open modal
                     self.is_detail_modal_open = True
@@ -148,14 +156,14 @@ class HistoryState(AppState):
 
     def close_detail_modal(self):
         self.is_detail_modal_open = False
-        self.selected_playlist = None
+        self.selected_playlist = {}
         self.selected_playlist_tracks = []
 
     def set_detail_modal_open(self, is_open: bool):
         """Set the detail modal open state and clear data when closing."""
         self.is_detail_modal_open = is_open
         if not is_open:
-            self.selected_playlist = None
+            self.selected_playlist = {}
             self.selected_playlist_tracks = []
 
     def set_error_message(self, message: str):
@@ -166,27 +174,27 @@ class HistoryState(AppState):
         """Set the action message state."""
         self.action_message = message
 
-    def show_delete_confirmation(self, playlist_id: int):
-        self.playlist_to_delete = playlist_id
+    def show_delete_confirmation(self, playlist_id: str):
+        self.playlist_to_delete = str(playlist_id)
         self.is_delete_confirmation_open = True
 
     def cancel_delete(self):
-        self.playlist_to_delete = None
+        self.playlist_to_delete = ""
         self.is_delete_confirmation_open = False
 
     def set_delete_confirmation_open(self, is_open: bool):
         """Handle dialog open/close via on_open_change."""
         self.is_delete_confirmation_open = is_open
         if not is_open:
-            self.playlist_to_delete = None
+            self.playlist_to_delete = ""
 
     @rx.event(background=True)
     async def confirm_delete(self):
         async with self:
-            if self.playlist_to_delete is None:
+            if not self.playlist_to_delete:
                 return
 
-            playlist_id = self.playlist_to_delete
+            playlist_id_str = self.playlist_to_delete
             self.is_delete_confirmation_open = False
 
         try:
@@ -200,7 +208,7 @@ class HistoryState(AppState):
             db.connect()
 
             # Delete playlist
-            db.delete_playlist(playlist_id)
+            db.delete_playlist(int(playlist_id_str))
 
             db.close()
 
@@ -208,12 +216,12 @@ class HistoryState(AppState):
             yield HistoryState.load_playlists()
 
             async with self:
-                self.playlist_to_delete = None
+                self.playlist_to_delete = ""
 
                 # Close detail modal if it was open for this playlist
-                if self.selected_playlist and self.selected_playlist.get('id') == playlist_id:
+                if self.selected_playlist and self.selected_playlist.get('id') == playlist_id_str:
                     self.is_detail_modal_open = False
-                    self.selected_playlist = None
+                    self.selected_playlist = {}
                     self.selected_playlist_tracks = []
 
             yield rx.toast.success("Playlist deleted successfully!")
@@ -222,7 +230,7 @@ class HistoryState(AppState):
             yield rx.toast.error(f"Error deleting playlist: {str(e)}")
 
     @rx.event(background=True)
-    async def export_to_plex(self, playlist_id: int):
+    async def export_to_plex(self, playlist_id: str):
         async with self:
             self.exporting = True
 
@@ -239,19 +247,20 @@ class HistoryState(AppState):
                 yield rx.toast.error("Plex not configured. Please configure in Settings.")
                 return
 
+            pid = int(playlist_id)
             db_path = settings.database.get_db_path()
             db = SQLiteManager(str(db_path))
             db.connect()
 
             # Get playlist details
-            playlist = db.get_playlist_by_id(playlist_id)
+            playlist = db.get_playlist_by_id(pid)
             if not playlist:
                 yield rx.toast.error("Playlist not found")
                 db.close()
                 return
 
             # Get playlist tracks
-            tracks = db.get_playlist_tracks(playlist_id)
+            tracks = db.get_playlist_tracks(pid)
             track_plex_keys = [t['plex_key'] for t in tracks]
 
             db.close()
@@ -261,7 +270,7 @@ class HistoryState(AppState):
             plex_client.connect()
             plex_client.select_library(settings.plex.library_name)
 
-            playlist_name = playlist.name or f"PlexMix Playlist {playlist_id}"
+            playlist_name = playlist.name or f"PlexMix Playlist {pid}"
             plex_client.create_playlist(playlist_name, track_plex_keys)
 
             yield rx.toast.success(f"Exported '{playlist_name}' to Plex!")
@@ -269,7 +278,7 @@ class HistoryState(AppState):
         except Exception as e:
             yield rx.toast.error(f"Error exporting to Plex: {str(e)}")
 
-    def export_to_m3u(self, playlist_id: int):
+    def export_to_m3u(self, playlist_id: str):
         """Export playlist to M3U format and trigger download.
 
         Note: This remains synchronous because rx.download must be returned
@@ -282,18 +291,19 @@ class HistoryState(AppState):
 
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
+            pid = int(playlist_id)
 
             db = SQLiteManager(str(db_path))
             db.connect()
 
             # Get playlist details
-            playlist = db.get_playlist_by_id(playlist_id)
+            playlist = db.get_playlist_by_id(pid)
             if not playlist:
                 db.close()
                 return rx.toast.error("Playlist not found")
 
             # Get playlist tracks
-            tracks = db.get_playlist_tracks(playlist_id)
+            tracks = db.get_playlist_tracks(pid)
 
             db.close()
 
@@ -302,13 +312,13 @@ class HistoryState(AppState):
             m3u_content += f"#PLAYLIST:{playlist.name or 'PlexMix Playlist'}\n"
 
             for track in tracks:
-                duration_sec = track.get('duration_ms', 0) // 1000
+                duration_sec = (track.get('duration_ms', 0) or 0) // 1000
                 artist = track.get('artist', 'Unknown')
                 title = track.get('title', 'Unknown')
                 m3u_content += f"#EXTINF:{duration_sec},{artist} - {title}\n"
                 m3u_content += f"track_{track['id']}.mp3\n"
 
-            filename = f"{playlist.name or 'playlist'}_{playlist_id}.m3u"
+            filename = f"{playlist.name or 'playlist'}_{pid}.m3u"
 
             # Return download trigger
             return rx.download(data=m3u_content, filename=filename)
@@ -317,7 +327,7 @@ class HistoryState(AppState):
             return rx.toast.error(f"Error exporting M3U: {str(e)}")
 
     @rx.var(cache=True)
-    def filtered_playlists(self) -> List[Dict[str, Any]]:
+    def filtered_playlists(self) -> list[dict[str, str]]:
         if not self.search_query:
             return self.playlists
         q = self.search_query.lower()
@@ -355,7 +365,7 @@ class HistoryState(AppState):
             )
         elif sort_by == "track_count":
             self.playlists.sort(
-                key=lambda p: p.get('track_count', 0),
+                key=lambda p: int(p.get('track_count', '0') or '0'),
                 reverse=self.sort_descending
             )
         else:  # created_date (default)

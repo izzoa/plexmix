@@ -28,13 +28,13 @@ class TestHistoryState:
         state = HistoryState()
 
         # Show confirmation
-        state.show_delete_confirmation(5)
-        assert state.playlist_to_delete == 5
+        state.show_delete_confirmation("5")
+        assert state.playlist_to_delete == "5"
         assert state.is_delete_confirmation_open == True
 
         # Cancel confirmation
         state.cancel_delete()
-        assert state.playlist_to_delete == None
+        assert state.playlist_to_delete == ""
         assert state.is_delete_confirmation_open == False
 
     def test_sort_playlists_by_name(self):
@@ -44,9 +44,9 @@ class TestHistoryState:
         # Create test data
         state = HistoryState()
         state.playlists = [
-            {"name": "Zebra", "track_count": 10, "created_at": "2024-01-01"},
-            {"name": "Alpha", "track_count": 20, "created_at": "2024-01-02"},
-            {"name": "Beta", "track_count": 15, "created_at": "2024-01-03"},
+            {"name": "Zebra", "track_count": "10", "created_at": "2024-01-01"},
+            {"name": "Alpha", "track_count": "20", "created_at": "2024-01-02"},
+            {"name": "Beta", "track_count": "15", "created_at": "2024-01-03"},
         ]
 
         # Sort by name (descending by default)
@@ -65,18 +65,18 @@ class TestHistoryState:
         # Create test data
         state = HistoryState()
         state.playlists = [
-            {"name": "A", "track_count": 10, "created_at": "2024-01-01"},
-            {"name": "B", "track_count": 20, "created_at": "2024-01-02"},
-            {"name": "C", "track_count": 15, "created_at": "2024-01-03"},
+            {"name": "A", "track_count": "10", "created_at": "2024-01-01"},
+            {"name": "B", "track_count": "20", "created_at": "2024-01-02"},
+            {"name": "C", "track_count": "15", "created_at": "2024-01-03"},
         ]
 
         # Sort by track count
         state.sort_playlists("track_count")
 
         # Verify sorting (descending by default)
-        assert state.playlists[0]["track_count"] == 20
-        assert state.playlists[1]["track_count"] == 15
-        assert state.playlists[2]["track_count"] == 10
+        assert state.playlists[0]["track_count"] == "20"
+        assert state.playlists[1]["track_count"] == "15"
+        assert state.playlists[2]["track_count"] == "10"
 
     def test_format_date(self):
         """Test date formatting."""
@@ -131,15 +131,15 @@ class TestHistoryState:
         state = HistoryState()
         # Set some data
         state.is_detail_modal_open = True
-        state.selected_playlist = {"id": 1, "name": "Test"}
-        state.selected_playlist_tracks = [{"id": 1}]
+        state.selected_playlist = {"id": "1", "name": "Test"}
+        state.selected_playlist_tracks = [{"id": "1"}]
 
         # Close modal
         state.close_detail_modal()
 
         # Verify cleared
         assert state.is_detail_modal_open == False
-        assert state.selected_playlist == None
+        assert state.selected_playlist == {}
         assert state.selected_playlist_tracks == []
 
     def test_setter_methods(self):
@@ -157,11 +157,11 @@ class TestHistoryState:
         assert state.action_message == "Test action"
 
         # Test detail modal setter
-        state.selected_playlist = {"id": 1}
-        state.selected_playlist_tracks = [{"id": 1}]
+        state.selected_playlist = {"id": "1"}
+        state.selected_playlist_tracks = [{"id": "1"}]
         state.set_detail_modal_open(False)
         assert state.is_detail_modal_open == False
-        assert state.selected_playlist == None
+        assert state.selected_playlist == {}
         assert state.selected_playlist_tracks == []
 
 
@@ -266,16 +266,16 @@ class TestGeneratorState:
 
         state = GeneratorState()
         state.generated_playlist = [
-            {"id": 1, "title": "Track 1", "duration_ms": 180000},
-            {"id": 2, "title": "Track 2", "duration_ms": 200000},
-            {"id": 3, "title": "Track 3", "duration_ms": 150000},
+            {"id": "1", "title": "Track 1", "duration_ms": "180000"},
+            {"id": "2", "title": "Track 2", "duration_ms": "200000"},
+            {"id": "3", "title": "Track 3", "duration_ms": "150000"},
         ]
         state.total_duration_ms = 530000
 
-        state.remove_track(2)
+        state.remove_track("2")
         assert len(state.generated_playlist) == 2
-        assert state.generated_playlist[0]["id"] == 1
-        assert state.generated_playlist[1]["id"] == 3
+        assert state.generated_playlist[0]["id"] == "1"
+        assert state.generated_playlist[1]["id"] == "3"
         assert state.total_duration_ms == 330000
 
     def test_set_max_tracks_clamps(self):
@@ -302,13 +302,13 @@ class TestGeneratorState:
         from plexmix.ui.states.generator_state import GeneratorState
         state = GeneratorState()
         state.set_year_min("2000")
-        assert state.year_min == 2000
+        assert state.year_min == "2000"
         state.set_year_min("")
-        assert state.year_min is None
+        assert state.year_min == ""
         state.set_year_max("2020")
-        assert state.year_max == 2020
+        assert state.year_max == "2020"
         state.set_year_max("")
-        assert state.year_max is None
+        assert state.year_max == ""
 
     def test_audio_setters(self):
         from plexmix.ui.states.generator_state import GeneratorState
@@ -377,14 +377,14 @@ class TestLibraryState:
         # Set filters
         state.search_query = "test"
         state.genre_filter = "rock"
-        state.year_min = 2000
-        state.year_max = 2020
+        state.year_min = "2000"
+        state.year_max = "2020"
 
         # Verify filters are set
         assert state.search_query == "test"
         assert state.genre_filter == "rock"
-        assert state.year_min == 2000
-        assert state.year_max == 2020
+        assert state.year_min == "2000"
+        assert state.year_max == "2020"
 
     def test_regenerate_confirm_flow(self):
         """Test regenerate confirmation dialog flow."""
@@ -430,18 +430,18 @@ class TestLibraryState:
         assert state.selected_tracks == []
 
         # Toggle a track on
-        state.toggle_track_selection(1)
-        assert 1 in state.selected_tracks
+        state.toggle_track_selection("1")
+        assert "1" in state.selected_tracks
 
         # Toggle another track on
-        state.toggle_track_selection(2)
-        assert 1 in state.selected_tracks
-        assert 2 in state.selected_tracks
+        state.toggle_track_selection("2")
+        assert "1" in state.selected_tracks
+        assert "2" in state.selected_tracks
 
         # Toggle first track off
-        state.toggle_track_selection(1)
-        assert 1 not in state.selected_tracks
-        assert 2 in state.selected_tracks
+        state.toggle_track_selection("1")
+        assert "1" not in state.selected_tracks
+        assert "2" in state.selected_tracks
 
         # Clear selection
         state.clear_selection()
@@ -453,16 +453,16 @@ class TestLibraryState:
 
         state = LibraryState()
         state.tracks = [
-            {"id": 1, "title": "Track 1"},
-            {"id": 2, "title": "Track 2"},
-            {"id": 3, "title": "Track 3"},
+            {"id": "1", "title": "Track 1"},
+            {"id": "2", "title": "Track 2"},
+            {"id": "3", "title": "Track 3"},
         ]
 
         # Select all
         state.select_all_tracks()
-        assert 1 in state.selected_tracks
-        assert 2 in state.selected_tracks
-        assert 3 in state.selected_tracks
+        assert "1" in state.selected_tracks
+        assert "2" in state.selected_tracks
+        assert "3" in state.selected_tracks
 
 
 class TestTaggingState:
@@ -476,15 +476,15 @@ class TestTaggingState:
 
         # Set filter criteria
         state.genre_filter = "jazz"
-        state.year_min = 2010
-        state.year_max = 2020
+        state.year_min = "2010"
+        state.year_max = "2020"
         state.artist_filter = "Miles"
         state.has_no_tags = True
 
         # Verify filters
         assert state.genre_filter == "jazz"
-        assert state.year_min == 2010
-        assert state.year_max == 2020
+        assert state.year_min == "2010"
+        assert state.year_max == "2020"
         assert state.artist_filter == "Miles"
         assert state.has_no_tags == True
 
@@ -504,17 +504,17 @@ class TestTaggingState:
 
         # Test set_year_min
         state.set_year_min("1990")
-        assert state.year_min == 1990
+        assert state.year_min == "1990"
 
         state.set_year_min("")
-        assert state.year_min is None
+        assert state.year_min == ""
 
         # Test set_year_max
         state.set_year_max("2020")
-        assert state.year_max == 2020
+        assert state.year_max == "2020"
 
         state.set_year_max("")
-        assert state.year_max is None
+        assert state.year_max == ""
 
         # Test toggle_has_no_tags
         assert state.has_no_tags == False
@@ -530,18 +530,18 @@ class TestTaggingState:
         state = TaggingState()
 
         # Start editing a track
-        track = {"id": 1, "tags": "chill,relaxing", "environments": "study", "instruments": "piano"}
+        track = {"id": "1", "tags": "chill,relaxing", "environments": "study", "instruments": "piano"}
         state.start_edit_tag(track)
 
         # Verify editing state
-        assert state.editing_track_id == 1
+        assert state.editing_track_id == "1"
         assert state.edit_tags == "chill,relaxing"
         assert state.edit_environments == "study"
         assert state.edit_instruments == "piano"
 
         # Cancel editing
         state.cancel_edit()
-        assert state.editing_track_id is None
+        assert state.editing_track_id == ""
         assert state.edit_tags == ""
         assert state.edit_environments == ""
         assert state.edit_instruments == ""

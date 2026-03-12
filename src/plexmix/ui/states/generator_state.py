@@ -1,8 +1,13 @@
 import reflex as rx
 import asyncio
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Optional
 from plexmix.ui.states.app_state import AppState
+
+
+def _str_dict(d: dict) -> dict[str, str]:
+    """Convert a dict with mixed-type values to all-string values for Reflex."""
+    return {k: ("" if v is None else str(v)) for k, v in d.items()}
 
 
 logger = logging.getLogger(__name__)
@@ -12,8 +17,8 @@ class GeneratorState(AppState):
     mood_query: str = ""
     max_tracks: int = 50
     genre_filter: str = ""
-    year_min: Optional[int] = None
-    year_max: Optional[int] = None
+    year_min: str = ""
+    year_max: str = ""
     include_artists: str = ""
     exclude_artists: str = ""
     candidate_pool_multiplier: int = 25
@@ -27,15 +32,15 @@ class GeneratorState(AppState):
     is_generating: bool = False
     generation_progress: int = 0
     generation_message: str = ""
-    generation_log: List[str] = []
+    generation_log: list[str] = []
 
-    generated_playlist: List[Dict[str, Any]] = []
+    generated_playlist: list[dict[str, str]] = []
     playlist_name: str = ""
     total_duration_ms: int = 0
 
     _generation_id: int = 0
 
-    mood_examples: List[str] = [
+    mood_examples: list[str] = [
         "Chill rainy day vibes with acoustic guitar",
         "Energetic workout music to pump me up",
         "Relaxing background music for studying",
@@ -68,15 +73,15 @@ class GeneratorState(AppState):
     def set_candidate_pool_multiplier(self, value: int):
         self.candidate_pool_multiplier = max(1, min(100, value))
 
-    def set_year_range(self, year_min: Optional[int], year_max: Optional[int]):
+    def set_year_range(self, year_min: str, year_max: str):
         self.year_min = year_min
         self.year_max = year_max
 
     def set_year_min(self, value: str):
-        self.year_min = int(value) if value else None
+        self.year_min = value
 
     def set_year_max(self, value: str):
-        self.year_max = int(value) if value else None
+        self.year_max = value
 
     def set_tempo_min(self, value: str):
         self.tempo_min = value
@@ -155,10 +160,16 @@ class GeneratorState(AppState):
             filters = {}
             if self.genre_filter:
                 filters['genre'] = self.genre_filter
-            if self.year_min is not None:
-                filters['year_min'] = self.year_min
-            if self.year_max is not None:
-                filters['year_max'] = self.year_max
+            if self.year_min:
+                try:
+                    filters['year_min'] = int(self.year_min)
+                except ValueError:
+                    pass
+            if self.year_max:
+                try:
+                    filters['year_max'] = int(self.year_max)
+                except ValueError:
+                    pass
             if self.tempo_min:
                 try:
                     filters['tempo_min'] = float(self.tempo_min)
@@ -287,7 +298,7 @@ class GeneratorState(AppState):
                     track['duration_formatted'] = "0:00"
 
             async with self:
-                self.generated_playlist = playlist_tracks
+                self.generated_playlist = [_str_dict(t) for t in playlist_tracks]
                 self.total_duration_ms = total_duration
                 self.is_generating = False
                 self.generation_progress = 100
@@ -319,9 +330,9 @@ class GeneratorState(AppState):
     async def regenerate(self):
         await self.generate_playlist()
 
-    def remove_track(self, track_id: int):
+    def remove_track(self, track_id: str):
         self.generated_playlist = [t for t in self.generated_playlist if t['id'] != track_id]
-        self.total_duration_ms = sum(track.get('duration_ms', 0) for track in self.generated_playlist)
+        self.total_duration_ms = sum(int(track.get('duration_ms', '0') or '0') for track in self.generated_playlist)
 
     @rx.event(background=True)
     async def save_to_plex(self):
@@ -351,7 +362,7 @@ class GeneratorState(AppState):
             plex_client.connect()
             plex_client.select_library(settings.plex.library_name)
 
-            track_plex_keys = [track['plex_key'] for track in self.generated_playlist]
+            track_plex_keys = [int(track['plex_key']) for track in self.generated_playlist]
             plex_key = plex_client.create_playlist(self.playlist_name, track_plex_keys)
 
             async with self:
@@ -387,7 +398,7 @@ class GeneratorState(AppState):
             db = SQLiteManager(str(db_path))
             db.connect()
 
-            track_ids = [track['id'] for track in self.generated_playlist]
+            track_ids = [int(track['id']) for track in self.generated_playlist]
 
             playlist = Playlist(
                 name=self.playlist_name,
@@ -432,11 +443,11 @@ class GeneratorState(AppState):
 
         m3u_content = "#EXTM3U\n"
         for track in self.generated_playlist:
-            duration_sec = track.get('duration_ms', 0) // 1000
+            duration_sec = int(track.get('duration_ms', '0') or '0') // 1000
             artist = track.get('artist', 'Unknown')
             title = track.get('title', 'Unknown')
             m3u_content += f"#EXTINF:{duration_sec},{artist} - {title}\n"
-            file_path = track.get('file_path')
+            file_path = track.get('file_path') or ""
             if file_path:
                 file_path = settings.audio.resolve_path(file_path)
             m3u_content += f"{file_path}\n" if file_path else f"track_{track['id']}.mp3\n"

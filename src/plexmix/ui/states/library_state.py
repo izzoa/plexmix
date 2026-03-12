@@ -2,9 +2,14 @@ import reflex as rx
 import asyncio
 import logging
 import atexit
-from typing import List, Dict, Any, Optional
+from typing import Dict, Optional
 from threading import Event
 from plexmix.ui.states.app_state import AppState
+
+
+def _str_dict(d: dict) -> dict[str, str]:
+    """Convert a dict with mixed-type values to all-string values for Reflex."""
+    return {k: ("" if v is None else str(v)) for k, v in d.items()}
 
 logger = logging.getLogger(__name__)
 
@@ -41,14 +46,14 @@ atexit.register(_cleanup_all_state)
 
 
 class LibraryState(AppState):
-    tracks: List[Dict[str, Any]] = []
+    tracks: list[dict[str, str]] = []
     total_filtered_tracks: int = 0
     current_page: int = 1
     page_size: int = 50
     search_query: str = ""
     genre_filter: str = ""
-    year_min: Optional[int] = None
-    year_max: Optional[int] = None
+    year_min: str = ""
+    year_max: str = ""
 
     is_syncing: bool = False
     sync_progress: int = 0
@@ -64,7 +69,7 @@ class LibraryState(AppState):
     audio_analysis_progress: int = 0
     audio_analysis_message: str = ""
 
-    selected_tracks: List[int] = []
+    selected_tracks: list[str] = []
     sort_column: str = "title"
     sort_ascending: bool = True
     show_cancel_confirm: bool = False
@@ -113,22 +118,26 @@ class LibraryState(AppState):
             with SQLiteManager(str(db_path)) as db:
                 offset = (self.current_page - 1) * self.page_size
 
-                self.tracks = db.get_tracks(
+                year_min_int = int(self.year_min) if self.year_min else None
+                year_max_int = int(self.year_max) if self.year_max else None
+
+                raw_tracks = db.get_tracks(
                     limit=self.page_size,
                     offset=offset,
                     search=self.search_query if self.search_query else None,
                     genre=self.genre_filter if self.genre_filter else None,
-                    year_min=self.year_min,
-                    year_max=self.year_max,
+                    year_min=year_min_int,
+                    year_max=year_max_int,
                     sort_column=self.sort_column,
                     sort_ascending=self.sort_ascending,
                 )
+                self.tracks = [_str_dict(t) for t in raw_tracks]
 
                 self.total_filtered_tracks = db.count_tracks(
                     search=self.search_query if self.search_query else None,
                     genre=self.genre_filter if self.genre_filter else None,
-                    year_min=self.year_min,
-                    year_max=self.year_max
+                    year_min=year_min_int,
+                    year_max=year_max_int,
                 )
 
         except Exception as e:
@@ -157,27 +166,27 @@ class LibraryState(AppState):
         self.current_page = 1
         self.load_tracks()
 
-    def set_year_range(self, year_min: Optional[int], year_max: Optional[int]):
+    def set_year_range(self, year_min: str, year_max: str):
         self.year_min = year_min
         self.year_max = year_max
         self.current_page = 1
         self.load_tracks()
 
     def set_year_min(self, value: str):
-        self.year_min = int(value) if value else None
+        self.year_min = value
         self.current_page = 1
         self.load_tracks()
 
     def set_year_max(self, value: str):
-        self.year_max = int(value) if value else None
+        self.year_max = value
         self.current_page = 1
         self.load_tracks()
 
     def clear_filters(self):
         self.search_query = ""
         self.genre_filter = ""
-        self.year_min = None
-        self.year_max = None
+        self.year_min = ""
+        self.year_max = ""
         self.current_page = 1
         self.load_tracks()
 
@@ -213,15 +222,13 @@ class LibraryState(AppState):
         """Toggle selection of all tracks on the current page, preserving off-page selections."""
         page_ids = {track['id'] for track in self.tracks}
         if checked:
-            # Add current page IDs without removing off-page selections
             existing = set(self.selected_tracks)
             existing.update(page_ids)
             self.selected_tracks = list(existing)
         else:
-            # Remove only current page IDs, keep off-page selections
             self.selected_tracks = [tid for tid in self.selected_tracks if tid not in page_ids]
 
-    def toggle_track_selection(self, track_id: int):
+    def toggle_track_selection(self, track_id: str):
         if track_id in self.selected_tracks:
             self.selected_tracks.remove(track_id)
         else:
@@ -436,7 +443,7 @@ class LibraryState(AppState):
             db = SQLiteManager(str(db_path))
             db.connect()
 
-            selected_ids = list(self.selected_tracks)
+            selected_ids = [int(tid) for tid in self.selected_tracks]
             total_tracks = len(selected_ids)
             embeddings_generated = 0
 

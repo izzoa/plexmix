@@ -4,8 +4,13 @@ import asyncio
 import threading
 import time
 import atexit
-from typing import List, Dict, Any, Optional
+from typing import Dict, Optional
 from plexmix.ui.states.app_state import AppState
+
+
+def _str_dict(d: dict) -> dict[str, str]:
+    """Convert a dict with mixed-type values to all-string values for Reflex."""
+    return {k: ("" if v is None else str(v)) for k, v in d.items()}
 
 logger = logging.getLogger(__name__)
 
@@ -34,8 +39,8 @@ atexit.register(_cleanup_all_tagging_state)
 class TaggingState(AppState):
     # Filter criteria
     genre_filter: str = ""
-    year_min: Optional[int] = None
-    year_max: Optional[int] = None
+    year_min: str = ""
+    year_max: str = ""
     artist_filter: str = ""
     has_no_tags: bool = False
 
@@ -54,10 +59,10 @@ class TaggingState(AppState):
     untagged_track_count: int = 0
 
     # Recently tagged tracks
-    recently_tagged_tracks: List[Dict[str, Any]] = []
+    recently_tagged_tracks: list[dict[str, str]] = []
 
     # For inline editing
-    editing_track_id: Optional[int] = None
+    editing_track_id: str = ""
     edit_tags: str = ""
     edit_environments: str = ""
     edit_instruments: str = ""
@@ -81,7 +86,8 @@ class TaggingState(AppState):
             if db_path.exists():
                 db = SQLiteManager(str(db_path))
                 db.connect()
-                self.recently_tagged_tracks = db.get_recently_tagged_tracks(limit=100)
+                raw_tracks = db.get_recently_tagged_tracks(limit=100)
+                self.recently_tagged_tracks = [_str_dict(t) for t in raw_tracks]
                 db.close()
         except Exception as e:
             logger.error("Error loading recently tagged tracks: %s", e)
@@ -89,15 +95,15 @@ class TaggingState(AppState):
     def set_genre_filter(self, value: str):
         self.genre_filter = value
 
-    def set_year_range(self, year_min: Optional[int], year_max: Optional[int]):
+    def set_year_range(self, year_min: str, year_max: str):
         self.year_min = year_min
         self.year_max = year_max
 
     def set_year_min(self, value: str):
-        self.year_min = int(value) if value else None
+        self.year_min = value
 
     def set_year_max(self, value: str):
-        self.year_max = int(value) if value else None
+        self.year_max = value
 
     def set_artist_filter(self, value: str):
         self.artist_filter = value
@@ -126,11 +132,14 @@ class TaggingState(AppState):
             db = SQLiteManager(str(db_path))
             db.connect()
 
+            year_min_int = int(self.year_min) if self.year_min else None
+            year_max_int = int(self.year_max) if self.year_max else None
+
             # Get matching tracks
             tracks = db.get_tracks_by_filter(
                 genre=self.genre_filter if self.genre_filter else None,
-                year_min=self.year_min,
-                year_max=self.year_max,
+                year_min=year_min_int,
+                year_max=year_max_int,
                 artist=self.artist_filter if self.artist_filter else None,
                 has_no_tags=self.has_no_tags
             )
@@ -178,11 +187,14 @@ class TaggingState(AppState):
             db = SQLiteManager(str(db_path))
             db.connect()
 
+            year_min_int = int(self.year_min) if self.year_min else None
+            year_max_int = int(self.year_max) if self.year_max else None
+
             # Get tracks to tag
             tracks = db.get_tracks_by_filter(
                 genre=self.genre_filter if self.genre_filter else None,
-                year_min=self.year_min,
-                year_max=self.year_max,
+                year_min=year_min_int,
+                year_max=year_max_int,
                 artist=self.artist_filter if self.artist_filter else None,
                 has_no_tags=self.has_no_tags
             )
@@ -312,14 +324,14 @@ class TaggingState(AppState):
             _tagging_cancel_events[token].set()
             self.tagging_message = "Cancelling tagging..."
 
-    def start_edit_tag(self, track: Dict[str, Any]):
+    def start_edit_tag(self, track: dict[str, str]):
         self.editing_track_id = track['id']
         self.edit_tags = track.get('tags', '')
         self.edit_environments = track.get('environments', '')
         self.edit_instruments = track.get('instruments', '')
 
     def cancel_edit(self):
-        self.editing_track_id = None
+        self.editing_track_id = ""
         self.edit_tags = ""
         self.edit_environments = ""
         self.edit_instruments = ""
@@ -336,10 +348,10 @@ class TaggingState(AppState):
     @rx.event(background=True)
     async def save_tag_edit(self):
         async with self:
-            if self.editing_track_id is None:
+            if not self.editing_track_id:
                 return
 
-            track_id = self.editing_track_id
+            track_id = int(self.editing_track_id)
 
         try:
             from plexmix.config.settings import Settings
@@ -364,7 +376,7 @@ class TaggingState(AppState):
             self.load_recently_tagged()
 
             async with self:
-                self.editing_track_id = None
+                self.editing_track_id = ""
                 self.edit_tags = ""
                 self.edit_environments = ""
                 self.edit_instruments = ""
@@ -406,8 +418,8 @@ class TaggingState(AppState):
         async with self:
             self.show_tag_all_confirm = False
             self.genre_filter = ""
-            self.year_min = None
-            self.year_max = None
+            self.year_min = ""
+            self.year_max = ""
             self.artist_filter = ""
             self.has_no_tags = True
 

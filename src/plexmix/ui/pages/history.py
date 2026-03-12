@@ -1,12 +1,11 @@
 import reflex as rx
-from typing import Dict
 from plexmix.ui.components.navbar import layout
 from plexmix.ui.components.loading import skeleton_card, loading_spinner
 from plexmix.ui.components.error import error_message, empty_state
 from plexmix.ui.states.history_state import HistoryState
 
 
-def playlist_card(playlist: Dict) -> rx.Component:
+def playlist_card(playlist: dict[str, str]) -> rx.Component:
     # In Reflex, we access dictionary values directly using bracket notation
     # and use rx.cond for default values
 
@@ -51,7 +50,7 @@ def playlist_card(playlist: Dict) -> rx.Component:
                     rx.text(
                         rx.cond(
                             playlist['track_count'],
-                            playlist['track_count'].to_string() + " tracks",
+                            playlist['track_count'] + " tracks",
                             "0 tracks"
                         ),
                         size="2",

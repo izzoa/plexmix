@@ -1,5 +1,5 @@
 import reflex as rx
-from typing import List, Dict, Any, Callable, Optional
+from typing import Callable, Optional
 
 
 def tag_badges(tags_str) -> rx.Component:
@@ -101,7 +101,7 @@ def track_table_header(
     )
 
 
-def track_table_row(track: Dict[str, Any], is_selected: bool, on_toggle: Callable) -> rx.Component:
+def track_table_row(track: dict[str, str], is_selected: bool, on_toggle: Callable) -> rx.Component:
     return rx.table.row(
         rx.table.cell(
             rx.checkbox(
@@ -127,8 +127,8 @@ def track_table_row(track: Dict[str, Any], is_selected: bool, on_toggle: Callabl
 
 
 def track_table(
-    tracks: List[Dict[str, Any]],
-    selected_tracks: List[int],
+    tracks: list[dict[str, str]],
+    selected_tracks: list[str],
     on_toggle_selection: Callable,
     sort_column: Optional[rx.Var] = None,
     sort_ascending: Optional[rx.Var] = None,
