@@ -7,9 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-03-12
+
 ### Fixed
 - Fix Reflex UntypedVarError crash in Docker: use `dict[str, str]` instead of `Dict[str, Any]` for all state vars used in `rx.foreach`
 - Fix Reflex Optional deprecation warnings for year filter state vars
+- Fix `has_embedding` badge showing incorrect status after string coercion
 
 ## [0.5.4] - 2026-03-12
 
@@ -290,7 +293,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI interface with Rich formatting
 - Tag generation and management
 
-[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.5.4...HEAD
+[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/izzoa/plexmix/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/izzoa/plexmix/compare/v0.5.3...v0.5.4
 [0.4.0]: https://github.com/izzoa/plexmix/compare/v0.3.1...v0.4.0
 [0.3.1]: https://github.com/izzoa/plexmix/compare/v0.3.0...v0.3.1
