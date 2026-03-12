@@ -68,13 +68,21 @@ plexmix sync regenerate
 
 ### Option 2: Docker
 
-Pre-built multi-platform images (amd64 + arm64) are published to GHCR on every release.
+Pre-built multi-platform images (amd64 + arm64) are published to GHCR on every release in two variants:
+
+| Image Tag | Size | Use Case |
+|-----------|------|----------|
+| `ghcr.io/izzoa/plexmix:latest` | ~450MB | Cloud AI providers (Gemini, OpenAI, Claude, Cohere) |
+| `ghcr.io/izzoa/plexmix:latest-local` | ~4GB+ | Fully offline with local embeddings and local LLM (includes PyTorch) |
 
 ```bash
-# Pull the latest image
+# Pull the slim image (recommended for most users)
 docker pull ghcr.io/izzoa/plexmix:latest
 
-# Or run with Docker Compose (clone the repo for docker-compose.yml)
+# Or pull the local/offline image (includes sentence-transformers + PyTorch)
+docker pull ghcr.io/izzoa/plexmix:latest-local
+
+# Run with Docker Compose (clone the repo for docker-compose.yml)
 git clone https://github.com/izzoa/plexmix.git
 cd plexmix
 cp .env.example .env
@@ -171,6 +179,16 @@ pip install plexmix
 git clone https://github.com/izzoa/plexmix.git
 cd plexmix
 poetry install
+```
+
+### With Local Embeddings / Local LLM (Optional)
+
+```bash
+# Install sentence-transformers + PyTorch for offline embeddings and local LLM
+pip install "plexmix[local]"
+
+# Or with Poetry
+poetry install -E local
 ```
 
 ### With Audio Analysis (Optional)
@@ -670,15 +688,23 @@ If you ever want to nuke cached weights, delete the relevant directories under `
 
 ## Docker Deployment
 
-PlexMix publishes multi-platform Docker images (amd64 + arm64) to GitHub Container Registry on every release.
+PlexMix publishes multi-platform Docker images (amd64 + arm64) to GitHub Container Registry on every release in two variants:
+
+| Tag | Includes | Size | Best For |
+|-----|----------|------|----------|
+| `:latest` / `:0.5.2` | Cloud AI SDKs, Reflex UI, FAISS | ~450MB | Users with API keys (Gemini, OpenAI, Claude, Cohere) |
+| `:latest-local` / `:0.5.2-local` | Everything above + PyTorch, sentence-transformers | ~4GB+ | Fully offline: local embeddings + local LLM, no API keys needed |
 
 ### Quick Start
 
 ```bash
-# Option A: Use the pre-built image
+# Option A: Slim image (cloud AI providers)
 docker pull ghcr.io/izzoa/plexmix:latest
 
-# Option B: Use Docker Compose (clone repo for compose file)
+# Option B: Local/offline image (includes PyTorch for local embeddings + LLM)
+docker pull ghcr.io/izzoa/plexmix:latest-local
+
+# Use Docker Compose (clone repo for compose file)
 cp .env.example .env
 # Edit .env with your credentials (PLEX_TOKEN, GOOGLE_API_KEY, etc.)
 docker compose up -d
@@ -877,10 +903,11 @@ Total: ~1-2 hours for a large library. You can interrupt and resume at any time.
 
 Partially. After initial sync and tag/embedding generation, you can:
 - ✅ Browse your database offline
-- ✅ Use local embeddings (no API needed)
+- ✅ Use local embeddings (install with `pip install "plexmix[local]"`)
 - ✅ Run audio analysis locally (with Essentia installed)
-- ❌ Generate new playlists (requires AI API)
-- ❌ Generate tags for new tracks (requires AI API)
+- ✅ Generate playlists with local LLM (install with `pip install "plexmix[local]"`)
+- ✅ Generate tags with local LLM
+- ❌ Use cloud AI providers (requires API key + internet)
 
 ### What's the difference between tags, environments, and instruments?
 
