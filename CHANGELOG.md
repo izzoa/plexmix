@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fix Reflex UntypedVarError crash in Docker: use `dict[str, str]` instead of `Dict[str, Any]` for all state vars used in `rx.foreach`
+- Fix Reflex Optional deprecation warnings for year filter state vars
+
 ## [0.5.4] - 2026-03-12
 
 ### Added
