@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-03-13
+
+### Fixed
+- Fix "sqlite3.Connection object attribute 'commit' is read-only" crash on library regenerate (Python 3.12+)
+- Replace monkey-patching of `conn.commit` in `deferred_commits()` with flag-based `_commit()` helper
+- Fix potential stuck-flag edge case if `BEGIN` transaction fails inside `deferred_commits()`
+- Reset `_defer_commits` flag on connection close to prevent state leaking across reconnects
+
 ## [0.6.1] - 2026-03-13
 
 ### Fixed

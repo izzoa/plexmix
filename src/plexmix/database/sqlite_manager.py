@@ -16,6 +16,7 @@ class SQLiteManager:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.conn: Optional[sqlite3.Connection] = None
+        self._defer_commits: bool = False
 
     def __enter__(self) -> 'SQLiteManager':
         self.connect()
@@ -59,7 +60,13 @@ class SQLiteManager:
         if self.conn:
             self.conn.close()
             self.conn = None
+            self._defer_commits = False
             logger.info("Database connection closed")
+
+    def _commit(self) -> None:
+        """Commit unless inside a deferred_commits() block."""
+        if not self._defer_commits:
+            self.get_connection().commit()
 
     @contextmanager
     def deferred_commits(self):
@@ -70,17 +77,16 @@ class SQLiteManager:
         commit is issued when the block exits (or rollback on error).
         """
         conn = self.get_connection()
-        original_commit = conn.commit
-        conn.commit = lambda: None  # suppress per-row commits
         conn.execute("BEGIN")
+        self._defer_commits = True
         try:
             yield
-            original_commit()
+            conn.commit()
         except Exception:
             conn.rollback()
             raise
         finally:
-            conn.commit = original_commit
+            self._defer_commits = False
 
     def create_tables(self) -> None:
         cursor = self.get_connection().cursor()
@@ -227,7 +233,7 @@ class SQLiteManager:
         self._create_indexes(cursor)
         self._create_fts_table(cursor)
         self._run_migrations(cursor)
-        self.get_connection().commit()
+        self._commit()
         logger.info("Database tables created successfully")
 
     def _create_indexes(self, cursor: sqlite3.Cursor) -> None:
@@ -403,7 +409,7 @@ class SQLiteManager:
                 migrations_run = True
 
         if migrations_run:
-            self.get_connection().commit()
+            self._commit()
             logger.info("Database migrations completed")
 
     def insert_artist(self, artist: Artist) -> int:
@@ -416,7 +422,7 @@ class SQLiteManager:
                 genre = excluded.genre,
                 bio = excluded.bio
         ''', (artist.plex_key, artist.name, artist.genre, artist.bio))
-        self.get_connection().commit()
+        self._commit()
         # Return the existing id if updated, or new id if inserted
         cursor.execute('SELECT id FROM artists WHERE plex_key = ?', (artist.plex_key,))
         row = cursor.fetchone()
@@ -450,7 +456,7 @@ class SQLiteManager:
                 genre = excluded.genre,
                 cover_art_url = excluded.cover_art_url
         ''', (album.plex_key, album.title, album.artist_id, album.year, album.genre, album.cover_art_url))
-        self.get_connection().commit()
+        self._commit()
         # Return the existing id if updated, or new id if inserted
         cursor.execute('SELECT id FROM albums WHERE plex_key = ?', (album.plex_key,))
         row = cursor.fetchone()
@@ -495,7 +501,7 @@ class SQLiteManager:
         ''', (track.plex_key, track.title, track.artist_id, track.album_id, track.duration_ms,
               track.genre, track.year, track.rating, track.play_count, track.last_played, track.file_path, track.tags,
               track.environments, track.instruments))
-        self.get_connection().commit()
+        self._commit()
         # Return the existing id if updated, or new id if inserted
         cursor.execute('SELECT id FROM tracks WHERE plex_key = ?', (track.plex_key,))
         row = cursor.fetchone()
@@ -592,12 +598,12 @@ class SQLiteManager:
     def delete_track(self, track_id: int) -> None:
         cursor = self.get_connection().cursor()
         cursor.execute('DELETE FROM tracks WHERE id = ?', (track_id,))
-        self.get_connection().commit()
+        self._commit()
 
     def insert_genre(self, genre: Genre) -> int:
         cursor = self.get_connection().cursor()
         cursor.execute('INSERT OR IGNORE INTO genres (name) VALUES (?)', (genre.name,))
-        self.get_connection().commit()
+        self._commit()
         return cursor.lastrowid
 
     def get_genre_by_name(self, name: str) -> Optional[Genre]:
@@ -625,7 +631,7 @@ class SQLiteManager:
                 updated_at = excluded.updated_at
         ''', (embedding.track_id, embedding.embedding_model, embedding.embedding_dim,
               vector_json, embedding.created_at, embedding.updated_at))
-        self.get_connection().commit()
+        self._commit()
         # Return the existing id if updated, or new id if inserted
         cursor.execute(
             'SELECT id FROM embeddings WHERE track_id = ? AND embedding_model = ?',
@@ -653,7 +659,7 @@ class SQLiteManager:
                     vector = excluded.vector,
                     updated_at = excluded.updated_at
             ''', data)
-            conn.commit()
+            self._commit()
         except Exception:
             conn.rollback()
             raise
@@ -685,7 +691,7 @@ class SQLiteManager:
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (sync.sync_date, sync.tracks_added, sync.tracks_updated, sync.tracks_removed,
               sync.status, sync.error_message))
-        self.get_connection().commit()
+        self._commit()
         return cursor.lastrowid
 
     def get_latest_sync(self) -> Optional[SyncHistory]:
@@ -736,7 +742,7 @@ class SQLiteManager:
             mfcc_json,
             features.get("zero_crossing_rate"),
         ))
-        self.get_connection().commit()
+        self._commit()
         return cursor.lastrowid
 
     def get_audio_features(self, track_id: int) -> Optional[Dict[str, Any]]:
@@ -788,7 +794,7 @@ class SQLiteManager:
             VALUES (?, ?, ?, ?, ?, ?)
         ''', (playlist.plex_key, playlist.name, playlist.description,
               int(playlist.created_by_ai), playlist.mood_query, playlist.created_at))
-        self.get_connection().commit()
+        self._commit()
         return cursor.lastrowid
 
     def add_track_to_playlist(self, playlist_id: int, track_id: int, position: int) -> None:
@@ -797,7 +803,7 @@ class SQLiteManager:
             INSERT INTO playlist_tracks (playlist_id, track_id, position)
             VALUES (?, ?, ?)
         ''', (playlist_id, track_id, position))
-        self.get_connection().commit()
+        self._commit()
 
     def add_tracks_to_playlist(self, playlist_id: int, track_ids: List[int]) -> None:
         if not track_ids:
@@ -810,7 +816,7 @@ class SQLiteManager:
                 INSERT INTO playlist_tracks (playlist_id, track_id, position)
                 VALUES (?, ?, ?)
             ''', data)
-            conn.commit()
+            self._commit()
         except Exception:
             conn.rollback()
             raise
@@ -865,7 +871,7 @@ class SQLiteManager:
         cursor = self.get_connection().cursor()
         cursor.execute('DELETE FROM playlist_tracks WHERE playlist_id = ?', (playlist_id,))
         cursor.execute('DELETE FROM playlists WHERE id = ?', (playlist_id,))
-        self.get_connection().commit()
+        self._commit()
 
     def update_playlist(self, playlist_id: int, name: Optional[str] = None, description: Optional[str] = None) -> None:
         cursor = self.get_connection().cursor()
@@ -886,7 +892,7 @@ class SQLiteManager:
         params.append(playlist_id)
         query = f"UPDATE playlists SET {', '.join(updates)} WHERE id = ?"
         cursor.execute(query, params)
-        self.get_connection().commit()
+        self._commit()
 
     def search_tracks_fts(self, query: str) -> List[Track]:
         cursor = self.get_connection().cursor()
@@ -1131,7 +1137,7 @@ class SQLiteManager:
         params.append(track_id)
         query = f"UPDATE tracks SET {', '.join(updates)} WHERE id = ?"
         cursor.execute(query, params)
-        self.get_connection().commit()
+        self._commit()
 
     def get_recently_tagged_tracks(self, limit: int = 100) -> List[Dict[str, Any]]:
         cursor = self.get_connection().cursor()

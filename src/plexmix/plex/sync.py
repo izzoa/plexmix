@@ -136,7 +136,7 @@ class SyncEngine:
         cursor = self.db.get_connection().cursor()
         cursor.execute('UPDATE tracks SET tags = NULL, environments = NULL, instruments = NULL')
         cursor.execute('DELETE FROM embeddings')
-        self.db.get_connection().commit()
+        self.db._commit()
         logger.info("Cleared all existing tags and embeddings")
 
         return self.incremental_sync(

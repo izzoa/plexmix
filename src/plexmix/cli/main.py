@@ -536,7 +536,7 @@ def embeddings_generate(
             console.print(f"[yellow]Regenerating ALL embeddings for {len(all_tracks)} tracks[/yellow]")
             cursor = db.get_connection().cursor()
             cursor.execute('DELETE FROM embeddings')
-            db.get_connection().commit()
+            db._commit()
             tracks_to_embed = all_tracks
         else:
             tracks_to_embed = [t for t in all_tracks if not db.get_embedding_by_track_id(t.id)]
@@ -785,7 +785,7 @@ def doctor(
             console.print("\n[yellow]Deleting all tags and embeddings...[/yellow]")
             cursor.execute('UPDATE tracks SET tags = NULL, environments = NULL, instruments = NULL')
             cursor.execute('DELETE FROM embeddings')
-            db.get_connection().commit()
+            db._commit()
             console.print("[green]✓ Deleted all tags and embeddings[/green]")
 
         console.print("\n[bold]Step 1: Generating tags for all tracks...[/bold]")
@@ -837,7 +837,7 @@ def doctor(
         if should_delete_orphaned and typer.confirm(f"\nDelete {orphaned_count} orphaned embeddings?", default=True):
             cursor.execute('DELETE FROM embeddings WHERE track_id NOT IN (SELECT id FROM tracks)')
             deleted = cursor.rowcount
-            db.get_connection().commit()
+            db._commit()
             console.print(f"[green]Deleted {deleted} orphaned embeddings[/green]")
         elif should_delete_orphaned:
             console.print("[yellow]Operation cancelled.[/yellow]")

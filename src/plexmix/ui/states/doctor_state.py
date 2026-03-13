@@ -133,7 +133,7 @@ class DoctorState(AppState):
                 cursor = db.get_connection().cursor()
                 cursor.execute('DELETE FROM embeddings WHERE track_id NOT IN (SELECT id FROM tracks)')
                 deleted = cursor.rowcount
-                db.get_connection().commit()
+                db._commit()
                 
                 async with self:
                     self.fix_message = ""
@@ -310,7 +310,7 @@ class DoctorState(AppState):
             with SQLiteManager(str(db_path)) as db:
                 cursor = db.get_connection().cursor()
                 cursor.execute('DELETE FROM embeddings')
-                db.get_connection().commit()
+                db._commit()
 
                 tracks_to_embed = db.get_all_tracks()
 
