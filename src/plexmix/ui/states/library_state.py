@@ -2,6 +2,7 @@ import reflex as rx
 import asyncio
 import logging
 import atexit
+import time
 from typing import Dict, Optional
 from threading import Event
 from plexmix.ui.states.app_state import AppState
@@ -13,9 +14,26 @@ def _str_dict(d: dict) -> dict[str, str]:
 
 logger = logging.getLogger(__name__)
 
+
+def _format_eta(seconds: float) -> str:
+    """Format remaining seconds as a human-readable ETA string."""
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds}s remaining"
+    minutes = seconds // 60
+    secs = seconds % 60
+    if minutes < 60:
+        return f"{minutes}m {secs}s remaining"
+    hours = minutes // 60
+    mins = minutes % 60
+    return f"{hours}h {mins}m remaining"
+
+
 # Per-client globals for background tasks
 _sync_cancel_events: Dict[str, Event] = {}
 _search_tasks: Dict[str, asyncio.Task] = {}
+_audio_cancel_events: Dict[str, Event] = {}
+_audio_pause_events: Dict[str, asyncio.Event] = {}
 
 
 def _cleanup_client_state(client_token: str) -> None:
@@ -28,6 +46,10 @@ def _cleanup_client_state(client_token: str) -> None:
         if not task.done():
             task.cancel()
         del _search_tasks[client_token]
+    if client_token in _audio_cancel_events:
+        _audio_cancel_events[client_token].set()
+        del _audio_cancel_events[client_token]
+    _audio_pause_events.pop(client_token, None)
 
 
 def _cleanup_all_state() -> None:
@@ -39,6 +61,10 @@ def _cleanup_all_state() -> None:
         if not task.done():
             task.cancel()
     _search_tasks.clear()
+    for token in list(_audio_cancel_events.keys()):
+        _audio_cancel_events[token].set()
+    _audio_cancel_events.clear()
+    _audio_pause_events.clear()
 
 
 # Register cleanup on process exit
@@ -66,8 +92,11 @@ class LibraryState(AppState):
     embedding_message: str = ""
 
     is_analyzing_audio: bool = False
+    audio_analysis_paused: bool = False
     audio_analysis_progress: int = 0
     audio_analysis_message: str = ""
+    audio_analysis_eta: str = ""
+    show_audio_cancel_confirm: bool = False
 
     selected_tracks: list[str] = []
     sort_column: str = "title"
@@ -563,12 +592,50 @@ class LibraryState(AppState):
 
             yield rx.toast.error(f"Embedding generation failed: {str(e)}")
 
+    def pause_audio_analysis(self):
+        token = self.router.session.client_token
+        if token in _audio_pause_events:
+            _audio_pause_events[token].clear()  # Block the loop
+            self.audio_analysis_paused = True
+
+    def resume_audio_analysis(self):
+        token = self.router.session.client_token
+        if token in _audio_pause_events:
+            _audio_pause_events[token].set()  # Unblock the loop
+            self.audio_analysis_paused = False
+
+    def request_cancel_audio(self):
+        self.show_audio_cancel_confirm = True
+
+    def dismiss_audio_cancel_confirm(self, open: bool = False):
+        if not open:
+            self.show_audio_cancel_confirm = False
+
+    def cancel_audio_analysis(self):
+        self.show_audio_cancel_confirm = False
+        token = self.router.session.client_token
+        if token in _audio_cancel_events:
+            _audio_cancel_events[token].set()
+        # Unblock pause so the loop can exit
+        if token in _audio_pause_events:
+            _audio_pause_events[token].set()
+
     @rx.event(background=True)
     async def analyze_audio(self):
+        token = self.router.session.client_token
+
+        # Set up cancel/pause events
+        _audio_cancel_events[token] = Event()
+        pause_event = asyncio.Event()
+        pause_event.set()  # Start unpaused
+        _audio_pause_events[token] = pause_event
+
         async with self:
             self.is_analyzing_audio = True
+            self.audio_analysis_paused = False
             self.audio_analysis_progress = 0
             self.audio_analysis_message = "Starting audio analysis..."
+            self.audio_analysis_eta = ""
 
         try:
             from plexmix.config.settings import Settings
@@ -596,6 +663,7 @@ class LibraryState(AppState):
 
             loop = asyncio.get_running_loop()
             analyzer = EssentiaAnalyzer()
+            cancelled = False
 
             with SQLiteManager(str(db_path)) as db:
                 pending_tracks = db.get_tracks_without_audio_features()
@@ -608,8 +676,29 @@ class LibraryState(AppState):
 
                 total = len(pending_tracks)
                 analyzed = 0
+                eta_base_time = time.monotonic()
+                eta_base_count = 0
 
                 for track in pending_tracks:
+                    # Check cancellation
+                    if _audio_cancel_events.get(token, Event()).is_set():
+                        cancelled = True
+                        break
+
+                    # Wait while paused (non-blocking check via asyncio)
+                    pe = _audio_pause_events.get(token)
+                    if pe and not pe.is_set():
+                        async with self:
+                            self.audio_analysis_message = f"Paused — {analyzed}/{total} tracks analyzed"
+                        await pe.wait()
+                        # Re-check cancel after resume
+                        if _audio_cancel_events.get(token, Event()).is_set():
+                            cancelled = True
+                            break
+                        # Reset ETA baseline after unpause
+                        eta_base_time = time.monotonic()
+                        eta_base_count = analyzed
+
                     def analyze_track(t=track):
                         resolved = settings.audio.resolve_path(t.file_path)
                         features = analyzer.analyze(resolved, duration_limit=duration_limit)
@@ -622,21 +711,43 @@ class LibraryState(AppState):
                     except Exception as exc:
                         logger.warning("Audio analysis failed for track %s: %s", track.id, exc)
 
+                    # Calculate ETA
+                    elapsed = time.monotonic() - eta_base_time
+                    since_baseline = analyzed - eta_base_count
+                    if since_baseline > 0 and elapsed > 0:
+                        rate = since_baseline / elapsed
+                        remaining = (total - analyzed) / rate
+                        eta_str = _format_eta(remaining)
+                    else:
+                        eta_str = "calculating..."
+
                     async with self:
                         self.audio_analysis_progress = int((analyzed / total) * 100) if total else 0
                         self.audio_analysis_message = f"Analyzed {analyzed}/{total} tracks"
+                        self.audio_analysis_eta = eta_str
 
             async with self:
                 self.is_analyzing_audio = False
-                self.audio_analysis_progress = 100
+                self.audio_analysis_paused = False
+                self.audio_analysis_progress = 100 if not cancelled else self.audio_analysis_progress
                 self.audio_analysis_message = ""
+                self.audio_analysis_eta = ""
                 self.load_library_stats()
 
-            yield rx.toast.success(f"Audio analysis complete! Analyzed {analyzed} tracks.")
+            if cancelled:
+                yield rx.toast.warning(f"Audio analysis stopped — {analyzed}/{total} tracks analyzed")
+            else:
+                yield rx.toast.success(f"Audio analysis complete! Analyzed {analyzed} tracks.")
 
         except Exception as e:
             async with self:
                 self.is_analyzing_audio = False
+                self.audio_analysis_paused = False
                 self.audio_analysis_message = ""
+                self.audio_analysis_eta = ""
 
             yield rx.toast.error(f"Audio analysis failed: {str(e)}")
+
+        finally:
+            _audio_cancel_events.pop(token, None)
+            _audio_pause_events.pop(token, None)

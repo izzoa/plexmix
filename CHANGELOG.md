@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.6] - 2026-03-13
+
+### Added
+- Pause/resume/stop controls for audio analysis on the library page
+- ETA calculation displayed during audio analysis (adapts after pause/resume)
+- Confirmation dialog before stopping audio analysis (progress is preserved)
+
 ## [0.6.5] - 2026-03-13
 
 ### Fixed

@@ -326,11 +326,110 @@ def _embedding_modal() -> rx.Component:
 
 
 def _audio_modal() -> rx.Component:
-    return progress_modal(
-        is_open=LibraryState.is_analyzing_audio,
-        progress=LibraryState.audio_analysis_progress,
-        message=LibraryState.audio_analysis_message,
-        on_cancel=None,
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.vstack(
+                rx.dialog.title(
+                    "Audio Analysis",
+                    size="5",
+                    weight="bold",
+                ),
+                rx.text(
+                    LibraryState.audio_analysis_message,
+                    size="3",
+                    color="var(--pm-gray-11)",
+                ),
+                rx.vstack(
+                    rx.progress(
+                        value=LibraryState.audio_analysis_progress,
+                        max=100,
+                        width="100%",
+                    ),
+                    rx.hstack(
+                        rx.text(
+                            f"{LibraryState.audio_analysis_progress}%",
+                            size="3",
+                            weight="medium",
+                            font_family="var(--font-mono)",
+                            color="var(--pm-gray-11)",
+                        ),
+                        rx.spacer(),
+                        rx.text(
+                            LibraryState.audio_analysis_eta,
+                            size="2",
+                            color="gray.9",
+                        ),
+                        width="100%",
+                    ),
+                    spacing="2",
+                    width="100%",
+                ),
+                rx.hstack(
+                    rx.cond(
+                        LibraryState.audio_analysis_paused,
+                        rx.button(
+                            rx.icon("play", size=14),
+                            "Resume",
+                            on_click=LibraryState.resume_audio_analysis,
+                            color_scheme="green",
+                            variant="soft",
+                            size="2",
+                        ),
+                        rx.button(
+                            rx.icon("pause", size=14),
+                            "Pause",
+                            on_click=LibraryState.pause_audio_analysis,
+                            color_scheme="yellow",
+                            variant="soft",
+                            size="2",
+                        ),
+                    ),
+                    rx.button(
+                        rx.icon("square", size=14),
+                        "Stop",
+                        on_click=LibraryState.request_cancel_audio,
+                        color_scheme="red",
+                        variant="soft",
+                        size="2",
+                    ),
+                    spacing="3",
+                    justify="end",
+                    width="100%",
+                ),
+                spacing="4",
+                width=rx.breakpoints(initial="90vw", sm="420px"),
+                padding="4",
+            ),
+            class_name="animate-scale-in",
+        ),
+        open=LibraryState.is_analyzing_audio,
+    )
+
+
+def _audio_cancel_confirm_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("Stop Audio Analysis?"),
+            rx.alert_dialog.description(
+                "Progress so far will be saved. You can resume analysis later."
+            ),
+            rx.hstack(
+                rx.alert_dialog.cancel(
+                    rx.button("Continue", variant="soft"),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        "Yes, Stop",
+                        on_click=LibraryState.cancel_audio_analysis,
+                        color_scheme="red",
+                    ),
+                ),
+                spacing="3",
+                justify="end",
+            ),
+        ),
+        open=LibraryState.show_audio_cancel_confirm,
+        on_open_change=LibraryState.dismiss_audio_cancel_confirm,
     )
 
 
@@ -445,6 +544,7 @@ def library() -> rx.Component:
             _cancel_confirm_dialog(),
             _embedding_modal(),
             _audio_modal(),
+            _audio_cancel_confirm_dialog(),
             _confirm_regenerate_dialog(),
         )
     )
