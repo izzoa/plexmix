@@ -268,6 +268,8 @@ class LibraryState(AppState):
 
             plex_client = PlexClient(settings.plex.url, plex_token)
             plex_client.connect()
+            if settings.plex.library_name:
+                plex_client.select_library(settings.plex.library_name)
 
             db_path = settings.database.get_db_path()
             db = SQLiteManager(str(db_path))

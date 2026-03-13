@@ -238,8 +238,7 @@ class AppState(rx.State):
 
                 # Check for dimension mismatch using metadata file
                 import pickle
-                from pathlib import Path
-                faiss_path = Path(settings.database.faiss_index_path).expanduser()
+                faiss_path = settings.database.get_index_path()
                 metadata_path = faiss_path.with_suffix('.metadata')
                 if metadata_path.exists():
                     with open(metadata_path, 'rb') as f:

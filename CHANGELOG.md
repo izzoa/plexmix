@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-03-13
+
+### Fixed
+- Fix library sync indexing 0 tracks — `select_library()` was never called after connecting to Plex
+- Fix dashboard stats crash (`Path(None)`) when `faiss_index_path` is not explicitly set
+- Fix generator using raw `faiss_index_path` (None) instead of `get_index_path()` with proper default
+
 ## [0.6.2] - 2026-03-13
 
 ### Fixed

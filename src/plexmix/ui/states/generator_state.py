@@ -159,7 +159,7 @@ class GeneratorState(AppState):
             # Get the embedding settings (but don't create generator yet - it blocks!)
             embedding_provider = settings.embedding.default_provider
             embedding_model = settings.embedding.model
-            index_path = settings.database.faiss_index_path
+            index_path = str(settings.database.get_index_path())
 
             embedding_api_key = None
             embedding_kwargs = {}
