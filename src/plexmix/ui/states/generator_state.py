@@ -29,6 +29,8 @@ class GeneratorState(AppState):
     key_filter: str = ""
     danceability_min: str = ""
 
+    audio_analyzed_count: int = 0
+
     is_generating: bool = False
     generation_progress: int = 0
     generation_message: str = ""
@@ -53,7 +55,27 @@ class GeneratorState(AppState):
             self.is_page_loading = False
             return
         super().on_load()
+        self._load_audio_stats()
         self.is_page_loading = False
+
+    def _load_audio_stats(self):
+        """Check how many tracks have audio analysis data."""
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+            if db_path.exists():
+                db = SQLiteManager(str(db_path))
+                db.connect()
+                row = db.conn.execute("SELECT COUNT(*) FROM audio_features").fetchone()
+                self.audio_analyzed_count = row[0] if row else 0
+                db.close()
+            else:
+                self.audio_analyzed_count = 0
+        except Exception:
+            self.audio_analyzed_count = 0
 
     def use_example(self, example: str):
         self.mood_query = example
@@ -90,10 +112,10 @@ class GeneratorState(AppState):
         self.tempo_max = value
 
     def set_energy_level(self, value: str):
-        self.energy_level = value
+        self.energy_level = "" if value == "Any" else value
 
     def set_key_filter(self, value: str):
-        self.key_filter = value
+        self.key_filter = "" if value == "Any" else value
 
     def set_danceability_min(self, value: str):
         self.danceability_min = value

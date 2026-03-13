@@ -67,6 +67,9 @@ class SettingsState(AppState):
     active_tab: str = "plex"
     _settings_snapshot: str = ""
 
+    # Local dependency availability (sentence-transformers / PyTorch)
+    local_deps_available: bool = False
+
     # Validation errors
     plex_url_error: str = ""
     plex_token_error: str = ""
@@ -81,9 +84,18 @@ class SettingsState(AppState):
             self.is_page_loading = False
             return
         super().on_load()
+        self._detect_local_deps()
         self.load_settings()
         self.update_model_lists()
         self.is_page_loading = False
+
+    def _detect_local_deps(self):
+        """Check if local AI dependencies (sentence-transformers/PyTorch) are installed."""
+        try:
+            import sentence_transformers  # noqa: F401
+            self.local_deps_available = True
+        except ImportError:
+            self.local_deps_available = False
 
     def load_settings(self):
         try:
@@ -149,8 +161,8 @@ class SettingsState(AppState):
             elif self.embedding_provider == "cohere":
                 self.embedding_api_key = get_cohere_api_key() or ""
 
-            self.db_path = settings.database.path
-            self.faiss_index_path = settings.database.faiss_index_path
+            self.db_path = str(settings.database.get_db_path())
+            self.faiss_index_path = str(settings.database.get_index_path())
             self.log_level = settings.logging.level
 
             self.audio_enabled = settings.audio.enabled
@@ -161,6 +173,13 @@ class SettingsState(AppState):
             logger.error("Error loading settings: %s", e)
         finally:
             self._sync_embedding_dimension()
+            # Ensure paths show defaults when config hasn't set them
+            if not self.db_path:
+                from plexmix.config.settings import _data_dir
+                self.db_path = str(_data_dir() / "plexmix.db")
+            if not self.faiss_index_path:
+                from plexmix.config.settings import _data_dir
+                self.faiss_index_path = str(_data_dir() / "embeddings.index")
             self._settings_snapshot = self._get_settings_snapshot()
 
     def update_model_lists(self):

@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-03-13
+
+### Added
+- Configurable Reflex ports via `PLEXMIX_UI_PORT`, `PLEXMIX_BACKEND_PORT`, and `PLEXMIX_API_URL` environment variables for Docker port mapping
+- `PLEXMIX_ALLOWED_HOSTS` environment variable for custom domain access behind reverse proxies (e.g., `plexmix.example.com`)
+- `--backend-port` and `--api-url` CLI options for `plexmix ui` command
+- Grey out local AI/embedding options in Settings UI when `sentence-transformers` is not installed (slim Docker image)
+- Audio filters in Generator conditionally shown only when audio analysis data exists
+- Essentia audio analysis support in Docker (best-effort install, available on amd64)
+
+### Fixed
+- Fix Docker `:latest` tag pointing to local image variant instead of slim — split CI into sequential jobs
+- Fix generator page crash caused by Radix Select.Item rejecting empty string values
+- Fix `DatabaseSettings` Pydantic v2 validation error (`str` field with `None` default)
+- Fix blank Database Path and FAISS Index Path in Settings Advanced tab when config hasn't been saved
+- Fix websocket connection failures when Docker ports are mapped to non-default host ports
+
 ## [0.5.5] - 2026-03-12
 
 ### Fixed

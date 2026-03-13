@@ -79,11 +79,29 @@ def ai_provider_tab() -> rx.Component:
                     rx.select.item("Anthropic", value="anthropic"),
                     rx.select.item("Cohere", value="cohere"),
                     rx.select.item("Custom (OpenAI-Compatible)", value="custom"),
-                    rx.select.item("Local (Offline)", value="local"),
+                    rx.select.item(
+                        rx.cond(
+                            SettingsState.local_deps_available,
+                            "Local (Offline)",
+                            "Local (Offline) — not installed",
+                        ),
+                        value="local",
+                        disabled=~SettingsState.local_deps_available,
+                    ),
                 ),
                 value=SettingsState.ai_provider,
                 on_change=SettingsState.set_ai_provider,
                 width="100%",
+            ),
+            rx.cond(
+                ~SettingsState.local_deps_available & (SettingsState.ai_provider == "local"),
+                rx.callout(
+                    "Local AI dependencies are not installed. Use the :latest-local Docker image or install with: pip install plexmix[local]",
+                    icon="triangle_alert",
+                    color_scheme="yellow",
+                    size="2",
+                ),
+                rx.fragment(),
             ),
             rx.cond(
                 SettingsState.ai_provider == "custom",
@@ -350,11 +368,36 @@ def embedding_tab() -> rx.Component:
         rx.heading("Embedding Provider", size="6", margin_bottom="4"),
         rx.vstack(
             rx.text("Provider", size="3", weight="bold"),
-            rx.select(
-                ["gemini", "openai", "cohere", "custom", "local"],
+            rx.select.root(
+                rx.select.trigger(placeholder="Select provider"),
+                rx.select.content(
+                    rx.select.item("Gemini", value="gemini"),
+                    rx.select.item("OpenAI", value="openai"),
+                    rx.select.item("Cohere", value="cohere"),
+                    rx.select.item("Custom (OpenAI-Compatible)", value="custom"),
+                    rx.select.item(
+                        rx.cond(
+                            SettingsState.local_deps_available,
+                            "Local (Offline)",
+                            "Local (Offline) — not installed",
+                        ),
+                        value="local",
+                        disabled=~SettingsState.local_deps_available,
+                    ),
+                ),
                 value=SettingsState.embedding_provider,
                 on_change=SettingsState.set_embedding_provider,
                 width="100%",
+            ),
+            rx.cond(
+                ~SettingsState.local_deps_available & (SettingsState.embedding_provider == "local"),
+                rx.callout(
+                    "Local embedding dependencies are not installed. Use the :latest-local Docker image or install with: pip install plexmix[local]",
+                    icon="triangle_alert",
+                    color_scheme="yellow",
+                    size="2",
+                ),
+                rx.fragment(),
             ),
             rx.cond(
                 SettingsState.embedding_provider == "custom",

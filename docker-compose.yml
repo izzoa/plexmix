@@ -16,6 +16,13 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - COHERE_API_KEY=${COHERE_API_KEY:-}
+      # UI port configuration (uncomment and adjust if using non-default ports)
+      # - PLEXMIX_UI_PORT=3000
+      # - PLEXMIX_BACKEND_PORT=8000
+      # Set PLEXMIX_API_URL when mapping to different external ports:
+      # - PLEXMIX_API_URL=http://myhost:8154
+      # Set PLEXMIX_ALLOWED_HOSTS for custom domain access (reverse proxy):
+      # - PLEXMIX_ALLOWED_HOSTS=plexmix.example.com
       # Audio path remapping: translate Plex paths to local container paths
       # - AUDIO_PATH_PREFIX_FROM=/data/music
       # - AUDIO_PATH_PREFIX_TO=/music

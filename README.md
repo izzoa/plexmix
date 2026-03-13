@@ -72,8 +72,8 @@ Pre-built multi-platform images (amd64 + arm64) are published to GHCR on every r
 
 | Image Tag | Size | Use Case |
 |-----------|------|----------|
-| `ghcr.io/izzoa/plexmix:latest` | ~450MB | Cloud AI providers (Gemini, OpenAI, Claude, Cohere) |
-| `ghcr.io/izzoa/plexmix:latest-local` | ~4GB+ | Fully offline with local embeddings and local LLM (includes PyTorch) |
+| `ghcr.io/izzoa/plexmix:latest` | ~470MB | Cloud AI providers + audio analysis (Gemini, OpenAI, Claude, Cohere) |
+| `ghcr.io/izzoa/plexmix:latest-local` | ~4GB+ | Everything above + local embeddings and local LLM (includes PyTorch) |
 
 ```bash
 # Pull the slim image (recommended for most users)
@@ -692,8 +692,8 @@ PlexMix publishes multi-platform Docker images (amd64 + arm64) to GitHub Contain
 
 | Tag | Includes | Size | Best For |
 |-----|----------|------|----------|
-| `:latest` / `:0.5.2` | Cloud AI SDKs, Reflex UI, FAISS | ~450MB | Users with API keys (Gemini, OpenAI, Claude, Cohere) |
-| `:latest-local` / `:0.5.2-local` | Everything above + PyTorch, sentence-transformers | ~4GB+ | Fully offline: local embeddings + local LLM, no API keys needed |
+| `:latest` / `:0.5.5` | Cloud AI SDKs, Reflex UI, FAISS, Essentia | ~470MB | Users with API keys (Gemini, OpenAI, Claude, Cohere) |
+| `:latest-local` / `:0.5.5-local` | Everything above + PyTorch, sentence-transformers | ~4GB+ | Fully offline: local embeddings + local LLM, no API keys needed |
 
 ### Quick Start
 
@@ -742,6 +742,18 @@ volumes:
   plexmix-data:
 ```
 
+#### Custom Port Mapping
+
+If you map Docker ports to different external ports, set `PLEXMIX_API_URL` so the frontend can reach the backend:
+
+```yaml
+    ports:
+      - "3152:3000"   # Web UI on port 3152
+      - "8154:8000"   # Reflex backend on port 8154
+    environment:
+      - PLEXMIX_API_URL=http://your-host-ip:8154
+```
+
 ### Environment Variables
 
 All credentials can be passed as environment variables (no keyring required in containers):
@@ -756,6 +768,10 @@ All credentials can be passed as environment variables (no keyring required in c
 | `COHERE_API_KEY` | Cohere API key (optional) |
 | `PLEXMIX_DATA_DIR` | Data directory override (default: `/data` in Docker, `~/.plexmix` locally) |
 | `PLEXMIX_UI_HOST` | UI bind address (default: `0.0.0.0` in Docker, `127.0.0.1` locally) |
+| `PLEXMIX_UI_PORT` | Frontend port (default: `3000`) |
+| `PLEXMIX_BACKEND_PORT` | Backend port (default: `8000`) |
+| `PLEXMIX_API_URL` | Public backend URL for WebSocket connections (set when external ports differ, e.g. `http://myhost:8154`) |
+| `PLEXMIX_ALLOWED_HOSTS` | Comma-separated list of allowed hostnames for custom domain access (e.g. `plexmix.example.com`) |
 | `PLEXMIX_UI_PASSWORD` | Optional password to protect the web UI |
 | `AUDIO_ENABLED` | Enable audio analysis (default: `false`) |
 | `AUDIO_ANALYZE_ON_SYNC` | Run audio analysis during sync (default: `false`) |

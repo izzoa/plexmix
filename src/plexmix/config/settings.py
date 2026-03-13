@@ -23,11 +23,11 @@ class PlexSettings(BaseSettings):
 
 
 class DatabaseSettings(BaseSettings):
-    path: str = Field(
+    path: Optional[str] = Field(
         default=None,
         description="SQLite database path"
     )
-    faiss_index_path: str = Field(
+    faiss_index_path: Optional[str] = Field(
         default=None,
         description="FAISS index file path"
     )
