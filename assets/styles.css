@@ -1,77 +1,303 @@
-/* PlexMix UI Custom Styles */
+/* ================================================================
+   PlexMix Design System
+   ================================================================
+   Phase 0 — tokens, typography, color, spacing, motion, utilities.
+   All old class names (fade-in, sortable-header, hide-mobile,
+   hide-desktop) are preserved for backward compatibility.
+   ================================================================ */
 
-/* ============================================
-   Design Tokens
-   ============================================ */
-:root {
-  /* Brand Colors */
-  --plexmix-orange: #ef8327;
-  --plexmix-orange-hover: #d66f1f;
-  --plexmix-orange-light: rgba(239, 131, 39, 0.1);
-
-  /* Override Reflex accent color with PlexMix orange */
-  --accent-9: #ef8327;
-  --accent-10: #d66f1f;
-  --accent-11: #ef8327;
-  --accent-12: #f5f5f5;
-
-  /* Lighter shades for backgrounds */
-  --accent-3: rgba(239, 131, 39, 0.1);
-  --accent-4: rgba(239, 131, 39, 0.2);
-  --accent-5: rgba(239, 131, 39, 0.3);
-  --accent-6: rgba(239, 131, 39, 0.4);
-  --accent-7: rgba(239, 131, 39, 0.5);
-  --accent-8: rgba(239, 131, 39, 0.7);
-
-  /* Navbar */
-  --navbar-width: 240px;
+/* ================================================================
+   0. Self-Hosted Fonts
+   ================================================================ */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400 700; /* variable font */
+  font-display: swap;
+  src: url('/fonts/SpaceGrotesk-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
-/* ============================================
-   Component Overrides
-   ============================================ */
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400 700; /* variable font */
+  font-display: swap;
+  src: url('/fonts/IBMPlexSans-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts/IBMPlexMono-Regular-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/IBMPlexMono-Medium-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6,
+    U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122,
+    U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+/* ================================================================
+   1. Design Tokens — Colors
+   ================================================================ */
+:root {
+  /* --- Brand Orange — 12-step scale --- */
+  --brand-1: #fef8f4;
+  --brand-2: #fdf3ec;
+  --brand-3: #fceadd;
+  --brand-4: #f9dcc9;
+  --brand-5: #f3c9a8;
+  --brand-6: #eab382;
+  --brand-7: #e09b5e;
+  --brand-8: #d68034;
+  --brand-9: #F97316;
+  --brand-10: #EA580C;
+  --brand-11: #b55f18;
+  --brand-12: #5c2d0f;
+  --brand-glow: rgba(249, 115, 22, 0.15);
+
+  /* --- Gray scale (light mode reference) --- */
+  --pm-gray-1: #fcfcfc;
+  --pm-gray-2: #f9f9f9;
+  --pm-gray-3: #f0f0f0;
+  --pm-gray-4: #e8e8e8;
+  --pm-gray-5: #e0e0e0;
+  --pm-gray-6: #d9d9d9;
+  --pm-gray-7: #cecece;
+  --pm-gray-8: #bbbbbb;
+  --pm-gray-9: #8d8d8d;
+  --pm-gray-10: #838383;
+  --pm-gray-11: #646464;
+  --pm-gray-12: #202020;
+
+  /* --- Semantic --- */
+  --pm-success: #22C55E;
+  --pm-warning: #EAB308;
+  --pm-error: #EF4444;
+  --pm-info: #3B82F6;
+
+  /* --- Override Reflex/Radix accent with new brand orange --- */
+  --accent-1: var(--brand-1);
+  --accent-2: var(--brand-2);
+  --accent-3: var(--brand-3);
+  --accent-4: var(--brand-4);
+  --accent-5: var(--brand-5);
+  --accent-6: var(--brand-6);
+  --accent-7: var(--brand-7);
+  --accent-8: var(--brand-8);
+  --accent-9: var(--brand-9);
+  --accent-10: var(--brand-10);
+  --accent-11: var(--brand-11);
+  --accent-12: var(--brand-12);
+
+  /* --- Legacy aliases (backward compat) --- */
+  --plexmix-orange: var(--brand-9);
+  --plexmix-orange-hover: var(--brand-10);
+  --plexmix-orange-light: var(--brand-glow);
+
+  /* --- Layout --- */
+  --navbar-width: 220px;
+  --content-max-width: 1200px;
+
+  /* --- Spacing (4px grid) --- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* --- Border Radius --- */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* --- Shadows --- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-glow: 0 0 20px var(--brand-glow);
+
+  /* --- Animation --- */
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+
+  /* --- Typography stacks --- */
+  --font-display: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+}
+
+/* ================================================================
+   1b. Dark Mode Token Overrides
+   ================================================================ */
+.dark,
+[data-theme="dark"],
+[data-accent-color][data-is-root-theme="true"][data-gray-color] {
+  --brand-1: #1f1208;
+  --brand-2: #2a180d;
+  --brand-3: #3d2212;
+  --brand-4: #522e18;
+  --brand-5: #6b3d20;
+  --brand-6: #8c522d;
+  --brand-7: #b06b3d;
+  --brand-8: #d68034;
+  --brand-9: #F97316;
+  --brand-10: #f5933d;
+  --brand-11: #ffb366;
+  --brand-12: #ffdfc7;
+
+  --pm-gray-1: #09090B;
+  --pm-gray-2: #18181B;
+  --pm-gray-3: #27272A;
+  --pm-gray-4: #3F3F46;
+  --pm-gray-5: #52525B;
+  --pm-gray-6: #71717A;
+  --pm-gray-7: #A1A1AA;
+  --pm-gray-8: #D4D4D8;
+  --pm-gray-9: #6e6e6e;
+  --pm-gray-10: #7a7a7a;
+  --pm-gray-11: #b0b0b0;
+  --pm-gray-12: #FAFAFA;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+/* ================================================================
+   2. Global Typography
+   ================================================================ */
+body {
+  font-family: var(--font-body);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Heading overrides — apply display font to Radix headings */
+h1, h2, h3, h4, h5, h6,
+.rt-Heading {
+  font-family: var(--font-display);
+}
+
+/* Monospace contexts */
+code, pre, kbd, samp,
+.rt-Code {
+  font-family: var(--font-mono);
+}
+
+/* ================================================================
+   3. Component Overrides — Radix/Reflex
+   ================================================================ */
 
 /* Button hover states */
 .rt-Button[data-accent-color="orange"]:hover {
-  background-color: #d66f1f;
+  background-color: var(--brand-10);
 }
 
 /* Progress bar color */
 .rt-ProgressRoot[data-accent-color="orange"] .rt-ProgressIndicator {
-  background-color: #ef8327;
+  background-color: var(--brand-9);
 }
 
 /* Spinner color */
 .rt-Spinner[data-accent-color="orange"] {
-  color: #ef8327;
+  color: var(--brand-9);
 }
 
 /* Focus ring for accessibility */
 .rt-Button:focus-visible,
 .rt-TextFieldInput:focus-visible,
+.rt-TextAreaInput:focus-visible,
 .rt-SelectTrigger:focus-visible,
 .rt-CheckboxRoot:focus-visible,
 .rt-SwitchRoot:focus-visible {
-  outline: 2px solid var(--plexmix-orange);
+  outline: 2px solid var(--brand-9);
   outline-offset: 2px;
 }
 
-/* ============================================
-   Sortable Table Headers
-   ============================================ */
+/* Card base refinement */
+.rt-Card {
+  border-radius: var(--radius-lg);
+}
+
+/* Badge refinement */
+.rt-Badge {
+  border-radius: var(--radius-sm);
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 500;
+}
+
+/* Input refinement */
+.rt-TextFieldInput,
+.rt-TextAreaInput {
+  font-family: var(--font-body);
+  border-radius: var(--radius-md);
+}
+
+/* Select refinement */
+.rt-SelectTrigger {
+  font-family: var(--font-body);
+  border-radius: var(--radius-md);
+}
+
+/* Table refinement */
+.rt-TableRootTable {
+  font-family: var(--font-body);
+}
+
+.rt-TableCell {
+  font-size: 14px;
+}
+
+.rt-TableColumnHeaderCell {
+  font-size: 13px;
+  font-weight: 500;
+  font-family: var(--font-body);
+}
+
+/* ================================================================
+   4. Sortable Table Headers (backward compat)
+   ================================================================ */
 .sortable-header {
   cursor: pointer;
   user-select: none;
-  transition: color 150ms ease;
+  transition: color var(--duration-fast) var(--ease-default);
 }
 
 .sortable-header:hover {
-  color: var(--plexmix-orange);
+  color: var(--brand-9);
 }
 
-/* ============================================
-   Responsive Utilities
-   ============================================ */
+/* ================================================================
+   5. Responsive Utilities (backward compat)
+   ================================================================ */
 @media (max-width: 768px) {
   .hide-mobile {
     display: none !important;
@@ -84,14 +310,331 @@
   }
 }
 
-/* ============================================
-   Transition Animations
-   ============================================ */
+/* ================================================================
+   6. Keyframe Animations
+   ================================================================ */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes progressIndeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+/* ================================================================
+   7. Animation Utility Classes
+   ================================================================ */
+
+/* Legacy (backward compat) */
 .fade-in {
   animation: fadeIn 200ms ease-in;
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(-4px); }
-  to { opacity: 1; transform: translateY(0); }
+/* New animation utilities */
+.animate-fade-in {
+  animation: fadeIn 200ms var(--ease-out);
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 300ms var(--ease-out);
+  animation-fill-mode: both;
+}
+
+.animate-scale-in {
+  animation: scaleIn 200ms var(--ease-spring);
+  animation-fill-mode: both;
+}
+
+.animate-slide-up {
+  animation: slideUp 300ms var(--ease-out);
+  animation-fill-mode: both;
+}
+
+/* Stagger delays for lists */
+.stagger-1 { animation-delay: 50ms; }
+.stagger-2 { animation-delay: 100ms; }
+.stagger-3 { animation-delay: 150ms; }
+.stagger-4 { animation-delay: 200ms; }
+.stagger-5 { animation-delay: 250ms; }
+
+/* ================================================================
+   8. Interactive Utility Classes
+   ================================================================ */
+
+/* Card / surface hover lift */
+.hover-lift {
+  transition: transform 200ms var(--ease-out), box-shadow 200ms var(--ease-out);
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Button press micro-interaction */
+.pm-button {
+  position: relative;
+  overflow: hidden;
+  transition: transform 100ms var(--ease-default);
+}
+
+.pm-button:active {
+  transform: scale(0.98);
+}
+
+/* Glow effect for primary CTAs */
+.pm-glow:hover {
+  box-shadow: var(--shadow-glow);
+}
+
+/* ================================================================
+   9. Skeleton Loading
+   ================================================================ */
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    var(--pm-gray-3) 25%,
+    var(--pm-gray-4) 50%,
+    var(--pm-gray-3) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+  border-radius: var(--radius-md);
+}
+
+/* ================================================================
+   10. Glass Morphism
+   ================================================================ */
+.glass {
+  background: rgba(24, 24, 27, 0.8);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(63, 63, 70, 0.5);
+}
+
+/* Light mode glass */
+:root:not(.dark) .glass,
+[data-theme="light"] .glass {
+  background: rgba(255, 255, 255, 0.8);
+  border: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+/* ================================================================
+   11. Progress Bar (thin, top-of-section)
+   ================================================================ */
+.pm-progress-bar {
+  height: 2px;
+  background-color: var(--pm-gray-3);
+  border-radius: 1px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.pm-progress-bar-fill {
+  height: 100%;
+  background-color: var(--brand-9);
+  border-radius: 1px;
+  transition: width 300ms var(--ease-out);
+}
+
+.pm-progress-bar-indeterminate {
+  height: 100%;
+  width: 25%;
+  background-color: var(--brand-9);
+  border-radius: 1px;
+  animation: progressIndeterminate 1.5s var(--ease-default) infinite;
+}
+
+/* ================================================================
+   12. Status Dots
+   ================================================================ */
+.status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.status-dot-success {
+  background-color: var(--pm-success);
+}
+
+.status-dot-error {
+  background-color: var(--pm-error);
+}
+
+.status-dot-warning {
+  background-color: var(--pm-warning);
+}
+
+.status-dot-pulse {
+  animation: pulse 2s ease-in-out infinite;
+}
+
+/* ================================================================
+   13. Accessibility — Reduced Motion
+   ================================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ================================================================
+   14. Floating Action Bar (Library Page)
+   ================================================================ */
+.floating-action-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  animation: slideUp 250ms var(--ease-out);
+  animation-fill-mode: both;
+}
+
+@media (min-width: 769px) {
+  .floating-action-bar {
+    left: calc(50% + 110px); /* offset for sidebar */
+  }
+}
+
+/* ================================================================
+   15. Settings Sidebar Nav Item
+   ================================================================ */
+.settings-nav-item {
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  border-radius: var(--radius-md);
+  padding: 8px 12px;
+  width: 100%;
+}
+
+.settings-nav-item:hover {
+  background-color: var(--pm-gray-3);
+}
+
+.settings-nav-item-active {
+  background-color: var(--brand-3);
+  color: var(--brand-11);
+}
+
+/* ================================================================
+   16. Playlist List Row (History Page)
+   ================================================================ */
+.playlist-row {
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-default);
+  border-radius: var(--radius-md);
+}
+
+.playlist-row:hover {
+  background-color: var(--pm-gray-3);
+}
+
+/* ================================================================
+   17. Unsaved Changes Bar
+   ================================================================ */
+.unsaved-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 50;
+  animation: slideUp 250ms var(--ease-out);
+  animation-fill-mode: both;
+}
+
+/* ================================================================
+   18. Generator Hero Input
+   ================================================================ */
+.generator-hero-input .rt-TextAreaInput {
+  font-size: 16px;
+  padding: 16px;
+  min-height: 120px;
+  font-family: var(--font-body);
+}
+
+/* ================================================================
+   19. Mood Pill (Clickable Example Mood Badges)
+   ================================================================ */
+.mood-pill {
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.mood-pill:hover {
+  background-color: var(--brand-4) !important;
+  color: var(--brand-11) !important;
+}
+
+/* ================================================================
+   20. Doctor Health Banner
+   ================================================================ */
+.health-banner {
+  animation: fadeInUp 300ms var(--ease-out);
+  animation-fill-mode: both;
+}
+
+/* ================================================================
+   21. Table Row Hover Refinement
+   ================================================================ */
+.rt-TableRow:hover .rt-TableCell {
+  background-color: var(--pm-gray-2);
+  transition: background-color var(--duration-fast) var(--ease-default);
+}
+
+/* ================================================================
+   22. Focus Ring Refinement (Orange Glow)
+   ================================================================ */
+.rt-TextFieldInput:focus,
+.rt-TextAreaInput:focus {
+  box-shadow: 0 0 0 1px var(--brand-9), var(--shadow-glow);
+}
+
+/* ================================================================
+   23. Animate Spin (Loading Spinners)
+   ================================================================ */
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }

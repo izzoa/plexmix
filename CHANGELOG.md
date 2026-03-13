@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-03-13
+
+### Changed
+- Complete UI revamp across all pages: dashboard, settings, library, generator, history, tagging, and doctor
+- Settings page redesigned with vertical sidebar navigation and section icons (replacing tabs)
+- Generator page redesigned with centered hero layout, "What's the vibe?" textarea, and mood pill suggestions
+- Library page redesigned with separated command bar, horizontal filter row, and floating bulk actions bar
+- History page redesigned with clean list rows replacing card grid
+- Tagging page redesigned with accordion filters and switch toggles
+- Doctor page redesigned with slim health banner and dashboard-style stat tiles
+- Track table: embedded column shows compact dot indicator; tags column shows max 3 badges with "+N" overflow
+- Loading components use CSS shimmer skeleton animation
+- Progress modal uses monospace percentage display
+- Empty states enlarged with fade-in animation
+- New CSS design tokens: glass morphism, focus ring glow, animation classes (fade-in, slide-up, scale-in, spin)
+- Updated README screenshots to reflect the revamped UI (dark + light mode)
+
+### Fixed
+- Settings error messages now show user-friendly colored banners instead of raw exception text with HTTP headers
+- Settings `set_active_tab` explicit method fixes Reflex 0.8.9 deprecation warning for auto-generated setters
+
 ## [0.5.8] - 2026-03-13
 
 ### Added

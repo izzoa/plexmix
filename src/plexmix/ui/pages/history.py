@@ -5,158 +5,207 @@ from plexmix.ui.components.error import error_message, empty_state
 from plexmix.ui.states.history_state import HistoryState
 
 
-def playlist_card(playlist: dict[str, str]) -> rx.Component:
-    # In Reflex, we access dictionary values directly using bracket notation
-    # and use rx.cond for default values
+# ── Skeleton loading rows ────────────────────────────────────────────
 
-    return rx.card(
+def _skeleton_row() -> rx.Component:
+    """Skeleton row that mimics the playlist list layout."""
+    return rx.hstack(
+        # Left side: name + mood placeholder
         rx.vstack(
-            # Thumbnail placeholder
             rx.box(
-                rx.icon("music", size=48, color="gray.500"),
-                width="100%",
-                height="150px",
-                background=rx.color_mode_cond(light="gray.3", dark="gray.5"),
-                border_radius="8px",
-                display="flex",
-                align_items="center",
-                justify_content="center",
+                width="180px",
+                height="18px",
+                border_radius="var(--radius-sm)",
+                class_name="skeleton",
             ),
-
-            # Playlist info
-            rx.vstack(
-                rx.text(
-                    rx.cond(
-                        playlist['name'],
-                        playlist['name'],
-                        'Unnamed Playlist'
-                    ),
-                    size="4",
-                    weight="bold",
-                    truncate=True,
-                ),
-                rx.text(
-                    rx.cond(
-                        playlist['mood_query'],
-                        playlist['mood_query'],
-                        'No description'
-                    ),
-                    size="2",
-                    color_scheme="gray",
-                    truncate=True,
-                    max_lines=2,
-                ),
-                rx.hstack(
-                    rx.text(
-                        rx.cond(
-                            playlist['track_count'],
-                            playlist['track_count'] + " tracks",
-                            "0 tracks"
-                        ),
-                        size="2",
-                        color_scheme="gray",
-                    ),
-                    rx.text("•", size="2", color_scheme="gray"),
-                    rx.text(
-                        rx.cond(
-                            playlist['created_at'],
-                            playlist['created_at'],
-                            'Unknown date'
-                        ),
-                        size="2",
-                        color_scheme="gray",
-                    ),
-                    spacing="1",
-                ),
-                spacing="2",
-                align="start",
-                width="100%",
+            rx.box(
+                width="260px",
+                height="14px",
+                border_radius="var(--radius-sm)",
+                class_name="skeleton",
             ),
-
-            # Action buttons (shown on hover)
-            rx.hstack(
-                rx.button(
-                    "View",
-                    on_click=lambda: HistoryState.select_playlist(playlist['id']),
-                    variant="soft",
-                    size="2",
-                ),
-                rx.button(
-                    rx.icon("upload", size=16),
-                    on_click=lambda: HistoryState.export_to_plex(playlist['id']),
-                    variant="soft",
-                    size="2",
-                    title="Export to Plex",
-                ),
-                rx.button(
-                    rx.icon("download", size=16),
-                    on_click=lambda: HistoryState.export_to_m3u(playlist['id']),
-                    variant="soft",
-                    size="2",
-                    title="Export M3U",
-                ),
-                rx.button(
-                    rx.icon("trash-2", size=16),
-                    on_click=lambda: HistoryState.show_delete_confirmation(playlist['id']),
-                    variant="soft",
-                    color_scheme="red",
-                    size="2",
-                    title="Delete",
-                ),
-                spacing="2",
-                width="100%",
-            ),
-
-            spacing="3",
-            padding="4",
-            width="100%",
+            spacing="2",
+            align="start",
+            flex="1",
         ),
-        width="100%",
-        _hover={
-            "box_shadow": rx.color_mode_cond(light="0 4px 12px rgba(0,0,0,0.1)", dark="0 4px 12px rgba(0,0,0,0.3)"),
-            "transform": "translateY(-2px)",
-            "transition": "all 0.2s ease",
-        },
-    )
-
-
-def playlist_grid() -> rx.Component:
-    return rx.cond(
-        HistoryState.loading_playlists,
-        # Show skeleton cards while loading
-        rx.grid(
-            *[skeleton_card() for _ in range(4)],
-            columns=rx.breakpoints(
-                initial="1",
-                sm="2",
-                md="3",
-                lg="4",
+        # Right side: pill + date + icons placeholder
+        rx.hstack(
+            rx.box(
+                width="70px",
+                height="22px",
+                border_radius="var(--radius-xl)",
+                class_name="skeleton",
+            ),
+            rx.box(
+                width="100px",
+                height="14px",
+                border_radius="var(--radius-sm)",
+                class_name="skeleton",
+            ),
+            rx.hstack(
+                rx.box(width="28px", height="28px", border_radius="var(--radius-md)", class_name="skeleton"),
+                rx.box(width="28px", height="28px", border_radius="var(--radius-md)", class_name="skeleton"),
+                rx.box(width="28px", height="28px", border_radius="var(--radius-md)", class_name="skeleton"),
+                spacing="1",
             ),
             spacing="4",
-            width="100%",
+            align="center",
         ),
+        align="center",
+        width="100%",
+        padding_x="16px",
+        padding_y="14px",
+        border_bottom="1px solid var(--gray-a4)",
+    )
+
+
+def _skeleton_list() -> rx.Component:
+    """Show 6 skeleton rows mimicking the list layout."""
+    return rx.vstack(
+        *[_skeleton_row() for _ in range(6)],
+        spacing="0",
+        width="100%",
+    )
+
+
+# ── Playlist row ─────────────────────────────────────────────────────
+
+def _playlist_row(playlist: dict[str, str]) -> rx.Component:
+    """Single playlist row: name + mood on left, pill + date + actions on right."""
+    return rx.hstack(
+        # Left side: name + mood query
+        rx.vstack(
+            rx.text(
+                rx.cond(
+                    playlist["name"],
+                    playlist["name"],
+                    "Unnamed Playlist",
+                ),
+                size="3",
+                weight="bold",
+                truncate=True,
+            ),
+            rx.text(
+                rx.cond(
+                    playlist["mood_query"],
+                    playlist["mood_query"],
+                    "No description",
+                ),
+                size="2",
+                color="gray.9",
+                truncate=True,
+                style={"fontStyle": "italic"},
+            ),
+            spacing="1",
+            align="start",
+            flex="1",
+            min_width="0",
+        ),
+        # Right side: track count pill + date + action buttons
+        rx.hstack(
+            # Track count pill
+            rx.badge(
+                rx.cond(
+                    playlist["track_count"],
+                    playlist["track_count"] + " tracks",
+                    "0 tracks",
+                ),
+                variant="surface",
+                size="1",
+                color_scheme="gray",
+            ),
+            # Date
+            rx.text(
+                rx.cond(
+                    playlist["created_at"],
+                    playlist["created_at"],
+                    "Unknown date",
+                ),
+                size="1",
+                color="gray.9",
+                style={"fontFamily": "var(--font-mono)", "whiteSpace": "nowrap"},
+            ),
+            # Action icon buttons
+            rx.hstack(
+                rx.icon_button(
+                    rx.icon("eye", size=14),
+                    on_click=lambda: HistoryState.select_playlist(playlist["id"]),
+                    variant="ghost",
+                    size="1",
+                    color_scheme="gray",
+                    title="View details",
+                    cursor="pointer",
+                ),
+                rx.icon_button(
+                    rx.icon("upload", size=14),
+                    on_click=lambda: HistoryState.export_to_plex(playlist["id"]),
+                    variant="ghost",
+                    size="1",
+                    color_scheme="gray",
+                    title="Export to Plex",
+                    cursor="pointer",
+                ),
+                rx.icon_button(
+                    rx.icon("download", size=14),
+                    on_click=lambda: HistoryState.export_to_m3u(playlist["id"]),
+                    variant="ghost",
+                    size="1",
+                    color_scheme="gray",
+                    title="Export M3U",
+                    cursor="pointer",
+                ),
+                rx.icon_button(
+                    rx.icon("trash-2", size=14),
+                    on_click=lambda: HistoryState.show_delete_confirmation(playlist["id"]),
+                    variant="ghost",
+                    size="1",
+                    color_scheme="red",
+                    title="Delete",
+                    cursor="pointer",
+                ),
+                spacing="1",
+            ),
+            spacing="4",
+            align="center",
+            flex_shrink="0",
+        ),
+        align="center",
+        width="100%",
+        padding_x="16px",
+        padding_y="12px",
+        border_bottom="1px solid var(--gray-a4)",
+        border_radius="var(--radius-sm)",
+        cursor="pointer",
+        on_click=lambda: HistoryState.select_playlist(playlist["id"]),
+        _hover={"background_color": "gray.3"},
+        transition="background-color 150ms ease",
+    )
+
+
+# ── Playlist list ────────────────────────────────────────────────────
+
+def _playlist_list() -> rx.Component:
+    """Main list of playlists with loading / empty states."""
+    return rx.cond(
+        HistoryState.loading_playlists,
+        _skeleton_list(),
         rx.cond(
             HistoryState.filtered_playlists.length() > 0,
-            rx.grid(
+            rx.vstack(
                 rx.foreach(
                     HistoryState.filtered_playlists,
-                    playlist_card,
+                    _playlist_row,
                 ),
-                columns=rx.breakpoints(
-                    initial="1",
-                    sm="2",
-                    md="3",
-                    lg="4",
-                ),
-                spacing="4",
+                spacing="0",
                 width="100%",
+                class_name="animate-fade-in-up",
             ),
-            playlist_empty_state(),
+            _playlist_empty_state(),
         ),
     )
 
 
-def playlist_empty_state() -> rx.Component:
+def _playlist_empty_state() -> rx.Component:
     return empty_state(
         icon="music",
         title="No playlists saved yet",
@@ -166,86 +215,189 @@ def playlist_empty_state() -> rx.Component:
     )
 
 
-def detail_modal() -> rx.Component:
+# ── Search & sort controls ───────────────────────────────────────────
+
+def _search_sort_bar() -> rx.Component:
+    """Search input on the left, sort controls on the right."""
+    return rx.hstack(
+        # Search with icon
+        rx.el.div(
+            rx.icon(
+                "search",
+                size=14,
+                color="gray.9",
+                style={
+                    "position": "absolute",
+                    "left": "10px",
+                    "top": "50%",
+                    "transform": "translateY(-50%)",
+                    "pointerEvents": "none",
+                },
+            ),
+            rx.input(
+                placeholder="Search playlists...",
+                value=HistoryState.search_query,
+                on_change=HistoryState.set_search_query,
+                size="2",
+                style={"paddingLeft": "32px"},
+                width="100%",
+            ),
+            style={"position": "relative"},
+            width=rx.breakpoints(initial="100%", md="320px"),
+        ),
+        rx.spacer(),
+        # Sort controls
+        rx.hstack(
+            rx.text("Sort by:", size="2", color="gray.9", weight="medium"),
+            rx.select(
+                ["Date Created", "Name", "Track Count"],
+                value=HistoryState.sort_by_label,
+                on_change=HistoryState.sort_playlists_by_label,
+                size="2",
+            ),
+            rx.icon_button(
+                rx.cond(
+                    HistoryState.sort_descending,
+                    rx.icon("arrow-down", size=14),
+                    rx.icon("arrow-up", size=14),
+                ),
+                on_click=HistoryState.toggle_sort_order,
+                variant="ghost",
+                size="1",
+                color_scheme="gray",
+                title="Toggle sort order",
+                cursor="pointer",
+            ),
+            spacing="2",
+            align="center",
+        ),
+        spacing="4",
+        align="center",
+        width="100%",
+        wrap="wrap",
+    )
+
+
+# ── Detail modal ─────────────────────────────────────────────────────
+
+def _detail_modal() -> rx.Component:
+    """Polished detail dialog for viewing a selected playlist."""
     return rx.dialog.root(
         rx.dialog.content(
             rx.vstack(
-                # Header
+                # Header: playlist name + close button
                 rx.hstack(
                     rx.text(
                         rx.cond(
                             HistoryState.selected_playlist,
                             rx.cond(
-                                HistoryState.selected_playlist['name'],
-                                HistoryState.selected_playlist['name'],
-                                'Playlist'
+                                HistoryState.selected_playlist["name"],
+                                HistoryState.selected_playlist["name"],
+                                "Playlist",
                             ),
                             "Playlist",
                         ),
-                        size="6",
+                        size="5",
                         weight="bold",
+                        style={"fontFamily": "var(--font-display)"},
                     ),
                     rx.spacer(),
                     rx.dialog.close(
-                        rx.button(
-                            rx.icon("x", size=20),
+                        rx.icon_button(
+                            rx.icon("x", size=16),
                             variant="ghost",
-                            size="2",
+                            size="1",
+                            color_scheme="gray",
                             title="Close",
+                            cursor="pointer",
                         ),
                     ),
                     width="100%",
                     align="center",
                 ),
 
-                # Metadata
+                # Metadata as inline pills
                 rx.cond(
                     HistoryState.selected_playlist,
                     rx.vstack(
-                        rx.text(
-                            rx.cond(
-                                HistoryState.selected_playlist['mood_query'],
-                                HistoryState.selected_playlist['mood_query'],
-                                ''
+                        # Mood query (italic)
+                        rx.cond(
+                            HistoryState.selected_playlist["mood_query"],
+                            rx.text(
+                                HistoryState.selected_playlist["mood_query"],
+                                size="2",
+                                color="gray.9",
+                                style={"fontStyle": "italic"},
                             ),
-                            size="3",
-                            color_scheme="gray",
-                            style={"fontStyle": "italic"},
+                            rx.fragment(),
                         ),
+                        # Metadata pills
                         rx.hstack(
-                            rx.text(
-                                f"{HistoryState.selected_playlist_tracks.length()} tracks",
-                                size="3",
-                            ),
-                            rx.text("•", size="3"),
-                            rx.text(
-                                rx.cond(
-                                    HistoryState.selected_playlist['total_duration_formatted'],
-                                    HistoryState.selected_playlist['total_duration_formatted'],
-                                    "--",
+                            rx.badge(
+                                rx.hstack(
+                                    rx.icon("music", size=12),
+                                    rx.text(
+                                        HistoryState.selected_playlist_tracks.length().to(str)
+                                        + " tracks",
+                                    ),
+                                    spacing="1",
+                                    align="center",
                                 ),
-                                size="3",
+                                variant="surface",
+                                size="1",
+                                color_scheme="blue",
                             ),
-                            rx.text("•", size="3"),
-                            rx.text(
-                                "Created: ",
-                                rx.cond(
-                                    HistoryState.selected_playlist['created_at'],
-                                    HistoryState.selected_playlist['created_at'],
-                                    "Unknown"
+                            rx.badge(
+                                rx.hstack(
+                                    rx.icon("clock", size=12),
+                                    rx.text(
+                                        rx.cond(
+                                            HistoryState.selected_playlist[
+                                                "total_duration_formatted"
+                                            ],
+                                            HistoryState.selected_playlist[
+                                                "total_duration_formatted"
+                                            ],
+                                            "--",
+                                        ),
+                                    ),
+                                    spacing="1",
+                                    align="center",
                                 ),
-                                size="3",
+                                variant="surface",
+                                size="1",
+                                color_scheme="gray",
+                            ),
+                            rx.badge(
+                                rx.hstack(
+                                    rx.icon("calendar", size=12),
+                                    rx.text(
+                                        rx.cond(
+                                            HistoryState.selected_playlist["created_at"],
+                                            HistoryState.selected_playlist["created_at"],
+                                            "Unknown",
+                                        ),
+                                    ),
+                                    spacing="1",
+                                    align="center",
+                                ),
+                                variant="surface",
+                                size="1",
+                                color_scheme="gray",
                             ),
                             spacing="2",
-                            color_scheme="gray",
+                            wrap="wrap",
                         ),
-                        spacing="2",
+                        spacing="3",
                         width="100%",
                     ),
-                    rx.text(),
+                    rx.fragment(),
                 ),
 
-                # Track list
+                # Separator
+                rx.separator(size="4", color_scheme="gray"),
+
+                # Track list table
                 rx.box(
                     rx.table.root(
                         rx.table.header(
@@ -261,11 +413,18 @@ def detail_modal() -> rx.Component:
                             rx.foreach(
                                 HistoryState.selected_playlist_tracks,
                                 lambda track: rx.table.row(
-                                    rx.table.cell(track['position']),
-                                    rx.table.cell(track['title']),
-                                    rx.table.cell(track['artist']),
-                                    rx.table.cell(track['album']),
-                                    rx.table.cell(track['duration_formatted']),
+                                    rx.table.cell(track["position"]),
+                                    rx.table.cell(
+                                        rx.text(track["title"], weight="medium"),
+                                    ),
+                                    rx.table.cell(track["artist"]),
+                                    rx.table.cell(track["album"]),
+                                    rx.table.cell(
+                                        rx.text(
+                                            track["duration_formatted"],
+                                            style={"fontFamily": "var(--font-mono)"},
+                                        ),
+                                    ),
                                 ),
                             )
                         ),
@@ -279,149 +438,186 @@ def detail_modal() -> rx.Component:
                     width="100%",
                 ),
 
-                # Actions
+                # Action buttons at bottom
                 rx.hstack(
                     rx.button(
-                        "Export to Plex",
+                        rx.hstack(
+                            rx.icon("upload", size=14),
+                            rx.text("Export to Plex"),
+                            spacing="2",
+                            align="center",
+                        ),
                         on_click=lambda: HistoryState.export_to_plex(
-                            HistoryState.selected_playlist['id']
+                            HistoryState.selected_playlist["id"]
                         ),
                         color_scheme="blue",
-                        size="3",
+                        size="2",
                     ),
                     rx.button(
-                        "Export M3U",
+                        rx.hstack(
+                            rx.icon("download", size=14),
+                            rx.text("Export M3U"),
+                            spacing="2",
+                            align="center",
+                        ),
                         on_click=lambda: HistoryState.export_to_m3u(
-                            HistoryState.selected_playlist['id']
+                            HistoryState.selected_playlist["id"]
                         ),
                         variant="soft",
-                        size="3",
+                        size="2",
                     ),
                     rx.button(
-                        "Delete Playlist",
+                        rx.hstack(
+                            rx.icon("trash-2", size=14),
+                            rx.text("Delete"),
+                            spacing="2",
+                            align="center",
+                        ),
                         on_click=lambda: HistoryState.show_delete_confirmation(
-                            HistoryState.selected_playlist['id']
+                            HistoryState.selected_playlist["id"]
                         ),
                         color_scheme="red",
                         variant="soft",
-                        size="3",
+                        size="2",
                     ),
                     rx.spacer(),
                     rx.dialog.close(
                         rx.button(
                             "Close",
-                            variant="soft",
-                            size="3",
+                            variant="outline",
+                            color_scheme="gray",
+                            size="2",
                         ),
                     ),
                     spacing="3",
                     width="100%",
+                    wrap="wrap",
                 ),
 
                 spacing="4",
                 width="100%",
             ),
             max_width=rx.breakpoints(initial="95vw", md="900px"),
-            padding="6",
+            padding="24px",
         ),
         open=HistoryState.is_detail_modal_open,
         on_open_change=HistoryState.set_detail_modal_open,
     )
 
 
-def delete_confirmation_dialog() -> rx.Component:
+# ── Delete confirmation dialog ───────────────────────────────────────
+
+def _delete_confirmation_dialog() -> rx.Component:
+    """Clean delete confirmation alert dialog."""
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
-            rx.alert_dialog.title("Delete Playlist"),
-            rx.alert_dialog.description(
-                "Are you sure you want to delete this playlist? This action cannot be undone.",
-            ),
-            rx.flex(
-                rx.alert_dialog.cancel(
-                    rx.button(
-                        "Cancel",
-                        variant="soft",
-                        color_scheme="gray",
+            rx.vstack(
+                rx.hstack(
+                    rx.box(
+                        rx.icon("triangle-alert", size=18, color="red.9"),
+                        padding="8px",
+                        border_radius="var(--radius-md)",
+                        background_color="red.3",
+                        flex_shrink="0",
                     ),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Delete",
-                        on_click=HistoryState.confirm_delete,
-                        color_scheme="red",
+                    rx.vstack(
+                        rx.alert_dialog.title(
+                            "Delete Playlist",
+                            size="4",
+                            weight="bold",
+                        ),
+                        rx.alert_dialog.description(
+                            "Are you sure you want to delete this playlist? This action cannot be undone.",
+                            size="2",
+                            color="gray.9",
+                        ),
+                        spacing="1",
                     ),
+                    spacing="3",
+                    align="start",
+                    width="100%",
                 ),
-                spacing="3",
-                margin_top="4",
-                justify="end",
+                rx.hstack(
+                    rx.alert_dialog.cancel(
+                        rx.button(
+                            "Cancel",
+                            variant="outline",
+                            color_scheme="gray",
+                            size="2",
+                        ),
+                    ),
+                    rx.alert_dialog.action(
+                        rx.button(
+                            "Delete",
+                            on_click=HistoryState.confirm_delete,
+                            color_scheme="red",
+                            size="2",
+                        ),
+                    ),
+                    spacing="3",
+                    justify="end",
+                    width="100%",
+                ),
+                spacing="5",
             ),
+            padding="24px",
         ),
         open=HistoryState.is_delete_confirmation_open,
         on_open_change=HistoryState.set_delete_confirmation_open,
     )
 
 
+# ══════════════════════════════════════════════════════════════════════
+#  History Page
+# ══════════════════════════════════════════════════════════════════════
+
 def history() -> rx.Component:
-    content = rx.container(
-        rx.vstack(
-            rx.heading("Playlist History", size="8", margin_bottom="6"),
-
-            # Error message
-            rx.cond(
-                HistoryState.error_message != "",
-                error_message(
-                    HistoryState.error_message,
-                    on_dismiss=lambda: HistoryState.set_error_message(""),
-                ),
-                rx.box(),
-            ),
-
-            # Search and sort controls
-            rx.hstack(
-                rx.input(
-                    placeholder="Search playlists...",
-                    value=HistoryState.search_query,
-                    on_change=HistoryState.set_search_query,
-                    width="300px",
-                    size="2",
-                ),
-                rx.spacer(),
-                rx.text("Sort by:", size="3"),
-                rx.select(
-                    ["Date Created", "Name", "Track Count"],
-                    value=HistoryState.sort_by_label,
-                    on_change=HistoryState.sort_playlists_by_label,
-                    size="2",
-                ),
-                rx.button(
+    content = rx.vstack(
+        # ── Page header ───────────────────────────────────────────
+        rx.hstack(
+            rx.vstack(
+                rx.heading("Playlist History", size="8"),
+                rx.text(
                     rx.cond(
-                        HistoryState.sort_descending,
-                        rx.icon("arrow_down", size=16),
-                        rx.icon("arrow_up", size=16),
+                        HistoryState.filtered_playlists.length() > 0,
+                        HistoryState.filtered_playlists.length().to(str)
+                        + " playlists",
+                        "",
                     ),
-                    on_click=HistoryState.toggle_sort_order,
-                    variant="soft",
-                    size="2",
-                    title="Toggle sort order",
+                    size="3",
+                    color="gray.9",
                 ),
-                spacing="3",
-                align="center",
-                width="100%",
+                spacing="1",
+                align="start",
             ),
-
-            # Playlist grid
-            playlist_grid(),
-
-            # Detail modal
-            detail_modal(),
-
-            # Delete confirmation dialog
-            delete_confirmation_dialog(),
-
-            spacing="6",
             width="100%",
         ),
-        size="4",
+
+        # ── Error message ─────────────────────────────────────────
+        rx.cond(
+            HistoryState.error_message != "",
+            error_message(
+                HistoryState.error_message,
+                on_dismiss=lambda: HistoryState.set_error_message(""),
+            ),
+            rx.fragment(),
+        ),
+
+        # ── Search and sort controls ──────────────────────────────
+        _search_sort_bar(),
+
+        # ── Separator ─────────────────────────────────────────────
+        rx.separator(size="4", color_scheme="gray"),
+
+        # ── Playlist list ─────────────────────────────────────────
+        _playlist_list(),
+
+        # ── Modals ────────────────────────────────────────────────
+        _detail_modal(),
+        _delete_confirmation_dialog(),
+
+        spacing="6",
+        width="100%",
     )
 
     return layout(content)

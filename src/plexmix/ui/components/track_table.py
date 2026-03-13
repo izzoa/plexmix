@@ -3,22 +3,40 @@ from typing import Callable, Optional
 
 
 def tag_badges(tags_str) -> rx.Component:
-    """Render a comma-separated tag string as colored badge pills."""
+    """Render a comma-separated tag string as colored badge pills.
+
+    Shows at most 3 badges with a "+N" overflow indicator when there are more.
+    """
     return rx.cond(
         tags_str,
         rx.flex(
             rx.foreach(
-                tags_str.split(","),
+                tags_str.split(",").to(list[str])[:3],
                 lambda tag: rx.cond(
                     tag.strip() != "",
                     rx.badge(tag.strip(), variant="soft", size="1"),
                     rx.fragment(),
                 ),
             ),
+            rx.cond(
+                tags_str.split(",").length() > 3,
+                rx.text(
+                    rx.cond(
+                        tags_str.split(",").length() > 3,
+                        "+" + (tags_str.split(",").length() - 3).to(str),
+                        "",
+                    ),
+                    size="1",
+                    color="var(--pm-gray-9)",
+                    weight="medium",
+                ),
+                rx.fragment(),
+            ),
             wrap="wrap",
             gap="1",
+            align="center",
         ),
-        rx.text("-", size="2", color="gray"),
+        rx.text("-", size="2", color="var(--pm-gray-9)"),
     )
 
 
@@ -60,6 +78,24 @@ def _sortable_header(
     )
 
 
+def _embedding_dot(has_embedding) -> rx.Component:
+    """Render a small dot indicator for embedding status.
+
+    Green dot for embedded tracks, gray dot otherwise.
+    """
+    return rx.box(
+        width="6px",
+        height="6px",
+        border_radius="50%",
+        flex_shrink="0",
+        background_color=rx.cond(
+            has_embedding == "1",
+            "var(--pm-success)",
+            "var(--pm-gray-6)",
+        ),
+    )
+
+
 def track_table_header(
     sort_column: Optional[rx.Var] = None,
     sort_ascending: Optional[rx.Var] = None,
@@ -67,12 +103,16 @@ def track_table_header(
     all_selected: Optional[rx.Var] = None,
     on_toggle_all: Optional[Callable] = None,
 ) -> rx.Component:
-    select_all_cell = rx.table.column_header_cell(
-        rx.checkbox(
-            checked=all_selected,
-            on_change=on_toggle_all,
+    select_all_cell = (
+        rx.table.column_header_cell(
+            rx.checkbox(
+                checked=all_selected,
+                on_change=on_toggle_all,
+            )
         )
-    ) if all_selected is not None and on_toggle_all is not None else rx.table.column_header_cell("")
+        if all_selected is not None and on_toggle_all is not None
+        else rx.table.column_header_cell("")
+    )
 
     if sort_column is not None and on_sort is not None:
         return rx.table.header(
@@ -81,8 +121,12 @@ def track_table_header(
                 _sortable_header("Title", "title", sort_column, sort_ascending, on_sort),
                 _sortable_header("Artist", "artist", sort_column, sort_ascending, on_sort),
                 _sortable_header("Album", "album", sort_column, sort_ascending, on_sort),
-                _sortable_header("Genre", "genre", sort_column, sort_ascending, on_sort, class_name="hide-mobile"),
-                _sortable_header("Year", "year", sort_column, sort_ascending, on_sort, class_name="hide-mobile"),
+                _sortable_header(
+                    "Genre", "genre", sort_column, sort_ascending, on_sort, class_name="hide-mobile"
+                ),
+                _sortable_header(
+                    "Year", "year", sort_column, sort_ascending, on_sort, class_name="hide-mobile"
+                ),
                 rx.table.column_header_cell("Tags"),
                 rx.table.column_header_cell("Embedded", class_name="hide-mobile"),
             )
@@ -101,7 +145,9 @@ def track_table_header(
     )
 
 
-def track_table_row(track: dict[str, str], is_selected: bool, on_toggle: Callable) -> rx.Component:
+def track_table_row(
+    track: dict[str, str], is_selected: bool, on_toggle: Callable
+) -> rx.Component:
     return rx.table.row(
         rx.table.cell(
             rx.checkbox(
@@ -109,17 +155,38 @@ def track_table_row(track: dict[str, str], is_selected: bool, on_toggle: Callabl
                 on_change=on_toggle,
             )
         ),
-        rx.table.cell(track["title"]),
-        rx.table.cell(track["artist_name"]),
-        rx.table.cell(track["album_title"]),
-        rx.table.cell(rx.cond(track["genre"], track["genre"], "-"), class_name="hide-mobile"),
-        rx.table.cell(rx.cond(track["year"], track["year"], "-"), class_name="hide-mobile"),
-        rx.table.cell(tag_badges(track["tags"])),
+        rx.table.cell(
+            rx.text(track["title"], size="2", weight="medium", trim="both"),
+        ),
+        rx.table.cell(
+            rx.text(track["artist_name"], size="2", trim="both"),
+        ),
+        rx.table.cell(
+            rx.text(track["album_title"], size="2", trim="both"),
+        ),
         rx.table.cell(
             rx.cond(
-                track["has_embedding"] == "1",
-                rx.badge("Yes", color_scheme="green"),
-                rx.badge("No", color_scheme="gray")
+                track["genre"],
+                rx.text(track["genre"], size="2"),
+                rx.text("-", size="2", color="var(--pm-gray-9)"),
+            ),
+            class_name="hide-mobile",
+        ),
+        rx.table.cell(
+            rx.cond(
+                track["year"],
+                rx.text(track["year"], size="2"),
+                rx.text("-", size="2", color="var(--pm-gray-9)"),
+            ),
+            class_name="hide-mobile",
+        ),
+        rx.table.cell(tag_badges(track["tags"])),
+        rx.table.cell(
+            rx.flex(
+                _embedding_dot(track["has_embedding"]),
+                align="center",
+                justify="center",
+                height="100%",
             ),
             class_name="hide-mobile",
         ),
@@ -145,8 +212,8 @@ def track_table(
                     lambda track: track_table_row(
                         track,
                         selected_tracks.contains(track["id"]),
-                        lambda _checked=None: on_toggle_selection(track["id"])
-                    )
+                        lambda _checked=None: on_toggle_selection(track["id"]),
+                    ),
                 )
             ),
             variant="surface",

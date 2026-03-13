@@ -14,6 +14,42 @@ from plexmix.utils.embeddings import LOCAL_EMBEDDING_MODELS
 from plexmix.ai.local_provider import LOCAL_LLM_MODELS, LOCAL_LLM_DEFAULT_MODEL
 
 
+def _friendly_error(e: Exception) -> str:
+    """Turn a raw exception into a short, user-friendly error message."""
+    msg = str(e)
+
+    # Common patterns → plain-English rewrites
+    if "401" in msg or "Unauthorized" in msg or "invalid.*key" in msg.lower():
+        return "Invalid API key. Please check your key and try again."
+    if "403" in msg or "Forbidden" in msg:
+        return "Access denied. Your API key may lack the required permissions."
+    if "404" in msg or "Not Found" in msg:
+        return "Endpoint not found. Please check the URL or model name."
+    if "429" in msg or "rate" in msg.lower():
+        return "Rate limited by the provider. Please wait a moment and try again."
+    if "timeout" in msg.lower() or "timed out" in msg.lower():
+        return "Connection timed out. Check the server URL and your network."
+    if "connection" in msg.lower() and ("refused" in msg.lower() or "error" in msg.lower()):
+        return "Could not connect to the server. Is the URL correct and the service running?"
+    if "resolve" in msg.lower() or "dns" in msg.lower() or "name or service" in msg.lower():
+        return "Could not resolve the hostname. Check the server URL."
+    if "ssl" in msg.lower() or "certificate" in msg.lower():
+        return "SSL/TLS error. The server's certificate may be invalid or expired."
+    if "No module named" in msg:
+        pkg = msg.split("No module named")[-1].strip(" \"'")
+        return f"Missing Python package: {pkg}"
+
+    # Fallback: truncate and clean up raw messages
+    # Strip common noise like 'headers: {...}' or JSON blobs
+    import re
+    msg = re.sub(r"\{[^{}]{50,}\}", "{...}", msg)  # collapse long dicts
+    msg = re.sub(r"headers:\s*\{[^}]*\}", "", msg)  # strip header dumps
+    msg = msg.strip(" ,.")
+    if len(msg) > 120:
+        msg = msg[:117] + "..."
+    return msg or "An unexpected error occurred."
+
+
 class SettingsState(AppState):
     plex_url: str = ""
     plex_username: str = ""
@@ -78,6 +114,9 @@ class SettingsState(AppState):
     temperature_error: str = ""
     batch_size_error: str = ""
     local_endpoint_error: str = ""
+
+    def set_active_tab(self, tab: str):
+        self.active_tab = tab
 
     def on_load(self):
         if not self.check_auth():
@@ -378,7 +417,7 @@ class SettingsState(AppState):
 
         except Exception as e:
             async with self:
-                self.plex_test_status = f"✗ Connection failed: {str(e)}"
+                self.plex_test_status = f"✗ {_friendly_error(e)}"
                 self.testing_connection = False
 
     @rx.event(background=True)
@@ -526,15 +565,12 @@ class SettingsState(AppState):
 
         except ImportError as e:
             async with self:
-                self.ai_test_status = f"✗ Missing dependency: {str(e)}"
+                self.ai_test_status = f"✗ {_friendly_error(e)}"
                 self.testing_connection = False
 
         except Exception as e:
             async with self:
-                error_msg = str(e)
-                if len(error_msg) > 100:
-                    error_msg = error_msg[:100] + "..."
-                self.ai_test_status = f"✗ Test failed: {error_msg}"
+                self.ai_test_status = f"✗ {_friendly_error(e)}"
                 self.testing_connection = False
 
     @rx.event(background=True)
@@ -644,7 +680,7 @@ class SettingsState(AppState):
             expected_dim = self.embedding_dimension
             if dim != expected_dim:
                 async with self:
-                    self.embedding_test_status = f"⚠ Test passed but dimension mismatch: got {dim}, expected {expected_dim}"
+                    self.embedding_test_status = f"⚠ Embeddings work, but dimension mismatch (got {dim}, expected {expected_dim}). You may need to regenerate your embeddings."
                     self.testing_connection = False
                 return
 
@@ -654,15 +690,12 @@ class SettingsState(AppState):
 
         except ImportError as e:
             async with self:
-                self.embedding_test_status = f"✗ Missing dependency: {str(e)}"
+                self.embedding_test_status = f"✗ {_friendly_error(e)}"
                 self.testing_connection = False
 
         except Exception as e:
             async with self:
-                error_msg = str(e)
-                if len(error_msg) > 100:
-                    error_msg = error_msg[:100] + "..."
-                self.embedding_test_status = f"✗ Test failed: {error_msg}"
+                self.embedding_test_status = f"✗ {_friendly_error(e)}"
                 self.testing_connection = False
 
     def save_all_settings(self):

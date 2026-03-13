@@ -24,6 +24,9 @@ app = rx.App(
     stylesheets=[
         "/styles.css",
     ],
+    style={
+        "font_family": "'IBM Plex Sans', system-ui, -apple-system, sans-serif",
+    },
 )
 
 app.add_page(index, route="/")

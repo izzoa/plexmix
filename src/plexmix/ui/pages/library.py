@@ -7,222 +7,290 @@ from plexmix.ui.components.error import empty_state
 from plexmix.ui.states.library_state import LibraryState
 
 
-def action_bar() -> rx.Component:
+# ── Page header ──────────────────────────────────────────────────────
+
+def _page_header() -> rx.Component:
+    """Page title with muted track count."""
+    return rx.vstack(
+        rx.heading("Library", size="8"),
+        rx.text(
+            f"{LibraryState.total_filtered_tracks} tracks",
+            size="3",
+            color="gray.9",
+        ),
+        spacing="1",
+        align="start",
+        class_name="animate-fade-in-up",
+    )
+
+
+# ── Command bar (sync controls + filter toggle) ─────────────────────
+
+def _command_bar() -> rx.Component:
+    """Top command bar: sync mode + sync button on left, select-page on right."""
     return rx.hstack(
+        # Left: sync controls
         rx.hstack(
             rx.select(
                 ["incremental", "regenerate"],
                 value=LibraryState.sync_mode,
                 on_change=LibraryState.set_sync_mode,
                 placeholder="Sync Mode",
-                size="3",
+                size="2",
             ),
             rx.cond(
                 LibraryState.sync_mode == "regenerate",
                 rx.button(
-                    "⚠️ Regenerate (Destructive)",
+                    rx.icon("triangle-alert", size=14),
+                    "Regenerate",
                     on_click=LibraryState.confirm_regenerate_sync,
                     disabled=LibraryState.is_syncing | ~LibraryState.plex_configured,
                     loading=LibraryState.is_syncing,
                     color_scheme="red",
-                    size="3",
-                    title=rx.cond(~LibraryState.plex_configured, "Configure Plex first", ""),
+                    size="2",
+                    title=rx.cond(
+                        ~LibraryState.plex_configured, "Configure Plex first", ""
+                    ),
                 ),
                 rx.button(
+                    rx.icon("refresh-cw", size=14),
                     "Sync Library",
                     on_click=LibraryState.start_sync,
                     disabled=LibraryState.is_syncing | ~LibraryState.plex_configured,
                     loading=LibraryState.is_syncing,
                     color_scheme="blue",
-                    size="3",
-                    title=rx.cond(~LibraryState.plex_configured, "Configure Plex first", ""),
+                    size="2",
+                    title=rx.cond(
+                        ~LibraryState.plex_configured, "Configure Plex first", ""
+                    ),
                 ),
             ),
-            rx.button(
-                "Clear Filters",
-                on_click=LibraryState.clear_filters,
-                variant="soft",
-                size="3",
-            ),
-            spacing="3",
+            spacing="2",
+            align="center",
         ),
-        rx.hstack(
-            rx.text(
-                f"Selected: {LibraryState.selected_tracks.length()} tracks",
-                size="3",
-                color_scheme="gray",
-            ),
-            rx.button(
-                "Select Page",
-                on_click=LibraryState.select_all_tracks,
-                variant="soft",
-                size="2",
-            ),
-            rx.button(
-                "Clear Selection",
-                on_click=LibraryState.clear_selection,
-                variant="soft",
-                size="2",
-            ),
-            rx.button(
-                "Generate Embeddings",
-                on_click=LibraryState.generate_embeddings,
-                disabled=LibraryState.selected_tracks.length() == 0,
-                loading=LibraryState.is_embedding,
-                color_scheme="orange",
-                size="3",
-                title=rx.cond(LibraryState.selected_tracks.length() == 0, "Select tracks first", ""),
-            ),
-            rx.button(
-                "Analyze Audio",
-                on_click=LibraryState.analyze_audio,
-                disabled=LibraryState.is_analyzing_audio,
-                loading=LibraryState.is_analyzing_audio,
-                color_scheme="purple",
-                size="3",
-                title=rx.cond(LibraryState.is_analyzing_audio, "Analysis in progress", ""),
-            ),
-            spacing="3",
+        rx.spacer(),
+        # Right: select page button
+        rx.button(
+            "Select Page",
+            on_click=LibraryState.select_all_tracks,
+            variant="soft",
+            size="2",
         ),
-        justify="between",
         align="center",
         width="100%",
-        padding="4",
+        class_name="animate-fade-in-up stagger-1",
     )
 
 
-def search_and_filters() -> rx.Component:
+# ── Search and filter row ────────────────────────────────────────────
+
+def _filter_row() -> rx.Component:
+    """Horizontal search and filter controls."""
     return rx.hstack(
-        rx.input(
-            placeholder="Search tracks, artists, albums...",
-            value=LibraryState.search_query,
-            on_change=LibraryState.set_search_query,
-            width="400px",
+        rx.el.div(
+            rx.input(
+                placeholder="Search tracks, artists, albums...",
+                value=LibraryState.search_query,
+                on_change=LibraryState.set_search_query,
+                size="2",
+                width="100%",
+            ),
+            style={"flex": "1", "minWidth": "200px"},
         ),
         rx.input(
             placeholder="Filter by genre",
             value=LibraryState.genre_filter,
             on_change=LibraryState.set_genre_filter,
-            width="200px",
+            size="2",
+            width="180px",
         ),
         rx.hstack(
-            rx.text("Year:", size="3"),
+            rx.text("Year:", size="2", color="gray.9", white_space="nowrap"),
             rx.input(
                 placeholder="Min",
                 type="number",
                 value=LibraryState.year_min,
                 on_change=LibraryState.set_year_min,
-                width="100px",
+                size="2",
+                width="90px",
             ),
-            rx.text("-", size="3"),
+            rx.text("-", size="2", color="gray.9"),
             rx.input(
                 placeholder="Max",
                 type="number",
                 value=LibraryState.year_max,
                 on_change=LibraryState.set_year_max,
-                width="100px",
+                size="2",
+                width="90px",
             ),
             spacing="2",
+            align="center",
         ),
-        spacing="4",
+        rx.button(
+            rx.icon("x", size=14),
+            "Clear",
+            on_click=LibraryState.clear_filters,
+            variant="ghost",
+            size="2",
+            color_scheme="gray",
+        ),
+        spacing="3",
         align="center",
         width="100%",
-        padding="4",
+        wrap="wrap",
+        padding_y="12px",
+        padding_x="16px",
+        border_radius="var(--radius-lg)",
+        background_color="gray.2",
+        class_name="animate-fade-in-up stagger-2",
     )
 
 
-def pagination_controls() -> rx.Component:
+# ── Pagination controls ──────────────────────────────────────────────
+
+def _pagination_controls() -> rx.Component:
+    """Previous / page indicator / Next with showing-count text."""
     total_pages = rx.cond(
         LibraryState.total_filtered_tracks > 0,
         (LibraryState.total_filtered_tracks - 1) // LibraryState.page_size + 1,
-        1
+        1,
+    )
+
+    # Calculate the range being shown
+    range_start = (LibraryState.current_page - 1) * LibraryState.page_size + 1
+    range_end = rx.cond(
+        LibraryState.current_page * LibraryState.page_size
+        < LibraryState.total_filtered_tracks,
+        LibraryState.current_page * LibraryState.page_size,
+        LibraryState.total_filtered_tracks,
     )
 
     return rx.hstack(
         rx.button(
+            rx.icon("chevron-left", size=14),
             "Previous",
             on_click=LibraryState.previous_page,
             disabled=LibraryState.current_page == 1,
             variant="soft",
             size="2",
-            title=rx.cond(LibraryState.current_page == 1, "First page", ""),
         ),
-        rx.text(
-            f"Page {LibraryState.current_page} of {total_pages}",
-            size="3",
-        ),
-        rx.text(
-            f"({LibraryState.total_filtered_tracks} total tracks)",
-            size="2",
-            color_scheme="gray",
+        rx.vstack(
+            rx.text(
+                f"Page {LibraryState.current_page} of {total_pages}",
+                size="2",
+                weight="medium",
+            ),
+            rx.text(
+                f"Showing {range_start}\u2013{range_end} of {LibraryState.total_filtered_tracks} tracks",
+                size="1",
+                color="gray.9",
+            ),
+            spacing="0",
+            align="center",
         ),
         rx.button(
             "Next",
+            rx.icon("chevron-right", size=14),
             on_click=LibraryState.next_page,
             disabled=LibraryState.current_page >= total_pages,
             variant="soft",
             size="2",
-            title=rx.cond(LibraryState.current_page >= total_pages, "Last page", ""),
         ),
         justify="center",
         align="center",
         spacing="4",
-        padding="4",
         width="100%",
+        padding_y="8px",
     )
 
 
-def library() -> rx.Component:
-    content = rx.container(
-        rx.vstack(
-            rx.heading("Library", size="8", margin_bottom="6"),
-            action_bar(),
-            search_and_filters(),
-            rx.divider(),
-            rx.cond(
-                LibraryState.is_page_loading,
-                skeleton_table(rows=10),
-                rx.cond(
-                    LibraryState.tracks.length() > 0,
-                    rx.vstack(
-                        track_table(
-                            LibraryState.tracks,
-                            LibraryState.selected_tracks,
-                            LibraryState.toggle_track_selection,
-                            sort_column=LibraryState.sort_column,
-                            sort_ascending=LibraryState.sort_ascending,
-                            on_sort=LibraryState.set_sort,
-                            all_selected=LibraryState.all_page_selected,
-                            on_toggle_all=LibraryState.toggle_select_all,
-                        ),
-                        pagination_controls(),
-                        spacing="4",
-                        width="100%",
-                        class_name="fade-in",
-                    ),
-                    empty_state(
-                        icon="library",
-                        title="No tracks found",
-                        description="Sync your library from Plex, or adjust your search filters.",
-                        action_text="Go to Settings",
-                        on_action=lambda: rx.redirect("/settings"),
+# ── Floating bulk actions bar ────────────────────────────────────────
+
+def _floating_actions_bar() -> rx.Component:
+    """Glass-morphism floating bar at the bottom when tracks are selected."""
+    return rx.cond(
+        LibraryState.selected_tracks.length() > 0,
+        rx.box(
+            rx.hstack(
+                rx.text(
+                    LibraryState.selected_tracks.length().to(str) + " selected",
+                    size="2",
+                    weight="bold",
+                    color="gray.12",
+                    white_space="nowrap",
+                ),
+                rx.separator(
+                    orientation="vertical", size="1", style={"height": "20px"}
+                ),
+                rx.button(
+                    rx.icon("cpu", size=14),
+                    "Generate Embeddings",
+                    on_click=LibraryState.generate_embeddings,
+                    disabled=LibraryState.selected_tracks.length() == 0,
+                    loading=LibraryState.is_embedding,
+                    color_scheme="orange",
+                    size="2",
+                    title=rx.cond(
+                        LibraryState.selected_tracks.length() == 0,
+                        "Select tracks first",
+                        "",
                     ),
                 ),
+                rx.button(
+                    rx.icon("audio-waveform", size=14),
+                    "Analyze Audio",
+                    on_click=LibraryState.analyze_audio,
+                    disabled=LibraryState.is_analyzing_audio,
+                    loading=LibraryState.is_analyzing_audio,
+                    color_scheme="purple",
+                    size="2",
+                    title=rx.cond(
+                        LibraryState.is_analyzing_audio,
+                        "Analysis in progress",
+                        "",
+                    ),
+                ),
+                rx.button(
+                    rx.icon("x", size=14),
+                    "Clear Selection",
+                    on_click=LibraryState.clear_selection,
+                    variant="ghost",
+                    size="2",
+                ),
+                spacing="3",
+                align="center",
+                wrap="wrap",
+                justify="center",
             ),
-            spacing="4",
-            width="100%",
+            class_name="glass animate-slide-up",
+            position="fixed",
+            bottom="24px",
+            left="50%",
+            transform="translateX(-50%)",
+            z_index="50",
+            padding_x="24px",
+            padding_y="14px",
+            border_radius="var(--radius-xl)",
+            box_shadow="var(--shadow-lg)",
+            max_width="90vw",
         ),
-        size="4",
+        rx.fragment(),
     )
 
-    sync_modal = progress_modal(
+
+# ── Modals (preserved exactly) ───────────────────────────────────────
+
+def _sync_modal() -> rx.Component:
+    return progress_modal(
         is_open=LibraryState.is_syncing,
         progress=LibraryState.sync_progress,
         message=LibraryState.sync_message,
         on_cancel=LibraryState.request_cancel_sync,
     )
 
-    cancel_confirm_dialog = rx.alert_dialog.root(
+
+def _cancel_confirm_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
         rx.alert_dialog.content(
             rx.alert_dialog.title("Cancel Sync?"),
             rx.alert_dialog.description(
@@ -247,26 +315,36 @@ def library() -> rx.Component:
         on_open_change=LibraryState.dismiss_cancel_confirm,
     )
 
-    embedding_modal = progress_modal(
+
+def _embedding_modal() -> rx.Component:
+    return progress_modal(
         is_open=LibraryState.is_embedding,
         progress=LibraryState.embedding_progress,
         message=LibraryState.embedding_message,
         on_cancel=None,
     )
 
-    audio_modal = progress_modal(
+
+def _audio_modal() -> rx.Component:
+    return progress_modal(
         is_open=LibraryState.is_analyzing_audio,
         progress=LibraryState.audio_analysis_progress,
         message=LibraryState.audio_analysis_message,
         on_cancel=None,
     )
 
-    confirm_regenerate_dialog = rx.alert_dialog.root(
+
+def _confirm_regenerate_dialog() -> rx.Component:
+    return rx.alert_dialog.root(
         rx.alert_dialog.content(
-            rx.alert_dialog.title("⚠️ Confirm Regenerate Sync"),
+            rx.alert_dialog.title("Confirm Regenerate Sync"),
             rx.alert_dialog.description(
                 rx.vstack(
-                    rx.text("This will DELETE ALL existing tags and embeddings!", color="red", weight="bold"),
+                    rx.text(
+                        "This will DELETE ALL existing tags and embeddings!",
+                        color="red",
+                        weight="bold",
+                    ),
                     rx.text("This operation will:"),
                     rx.unordered_list(
                         rx.list_item("Clear all AI-generated tags"),
@@ -300,4 +378,73 @@ def library() -> rx.Component:
         open=LibraryState.show_regenerate_confirm,
     )
 
-    return layout(rx.fragment(content, sync_modal, cancel_confirm_dialog, embedding_modal, audio_modal, confirm_regenerate_dialog))
+
+# ══════════════════════════════════════════════════════════════════════
+#  Library Page
+# ══════════════════════════════════════════════════════════════════════
+
+def library() -> rx.Component:
+    content = rx.vstack(
+        # ── Page header ──────────────────────────────────────────
+        _page_header(),
+
+        # ── Command bar (sync + select) ──────────────────────────
+        _command_bar(),
+
+        # ── Search / filters ─────────────────────────────────────
+        _filter_row(),
+
+        # ── Separator ────────────────────────────────────────────
+        rx.separator(size="4", color_scheme="gray"),
+
+        # ── Table or loading/empty states ────────────────────────
+        rx.cond(
+            LibraryState.is_page_loading,
+            skeleton_table(rows=10),
+            rx.cond(
+                LibraryState.tracks.length() > 0,
+                rx.vstack(
+                    track_table(
+                        LibraryState.tracks,
+                        LibraryState.selected_tracks,
+                        LibraryState.toggle_track_selection,
+                        sort_column=LibraryState.sort_column,
+                        sort_ascending=LibraryState.sort_ascending,
+                        on_sort=LibraryState.set_sort,
+                        all_selected=LibraryState.all_page_selected,
+                        on_toggle_all=LibraryState.toggle_select_all,
+                    ),
+                    _pagination_controls(),
+                    spacing="4",
+                    width="100%",
+                    class_name="animate-fade-in-up stagger-3",
+                ),
+                empty_state(
+                    icon="library",
+                    title="No tracks found",
+                    description="Sync your library from Plex, or adjust your search filters.",
+                    action_text="Go to Settings",
+                    on_action=lambda: rx.redirect("/settings"),
+                ),
+            ),
+        ),
+
+        # ── Floating selection bar ───────────────────────────────
+        _floating_actions_bar(),
+
+        spacing="6",
+        width="100%",
+        # Add bottom padding so table content isn't hidden behind floating bar
+        padding_bottom="80px",
+    )
+
+    return layout(
+        rx.fragment(
+            content,
+            _sync_modal(),
+            _cancel_confirm_dialog(),
+            _embedding_modal(),
+            _audio_modal(),
+            _confirm_regenerate_dialog(),
+        )
+    )

@@ -6,14 +6,12 @@ def error_message(
     message: str,
     title: Optional[str] = "Error",
     dismissible: bool = True,
-    on_dismiss: Optional[callable] = None
+    on_dismiss: Optional[callable] = None,
 ) -> rx.Component:
-    """Display an error message."""
+    """Display an error message using a Radix callout with red color scheme."""
     return rx.callout.root(
         rx.hstack(
-            rx.callout.icon(
-                rx.icon("triangle_alert", size=20)
-            ),
+            rx.callout.icon(rx.icon("triangle_alert", size=20)),
             rx.vstack(
                 rx.callout.text(
                     title,
@@ -30,6 +28,7 @@ def error_message(
                     on_click=on_dismiss,
                     variant="ghost",
                     size="1",
+                    color_scheme="red",
                     title="Dismiss",
                 ),
                 rx.box(),
@@ -37,15 +36,16 @@ def error_message(
             width="100%",
             align="start",
         ),
-        color="red",
+        color_scheme="red",
         variant="surface",
         width="100%",
+        class_name="animate-fade-in",
     )
 
 
 def error_boundary(
     content: rx.Component,
-    fallback_message: str = "Something went wrong. Please try again."
+    fallback_message: str = "Something went wrong. Please try again.",
 ) -> rx.Component:
     """Wrap content with error boundary."""
     return rx.fragment(
@@ -59,7 +59,7 @@ def inline_error(message: str) -> rx.Component:
     """Inline error message for form validation."""
     return rx.text(
         message,
-        color="red.500",
+        color="var(--pm-error)",
         size="2",
         margin_top="1",
     )
@@ -68,14 +68,14 @@ def inline_error(message: str) -> rx.Component:
 def retry_component(
     message: str,
     on_retry: callable,
-    is_retrying: bool = False
+    is_retrying: bool = False,
 ) -> rx.Component:
     """Component with retry functionality."""
     return rx.vstack(
         rx.icon(
             "triangle_alert",
             size=48,
-            color="orange.500",
+            color="var(--pm-warning)",
         ),
         rx.text(
             message,
@@ -86,7 +86,7 @@ def retry_component(
             rx.cond(
                 is_retrying,
                 rx.hstack(
-                            rx.icon("loader_2", size=16, class_name="animate-spin"),
+                    rx.icon("loader_2", size=16, class_name="animate-spin"),
                     rx.text("Retrying..."),
                     spacing="2",
                 ),
@@ -100,10 +100,12 @@ def retry_component(
             disabled=is_retrying,
             variant="soft",
             size="3",
+            class_name="pm-button",
         ),
         spacing="4",
         align="center",
         padding="8",
+        class_name="animate-fade-in-up",
     )
 
 
@@ -112,22 +114,22 @@ def empty_state(
     title: str,
     description: str,
     action_text: Optional[str] = None,
-    on_action: Optional[callable] = None
+    on_action: Optional[callable] = None,
 ) -> rx.Component:
     """Empty state component for when no data is available."""
     return rx.vstack(
-        rx.icon(icon, size=64, color="gray.400"),
+        rx.icon(icon, size=48, color="var(--pm-gray-9)"),
         rx.text(
             title,
             size="5",
             weight="bold",
-            color_scheme="gray",
         ),
         rx.text(
             description,
             size="3",
-            color_scheme="gray",
+            color="var(--pm-gray-9)",
             text_align="center",
+            max_width="400px",
         ),
         rx.cond(
             action_text,
@@ -136,6 +138,7 @@ def empty_state(
                 on_click=on_action,
                 color_scheme="orange",
                 size="3",
+                class_name="pm-button",
             ),
             rx.box(),
         ),
@@ -143,4 +146,5 @@ def empty_state(
         align="center",
         justify="center",
         min_height="300px",
+        class_name="animate-fade-in-up",
     )

@@ -13,13 +13,15 @@ def loading_spinner(size: int = 24, color: str = "purple") -> rx.Component:
 
 
 def skeleton_line(width: str = "100%", height: str = "20px") -> rx.Component:
-    """Single skeleton line for loading states."""
+    """Single skeleton line for loading states.
+
+    Uses the design-system shimmer animation via the 'skeleton' CSS class.
+    """
     return rx.box(
         width=width,
         height=height,
-        background="gray.200",
-        border_radius="4px",
-        class_name="animate-pulse",
+        border_radius="var(--radius-md)",
+        class_name="skeleton",
     )
 
 
@@ -27,9 +29,9 @@ def skeleton_card() -> rx.Component:
     """Skeleton card for loading playlist/track cards."""
     return rx.card(
         rx.vstack(
-            skeleton_line(height="150px"),  # Thumbnail
-            skeleton_line(width="80%", height="24px"),  # Title
-            skeleton_line(width="60%", height="16px"),  # Subtitle
+            skeleton_line(height="150px"),
+            skeleton_line(width="80%", height="24px"),
+            skeleton_line(width="60%", height="16px"),
             rx.hstack(
                 skeleton_line(width="60px", height="16px"),
                 skeleton_line(width="80px", height="16px"),
@@ -66,9 +68,7 @@ def skeleton_table(rows: int = 5) -> rx.Component:
                 rx.table.column_header_cell(""),
             )
         ),
-        rx.table.body(
-            *[skeleton_table_row() for _ in range(rows)]
-        ),
+        rx.table.body(*[skeleton_table_row() for _ in range(rows)]),
         variant="surface",
         size="2",
         width="100%",
@@ -82,7 +82,12 @@ def loading_overlay(message: Optional[str] = None) -> rx.Component:
             loading_spinner(size=48),
             rx.cond(
                 message,
-                rx.text(message, size="4", color="gray.600"),
+                rx.text(
+                    message,
+                    size="4",
+                    color="var(--pm-gray-11)",
+                    weight="medium",
+                ),
                 rx.box(),
             ),
             spacing="4",
@@ -94,12 +99,11 @@ def loading_overlay(message: Optional[str] = None) -> rx.Component:
         left="0",
         right="0",
         bottom="0",
-        background="whiteAlpha.800",
-        backdrop_filter="blur(4px)",
         z_index="1000",
         display="flex",
         align_items="center",
         justify_content="center",
+        class_name="glass",
     )
 
 
@@ -107,7 +111,7 @@ def button_with_loading(
     text: str,
     loading: bool,
     on_click: callable,
-    **kwargs
+    **kwargs,
 ) -> rx.Component:
     """Button that shows loading state."""
     return rx.button(
@@ -123,5 +127,5 @@ def button_with_loading(
         ),
         on_click=on_click,
         disabled=loading,
-        **kwargs
+        **kwargs,
     )
