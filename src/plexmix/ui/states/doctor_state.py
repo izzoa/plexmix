@@ -377,17 +377,22 @@ class DoctorState(AppState):
                 api_key = get_anthropic_api_key()
             elif provider_alias == "cohere":
                 api_key = get_cohere_api_key()
+            elif provider_alias == "custom":
+                from plexmix.config.credentials import get_custom_ai_api_key
+                api_key = settings.ai.custom_api_key or get_custom_ai_api_key()
 
             try:
                 ai_provider = get_ai_provider(
                     provider_name=ai_provider_name,
                     api_key=api_key,
-                    model=settings.ai.model,
+                    model=settings.ai.custom_model if ai_provider_name == "custom" else settings.ai.model,
                     temperature=settings.ai.temperature,
                     local_mode=settings.ai.local_mode,
                     local_endpoint=settings.ai.local_endpoint,
                     local_auth_token=settings.ai.local_auth_token,
                     local_max_output_tokens=settings.ai.local_max_output_tokens,
+                    custom_endpoint=settings.ai.custom_endpoint,
+                    custom_api_key=api_key if ai_provider_name == "custom" else None,
                 )
             except ValueError:
                 async with self:
