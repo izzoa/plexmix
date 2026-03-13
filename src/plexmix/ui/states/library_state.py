@@ -267,9 +267,17 @@ class LibraryState(AppState):
                 return
 
             plex_client = PlexClient(settings.plex.url, plex_token)
-            plex_client.connect()
-            if settings.plex.library_name:
-                plex_client.select_library(settings.plex.library_name)
+            if not plex_client.connect():
+                async with self:
+                    self.sync_message = "Failed to connect to Plex server"
+                    self.is_syncing = False
+                return
+
+            if not settings.plex.library_name or not plex_client.select_library(settings.plex.library_name):
+                async with self:
+                    self.sync_message = f"Music library not found: {settings.plex.library_name or '(not configured)'}"
+                    self.is_syncing = False
+                return
 
             db_path = settings.database.get_db_path()
             db = SQLiteManager(str(db_path))
