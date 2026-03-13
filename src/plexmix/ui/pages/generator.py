@@ -39,16 +39,13 @@ def _advanced_options() -> rx.Component:
     """Collapsible advanced filters (general + audio)."""
     return rx.accordion.root(
         rx.accordion.item(
-            header=rx.accordion.header(
-                rx.hstack(
-                    rx.icon("sliders-horizontal", size=16, color="gray.9"),
-                    rx.text("Advanced Options", size="2", weight="medium"),
-                    spacing="2",
-                    align="center",
-                ),
+            header=rx.hstack(
+                rx.icon("sliders-horizontal", size=16, color="gray.9"),
+                rx.text("Advanced Options", size="2", weight="medium"),
+                spacing="2",
+                align="center",
             ),
-            content=rx.accordion.content(
-                rx.vstack(
+            content=rx.vstack(
                     # ── General filters ──
                     rx.text("General Filters", size="3", weight="bold"),
                     rx.hstack(
@@ -217,9 +214,10 @@ def _advanced_options() -> rx.Component:
                     spacing="4",
                     width="100%",
                 ),
-            ),
+            value="advanced",
         ),
         width="100%",
+        type="single",
         collapsible=True,
     )
 

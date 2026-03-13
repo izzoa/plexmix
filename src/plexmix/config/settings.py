@@ -208,20 +208,32 @@ class Settings(BaseSettings):
 
     @classmethod
     def load_from_file(cls, config_path: Optional[str] = None) -> "Settings":
+        using_default = config_path is None
         if config_path is None:
-            config_path = str(Path("~/.plexmix/config.yaml").expanduser())
+            config_path = str(_data_dir() / "config.yaml")
 
-        if Path(config_path).exists():
+        config = Path(config_path)
+        if config.exists():
             import yaml
-            with open(config_path, 'r') as f:
+            with open(config, 'r') as f:
                 config_data = yaml.safe_load(f) or {}
             return cls(**config_data)
+
+        # Backwards-compat: check legacy ~/.plexmix/ path when using default
+        # config path with a non-default data dir (e.g. Docker PLEXMIX_DATA_DIR)
+        if using_default:
+            legacy = Path("~/.plexmix/config.yaml").expanduser()
+            if legacy.exists() and str(legacy) != str(config):
+                import yaml
+                with open(legacy, 'r') as f:
+                    config_data = yaml.safe_load(f) or {}
+                return cls(**config_data)
 
         return cls()
 
     def save_to_file(self, config_path: Optional[str] = None) -> None:
         if config_path is None:
-            config_path = str(Path("~/.plexmix/config.yaml").expanduser())
+            config_path = str(_data_dir() / "config.yaml")
 
         Path(config_path).parent.mkdir(parents=True, exist_ok=True)
 

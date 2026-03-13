@@ -12,9 +12,8 @@ def _filter_section() -> rx.Component:
     """Expandable filter inputs inside an accordion."""
     return rx.accordion.root(
         rx.accordion.item(
-            header=rx.accordion.header("Or filter tracks"),
-            content=rx.accordion.content(
-                rx.vstack(
+            header="Or filter tracks",
+            content=rx.vstack(
                     # Row 1: genre + artist
                     rx.grid(
                         rx.vstack(
@@ -73,7 +72,7 @@ def _filter_section() -> rx.Component:
                         rx.vstack(
                             rx.text("Options", size="2", weight="medium", color="gray.11"),
                             rx.hstack(
-                                rx.switch(
+                                rx.checkbox(
                                     checked=TaggingState.has_no_tags,
                                     on_change=TaggingState.toggle_has_no_tags,
                                 ),
@@ -115,29 +114,21 @@ def _filter_section() -> rx.Component:
                         rx.button(
                             "Start Tagging",
                             on_click=TaggingState.start_tagging,
-                            disabled=(TaggingState.preview_count == 0) | TaggingState.is_tagging,
+                            disabled=TaggingState.is_tagging,
                             loading=TaggingState.is_tagging,
                             color_scheme="blue",
                             size="3",
                             width="100%",
-                            title=rx.cond(
-                                TaggingState.is_tagging,
-                                "Tagging in progress",
-                                rx.cond(
-                                    TaggingState.preview_count == 0,
-                                    "Preview selection first",
-                                    "",
-                                ),
-                            ),
                         ),
                         rx.fragment(),
                     ),
                     spacing="4",
                     width="100%",
                 ),
-            ),
+            value="filters",
         ),
         width="100%",
+        type="single",
         collapsible=True,
     )
 
@@ -174,7 +165,7 @@ def _tag_generator_card() -> rx.Component:
                 size="3",
                 width="100%",
                 disabled=TaggingState.is_tagging,
-                title=rx.cond(TaggingState.is_tagging, "Tagging in progress", ""),
+                loading=TaggingState.is_tagging,
                 class_name="pm-glow",
             ),
             # Expandable filters

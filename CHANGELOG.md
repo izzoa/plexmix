@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-03-13
+
+### Fixed
+- Fix tagging page React `useEffect` null crash caused by double-wrapped accordion components
+- Fix config.yaml not persisting across Docker restarts — now saved to persistent volume (`PLEXMIX_DATA_DIR`)
+- Fix Plex token lost after page refresh — token now persisted to config.yaml as keyring fallback
+- Fix API keys from environment variables not loading when switching providers in Settings
+- Fix generator page accordion using same double-wrapped pattern (preventive)
+
+### Changed
+- Accordion items pass raw content to `header=`/`content=` instead of pre-wrapped subcomponents
+- Provider switch in Settings now auto-loads API key from env vars/keyring for the new provider
+- Settings `load_from_file`/`save_to_file` use `PLEXMIX_DATA_DIR` with backwards-compat legacy fallback
+- README screenshot presentation improved with browser chrome frames
+
 ## [0.6.0] - 2026-03-13
 
 ### Changed

@@ -125,24 +125,103 @@ PLEXMIX_UI_PASSWORD=mysecret plexmix ui --host 0.0.0.0
 #### Screenshots
 
 <div align="center">
-  <img src="docs/screenshots/dashboard-light.png" alt="Dashboard - Light Mode" width="45%"/>
-  <img src="docs/screenshots/dashboard-dark.png" alt="Dashboard - Dark Mode" width="45%"/>
-  <p><em>Dashboard with configuration status and library statistics</em></p>
+
+<!-- Dashboard Light Mode -->
+<div style="display: inline-block; margin: 10px; width: 45%; max-width: 600px;">
+  <div style="background: linear-gradient(180deg, #e4e4e4 0%, #d0d0d0 100%); border-radius: 12px 12px 0 0; padding: 10px 15px; display: flex; align-items: center; gap: 8px; border: 1px solid #c0c0c0; border-bottom: none;">
+    <div style="display: flex; gap: 6px;">
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #ff5f57;"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #ffbd2e;"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #28c840;"></span>
+    </div>
+    <div style="flex: 1; background: #f5f5f5; border-radius: 6px; padding: 4px 12px; margin: 0 10px; font-size: 12px; color: #666; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+      <span style="opacity: 0.5;">🔒</span> localhost:3000/dashboard
+    </div>
+  </div>
+  <div style="border: 1px solid #c0c0c0; border-top: none; border-radius: 0 0 8px 8px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.15);">
+    <img src="docs/screenshots/dashboard-light.png" alt="Dashboard - Light Mode" width="100%" style="display: block;"/>
+  </div>
+  <p style="margin-top: 8px; font-size: 13px; color: #666; font-style: italic;">Dashboard - Light Mode</p>
 </div>
 
-<div align="center">
-  <img src="docs/screenshots/generator.png" alt="Playlist Generator" width="90%"/>
-  <p><em>AI-powered playlist generator with mood-based queries</em></p>
+<!-- Dashboard Dark Mode -->
+<div style="display: inline-block; margin: 10px; width: 45%; max-width: 600px;">
+  <div style="background: linear-gradient(180deg, #3a3a3a 0%, #2a2a2a 100%); border-radius: 12px 12px 0 0; padding: 10px 15px; display: flex; align-items: center; gap: 8px; border: 1px solid #444; border-bottom: none;">
+    <div style="display: flex; gap: 6px;">
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #ff5f57;"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #ffbd2e;"></span>
+      <span style="width: 12px; height: 12px; border-radius: 50%; background: #28c840;"></span>
+    </div>
+    <div style="flex: 1; background: #1a1a1a; border-radius: 6px; padding: 4px 12px; margin: 0 10px; font-size: 12px; color: #888; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+      <span style="opacity: 0.5;">🔒</span> localhost:3000/dashboard
+    </div>
+  </div>
+  <div style="border: 1px solid #444; border-top: none; border-radius: 0 0 8px 8px; overflow: hidden; box-shadow: 0 20px 40px rgba(0,0,0,0.3);">
+    <img src="docs/screenshots/dashboard-dark.png" alt="Dashboard - Dark Mode" width="100%" style="display: block;"/>
+  </div>
+  <p style="margin-top: 8px; font-size: 13px; color: #666; font-style: italic;">Dashboard - Dark Mode</p>
 </div>
 
-<div align="center">
-  <img src="docs/screenshots/library.png" alt="Library Manager" width="90%"/>
-  <p><em>Browse and manage your music library with advanced filtering</em></p>
+<br/>
+
+<!-- Playlist Generator -->
+<div style="display: inline-block; margin: 15px; width: 90%; max-width: 1200px;">
+  <div style="background: linear-gradient(180deg, #2a2a2a 0%, #1f1f1f 100%); border-radius: 12px 12px 0 0; padding: 12px 20px; display: flex; align-items: center; gap: 8px; border: 1px solid #333; border-bottom: none;">
+    <div style="display: flex; gap: 8px;">
+      <span style="width: 14px; height: 14px; border-radius: 50%; background: #ff5f57;"></span>
+      <span style="width: 14px; height: 14px; border-radius: 50%; background: #ffbd2e;"></span>
+      <span style="width: 14px; height: 14px; border-radius: 50%; background: #28c840;"></span>
+    </div>
+    <div style="flex: 1; background: #151515; border-radius: 8px; padding: 6px 16px; margin: 0 15px; font-size: 13px; color: #999; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+      <span style="opacity: 0.5;">🔒</span> localhost:3000/generator
+    </div>
+  </div>
+  <div style="border: 1px solid #333; border-top: none; border-radius: 0 0 10px 10px; overflow: hidden; box-shadow: 0 25px 50px rgba(0,0,0,0.4);">
+    <img src="docs/screenshots/generator.png" alt="Playlist Generator" width="100%" style="display: block;"/>
+  </div>
+  <p style="margin-top: 10px; font-size: 14px; color: #666; font-style: italic;">AI-powered playlist generator with mood-based queries</p>
 </div>
 
-<div align="center">
-  <img src="docs/screenshots/settings.png" alt="Settings" width="90%"/>
-  <p><em>Configure Plex, AI providers, and embeddings</em></p>
+<br/>
+
+<!-- Library Manager -->
+<div style="display: inline-block; margin: 15px; width: 90%; max-width: 1200px;">
+  <div style="background: linear-gradient(180deg, #2a2a2a 0%, #1f1f1f 100%); border-radius: 12px 12px 0 0; padding: 12px 20px; display: flex; align-items: center; gap: 8px; border: 1px solid #333; border-bottom: none;">
+    <div style="display: flex; gap: 8px;">
+      <span style="width: 14px; height: 14px; border-radius: 50%; background: #ff5f57;"></span>
+      <span style="width: 14px; height: 14px; border-radius: 50%; background: #ffbd2e;"></span>
+      <span style="width: 14px; height: 14px; border-radius: 50%; background: #28c840;"></span>
+    </div>
+    <div style="flex: 1; background: #151515; border-radius: 8px; padding: 6px 16px; margin: 0 15px; font-size: 13px; color: #999; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+      <span style="opacity: 0.5;">🔒</span> localhost:3000/library
+    </div>
+  </div>
+  <div style="border: 1px solid #333; border-top: none; border-radius: 0 0 10px 10px; overflow: hidden; box-shadow: 0 25px 50px rgba(0,0,0,0.4);">
+    <img src="docs/screenshots/library.png" alt="Library Manager" width="100%" style="display: block;"/>
+  </div>
+  <p style="margin-top: 10px; font-size: 14px; color: #666; font-style: italic;">Browse and manage your music library with advanced filtering</p>
+</div>
+
+<br/>
+
+<!-- Settings -->
+<div style="display: inline-block; margin: 15px; width: 90%; max-width: 1200px;">
+  <div style="background: linear-gradient(180deg, #2a2a2a 0%, #1f1f1f 100%); border-radius: 12px 12px 0 0; padding: 12px 20px; display: flex; align-items: center; gap: 8px; border: 1px solid #333; border-bottom: none;">
+    <div style="display: flex; gap: 8px;">
+      <span style="width: 14px; height: 14px; border-radius: 50%; background: #ff5f57;"></span>
+      <span style="width: 14px; height: 14px; border-radius: 50%; background: #ffbd2e;"></span>
+      <span style="width: 14px; height: 14px; border-radius: 50%; background: #28c840;"></span>
+    </div>
+    <div style="flex: 1; background: #151515; border-radius: 8px; padding: 6px 16px; margin: 0 15px; font-size: 13px; color: #999; text-align: center; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;">
+      <span style="opacity: 0.5;">🔒</span> localhost:3000/settings
+    </div>
+  </div>
+  <div style="border: 1px solid #333; border-top: none; border-radius: 0 0 10px 10px; overflow: hidden; box-shadow: 0 25px 50px rgba(0,0,0,0.4);">
+    <img src="docs/screenshots/settings.png" alt="Settings" width="100%" style="display: block;"/>
+  </div>
+  <p style="margin-top: 10px; font-size: 14px; color: #666; font-style: italic;">Configure Plex, AI providers, and embeddings</p>
+</div>
+
 </div>
 
 #### Web UI Features

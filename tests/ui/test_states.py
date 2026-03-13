@@ -783,11 +783,16 @@ class TestSettingsStateExpanded:
         state.set_embedding_provider("openai")
         assert state.embedding_dimension == 1536
 
-    def test_set_ai_provider_clears_api_key(self):
+    def test_set_ai_provider_loads_key_for_new_provider(self):
+        from unittest.mock import patch
         from plexmix.ui.states.settings_state import SettingsState
         state = SettingsState()
-        state.ai_api_key = "should_be_cleared"
-        state.set_ai_provider("openai")
+        state.ai_api_key = "old_gemini_key"
+        # When no key is available for the new provider, field should be empty
+        with patch("plexmix.ui.states.settings_state.SettingsState._load_ai_api_key_for_provider") as mock_load:
+            mock_load.side_effect = lambda p: setattr(state, "ai_api_key", "")
+            state.set_ai_provider("openai")
+            mock_load.assert_called_once_with("openai")
         assert state.ai_api_key == ""
 
     def test_set_ai_local_mode_clears_endpoint_error(self):

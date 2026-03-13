@@ -141,10 +141,6 @@ class SettingsState(AppState):
             from plexmix.config.settings import Settings
             from plexmix.config.credentials import (
                 get_plex_token,
-                get_google_api_key,
-                get_openai_api_key,
-                get_anthropic_api_key,
-                get_cohere_api_key,
                 get_custom_ai_api_key,
                 get_custom_embedding_api_key,
             )
@@ -153,7 +149,7 @@ class SettingsState(AppState):
 
             self.plex_url = settings.plex.url or ""
             self.plex_library = settings.plex.library_name or ""
-            self.plex_token = get_plex_token() or ""
+            self.plex_token = get_plex_token() or settings.plex.token or ""
 
             # If we have a configured library name, add it to the list so it shows in dropdown
             if self.plex_library:
@@ -172,16 +168,7 @@ class SettingsState(AppState):
             self.local_llm_download_progress = 0
             self.is_downloading_local_llm = False
 
-            if self.ai_provider == "gemini":
-                self.ai_api_key = get_google_api_key() or ""
-            elif self.ai_provider == "openai":
-                self.ai_api_key = get_openai_api_key() or ""
-            elif self.ai_provider == "anthropic":
-                self.ai_api_key = get_anthropic_api_key() or ""
-            elif self.ai_provider == "cohere":
-                self.ai_api_key = get_cohere_api_key() or ""
-            else:
-                self.ai_api_key = ""
+            self._load_ai_api_key_for_provider(self.ai_provider)
 
             self.embedding_provider = settings.embedding.default_provider
             self.embedding_model = settings.embedding.model
@@ -193,12 +180,7 @@ class SettingsState(AppState):
             )
             self.embedding_custom_dimension = settings.embedding.custom_dimension
 
-            if self.embedding_provider == "gemini":
-                self.embedding_api_key = get_google_api_key() or ""
-            elif self.embedding_provider == "openai":
-                self.embedding_api_key = get_openai_api_key() or ""
-            elif self.embedding_provider == "cohere":
-                self.embedding_api_key = get_cohere_api_key() or ""
+            self._load_embedding_api_key_for_provider(self.embedding_provider)
 
             self.db_path = str(settings.database.get_db_path())
             self.faiss_index_path = str(settings.database.get_index_path())
@@ -280,6 +262,37 @@ class SettingsState(AppState):
             self.embedding_model = models[0]
         self._sync_embedding_dimension()
 
+    def _load_ai_api_key_for_provider(self, provider: str):
+        """Load the API key for the given AI provider from keyring/env vars."""
+        from plexmix.config.credentials import (
+            get_google_api_key, get_openai_api_key,
+            get_anthropic_api_key, get_cohere_api_key,
+        )
+        if provider == "gemini":
+            self.ai_api_key = get_google_api_key() or ""
+        elif provider == "openai":
+            self.ai_api_key = get_openai_api_key() or ""
+        elif provider == "anthropic":
+            self.ai_api_key = get_anthropic_api_key() or ""
+        elif provider == "cohere":
+            self.ai_api_key = get_cohere_api_key() or ""
+        else:
+            self.ai_api_key = ""
+
+    def _load_embedding_api_key_for_provider(self, provider: str):
+        """Load the API key for the given embedding provider from keyring/env vars."""
+        from plexmix.config.credentials import (
+            get_google_api_key, get_openai_api_key, get_cohere_api_key,
+        )
+        if provider == "gemini":
+            self.embedding_api_key = get_google_api_key() or ""
+        elif provider == "openai":
+            self.embedding_api_key = get_openai_api_key() or ""
+        elif provider == "cohere":
+            self.embedding_api_key = get_cohere_api_key() or ""
+        else:
+            self.embedding_api_key = ""
+
     def set_ai_provider(self, provider: str):
         self.ai_provider = provider
         self.update_model_lists()
@@ -297,7 +310,7 @@ class SettingsState(AppState):
             self.ai_custom_endpoint = ""
             self.ai_custom_model = ""
             self.ai_custom_api_key = ""
-        self.ai_api_key = ""
+        self._load_ai_api_key_for_provider(provider)
 
     def set_embedding_provider(self, provider: str):
         self.embedding_provider = provider
@@ -313,6 +326,7 @@ class SettingsState(AppState):
             self.embedding_custom_model = ""
             self.embedding_custom_api_key = ""
             self.embedding_custom_dimension = 1536
+        self._load_embedding_api_key_for_provider(provider)
         self._sync_embedding_dimension()
 
     def set_plex_url(self, url: str):
@@ -715,6 +729,7 @@ class SettingsState(AppState):
 
             settings.plex.url = self.plex_url
             settings.plex.library_name = self.plex_library
+            settings.plex.token = self.plex_token or None
             if self.plex_token:
                 store_plex_token(self.plex_token)
 
