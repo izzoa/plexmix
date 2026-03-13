@@ -327,7 +327,8 @@ class LibraryState(AppState):
             except ValueError as exc:
                 logger.warning(f"AI provider unavailable: {exc}")
                 ai_provider = None
-                yield rx.toast.warning("AI provider not configured — sync will skip tagging")
+                async with self:
+                    self.sync_message = "AI provider not configured — syncing without tagging..."
             sync_engine = SyncEngine(plex_client, db, ai_provider=ai_provider)
 
             sync_mode = None
@@ -357,7 +358,10 @@ class LibraryState(AppState):
                 self.check_configuration_status()
                 self.load_library_stats()
 
-            yield rx.toast.success("Sync completed!")
+            if ai_provider is None:
+                yield rx.toast.warning("Sync completed (tagging skipped — AI provider not configured)")
+            else:
+                yield rx.toast.success("Sync completed!")
 
             if token in _sync_cancel_events:
                 del _sync_cancel_events[token]
