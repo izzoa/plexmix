@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.5] - 2026-03-13
+
+### Fixed
+- Fix environment variables (e.g. `AUDIO_PATH_PREFIX_FROM`) being ignored after config.yaml is created
+- Add `_apply_env_overrides()` so Docker env vars always override saved YAML config values
+
+### Added
+- Run audio analysis automatically after library sync when `AUDIO_ANALYZE_ON_SYNC=true`
+- Audio analysis progress updates and cancellation support in UI sync flow
+
 ## [0.6.4] - 2026-03-13
 
 ### Fixed

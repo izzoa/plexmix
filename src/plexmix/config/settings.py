@@ -207,6 +207,36 @@ class Settings(BaseSettings):
     }
 
     @classmethod
+    def _apply_env_overrides(cls, config_data: dict) -> dict:
+        """Overlay environment variables on top of YAML config data.
+
+        pydantic-settings only reads env vars for fields not passed as
+        explicit kwargs.  Since load_from_file passes the full YAML dict,
+        env vars would be silently ignored.  This method merges env vars
+        into the dict so they always win.
+        """
+        _env_maps: list[tuple[str, str, type]] = [
+            # (env_var, dotted_yaml_key, cast)
+            ("PLEX_URL", "plex.url", str),
+            ("PLEX_TOKEN", "plex.token", str),
+            ("PLEX_LIBRARY_NAME", "plex.library_name", str),
+            ("AUDIO_ENABLED", "audio.enabled", lambda v: v.lower() in ("1", "true", "yes")),
+            ("AUDIO_ANALYZE_ON_SYNC", "audio.analyze_on_sync", lambda v: v.lower() in ("1", "true", "yes")),
+            ("AUDIO_DURATION_LIMIT", "audio.duration_limit", int),
+            ("AUDIO_PATH_PREFIX_FROM", "audio.path_prefix_from", str),
+            ("AUDIO_PATH_PREFIX_TO", "audio.path_prefix_to", str),
+        ]
+        for env_key, yaml_path, cast in _env_maps:
+            val = os.getenv(env_key)
+            if val is not None:
+                parts = yaml_path.split(".")
+                d = config_data
+                for part in parts[:-1]:
+                    d = d.setdefault(part, {})
+                d[parts[-1]] = cast(val)
+        return config_data
+
+    @classmethod
     def load_from_file(cls, config_path: Optional[str] = None) -> "Settings":
         using_default = config_path is None
         if config_path is None:
@@ -217,6 +247,7 @@ class Settings(BaseSettings):
             import yaml
             with open(config, 'r') as f:
                 config_data = yaml.safe_load(f) or {}
+            config_data = cls._apply_env_overrides(config_data)
             return cls(**config_data)
 
         # Backwards-compat: check legacy ~/.plexmix/ path when using default
@@ -227,6 +258,7 @@ class Settings(BaseSettings):
                 import yaml
                 with open(legacy, 'r') as f:
                     config_data = yaml.safe_load(f) or {}
+                config_data = cls._apply_env_overrides(config_data)
                 return cls(**config_data)
 
         return cls()

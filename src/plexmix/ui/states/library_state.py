@@ -353,6 +353,42 @@ class LibraryState(AppState):
                     cancel_event=_sync_cancel_events.get(token)
                 )
 
+            # Run audio analysis if enabled
+            run_audio = settings.audio.analyze_on_sync
+            if run_audio:
+                async with self:
+                    self.sync_message = "Running audio analysis..."
+                try:
+                    from plexmix.audio.analyzer import EssentiaAnalyzer
+                    analyzer = EssentiaAnalyzer()
+                    pending_tracks = db.get_tracks_without_audio_features()
+                    if pending_tracks:
+                        loop = asyncio.get_event_loop()
+                        duration_limit = settings.audio.duration_limit
+                        analyzed = 0
+                        total = len(pending_tracks)
+                        for track in pending_tracks:
+                            if _sync_cancel_events.get(token, Event()).is_set():
+                                break
+                            if not track.file_path:
+                                continue
+                            try:
+                                def analyze_track(t=track):
+                                    resolved = settings.audio.resolve_path(t.file_path)
+                                    return analyzer.analyze(resolved, duration_limit=duration_limit)
+                                features_dict = await loop.run_in_executor(None, analyze_track)
+                                db.insert_audio_features(track.id, features_dict)
+                                analyzed += 1
+                                async with self:
+                                    self.sync_progress = int((analyzed / total) * 100) if total else 0
+                                    self.sync_message = f"Audio analysis: {analyzed}/{total} tracks"
+                            except Exception as e:
+                                logger.warning(f"Audio analysis failed for track {track.id}: {e}")
+                except ImportError:
+                    logger.warning("Essentia not installed, skipping audio analysis")
+                except Exception as e:
+                    logger.warning(f"Audio analysis error: {e}")
+
             db.close()
 
             async with self:
