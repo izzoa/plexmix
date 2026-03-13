@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.4] - 2026-03-13
+
+### Fixed
+- Validate Plex connect() and select_library() return values in generator and history states
+- Fix `exporting` flag never reset on error in history_state export_to_plex
+- Fix unchecked Plex connection failures causing silent crashes in save-to-Plex and export flows
+
 ## [0.6.3] - 2026-03-13
 
 ### Fixed

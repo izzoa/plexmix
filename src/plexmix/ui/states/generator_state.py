@@ -381,8 +381,19 @@ class GeneratorState(AppState):
                 return
 
             plex_client = PlexClient(settings.plex.url, plex_token)
-            plex_client.connect()
-            plex_client.select_library(settings.plex.library_name)
+            if not plex_client.connect():
+                async with self:
+                    self.is_generating = False
+                    self.generation_message = ""
+                yield rx.toast.error("Failed to connect to Plex server")
+                return
+
+            if not settings.plex.library_name or not plex_client.select_library(settings.plex.library_name):
+                async with self:
+                    self.is_generating = False
+                    self.generation_message = ""
+                yield rx.toast.error(f"Music library not found: {settings.plex.library_name or '(not configured)'}")
+                return
 
             track_plex_keys = [int(track['plex_key']) for track in self.generated_playlist]
             plex_key = plex_client.create_playlist(self.playlist_name, track_plex_keys)

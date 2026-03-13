@@ -244,6 +244,8 @@ class HistoryState(AppState):
             plex_token = get_plex_token()
 
             if not settings.plex.url or not plex_token:
+                async with self:
+                    self.exporting = False
                 yield rx.toast.error("Plex not configured. Please configure in Settings.")
                 return
 
@@ -255,6 +257,8 @@ class HistoryState(AppState):
             # Get playlist details
             playlist = db.get_playlist_by_id(pid)
             if not playlist:
+                async with self:
+                    self.exporting = False
                 yield rx.toast.error("Playlist not found")
                 db.close()
                 return
@@ -267,15 +271,28 @@ class HistoryState(AppState):
 
             # Connect to Plex and create playlist
             plex_client = PlexClient(settings.plex.url, plex_token)
-            plex_client.connect()
-            plex_client.select_library(settings.plex.library_name)
+            if not plex_client.connect():
+                async with self:
+                    self.exporting = False
+                yield rx.toast.error("Failed to connect to Plex server")
+                return
+
+            if not settings.plex.library_name or not plex_client.select_library(settings.plex.library_name):
+                async with self:
+                    self.exporting = False
+                yield rx.toast.error(f"Music library not found: {settings.plex.library_name or '(not configured)'}")
+                return
 
             playlist_name = playlist.name or f"PlexMix Playlist {pid}"
             plex_client.create_playlist(playlist_name, track_plex_keys)
 
+            async with self:
+                self.exporting = False
             yield rx.toast.success(f"Exported '{playlist_name}' to Plex!")
 
         except Exception as e:
+            async with self:
+                self.exporting = False
             yield rx.toast.error(f"Error exporting to Plex: {str(e)}")
 
     def export_to_m3u(self, playlist_id: str):
