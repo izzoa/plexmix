@@ -96,7 +96,7 @@ def test_cohere_embedding_provider_initialization(mock_cohere_module):
 
     provider = CohereEmbeddingProvider(api_key='test-key')
 
-    assert provider.model_name == 'embed-v4'
+    assert provider.model_name == 'embed-v4.0'
     assert provider.dimension == 1024
 
 
@@ -125,7 +125,7 @@ def test_cohere_embedding_provider_generate_embedding(mock_cohere_module):
     assert embedding == [0.1] * 1024
     mock_cohere_module.embed.assert_called_once()
     call_args = mock_cohere_module.embed.call_args
-    assert call_args.kwargs['model'] == 'embed-v4'
+    assert call_args.kwargs['model'] == 'embed-v4.0'
     assert call_args.kwargs['texts'] == ['test text']
     assert call_args.kwargs['input_type'] == 'search_document'
     assert call_args.kwargs['output_dimension'] == 1024

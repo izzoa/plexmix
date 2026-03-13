@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-03-13
+
+### Added
+- Custom model name input for all AI and embedding providers — type any model name to override the dropdown
+- "Tracks with Audio Analysis" stat card on Database Doctor page
+
+### Changed
+- Gemini settings tests migrated from deprecated `google.generativeai` to `google.genai` (matching actual providers)
+- Cohere AI model list updated: removed deprecated `command`/`command-light`, added `command-r7b-12-2024`, `command-r-plus`, `command-a-03-2025`
+- Cohere embedding default model ID corrected from `embed-v4` to `embed-v4.0`
+- Cohere embedding model list now includes `embed-v4.0`
+- Cohere `output_dimension` only sent for v4+ models (v3 models don't support it)
+
+### Fixed
+- Fix Cohere AI and embedding test methods to use `ClientV2` API matching actual providers
+- Fix dashboard "Configured" status checking any API key instead of only the selected provider's key
+- Fix dashboard AI Provider card not showing custom model name
+- Fix Gemini "Test Embeddings" failing in Docker with "No module named 'google.generativeai'"
+
 ## [0.5.7] - 2026-03-13
 
 ### Fixed

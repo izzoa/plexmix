@@ -151,42 +151,48 @@ class AppState(rx.State):
             self.plex_library_name = settings.plex.library_name or ""
             self.plex_server_url = settings.plex.url or ""
 
-            # Check AI provider configuration
-            # Check both the credentials module and environment variables
-            ai_configured = False
+            # Check AI provider configuration — only check the key for the *selected* provider
+            from plexmix.config.credentials import get_custom_ai_api_key
+            ai_provider = settings.ai.default_provider
+            ai_key_map = {
+                "gemini": lambda: get_google_api_key() or os.environ.get("GOOGLE_API_KEY"),
+                "openai": lambda: get_openai_api_key() or os.environ.get("OPENAI_API_KEY"),
+                "anthropic": lambda: get_anthropic_api_key() or os.environ.get("ANTHROPIC_API_KEY"),
+                "cohere": lambda: get_cohere_api_key() or os.environ.get("COHERE_API_KEY"),
+                "custom": lambda: (
+                    settings.ai.custom_api_key
+                    or get_custom_ai_api_key()
+                    or os.environ.get("CUSTOM_AI_API_KEY")
+                ),
+                "local": lambda: True,
+            }
+            ai_key_fn = ai_key_map.get(ai_provider, lambda: None)
+            self.ai_provider_configured = bool(ai_key_fn())
+            self.ai_provider_name = ai_provider.title() if ai_provider else ""
 
-            # Check Google API key
-            google_key = get_google_api_key()
-            if not google_key:
-                google_key = os.environ.get("GOOGLE_API_KEY")
-
-            # Check OpenAI API key
-            openai_key = get_openai_api_key()
-            if not openai_key:
-                openai_key = os.environ.get("OPENAI_API_KEY")
-
-            # Check Anthropic API key
-            anthropic_key = get_anthropic_api_key()
-            if not anthropic_key:
-                anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
-
-            # Check Cohere API key
-            cohere_key = get_cohere_api_key()
-            if not cohere_key:
-                cohere_key = os.environ.get("COHERE_API_KEY")
-
-            ai_keys = [google_key, openai_key, anthropic_key, cohere_key]
-            if settings.ai.default_provider == "local":
-                self.ai_provider_configured = True
+            # Resolve the displayed model name based on provider
+            if ai_provider == "custom":
+                self.ai_model_name = settings.ai.custom_model or settings.ai.model or ""
             else:
-                self.ai_provider_configured = any(ai_keys)
-            self.ai_provider_name = settings.ai.default_provider.title() if settings.ai.default_provider else ""
-            self.ai_model_name = settings.ai.model or ""
+                self.ai_model_name = settings.ai.model or ""
 
-            # Check embedding provider configuration
-            embedding_keys = [google_key, openai_key, cohere_key]
-            self.embedding_provider_configured = any(embedding_keys) or settings.embedding.default_provider == "local"
-            self.embedding_provider_name = settings.embedding.default_provider.title() if settings.embedding.default_provider else ""
+            # Check embedding provider configuration — only check the key for the *selected* provider
+            from plexmix.config.credentials import get_custom_embedding_api_key
+            embed_provider = settings.embedding.default_provider
+            embed_key_map = {
+                "gemini": lambda: get_google_api_key() or os.environ.get("GOOGLE_API_KEY"),
+                "openai": lambda: get_openai_api_key() or os.environ.get("OPENAI_API_KEY"),
+                "cohere": lambda: get_cohere_api_key() or os.environ.get("COHERE_API_KEY"),
+                "custom": lambda: (
+                    settings.embedding.custom_api_key
+                    or get_custom_embedding_api_key()
+                    or os.environ.get("CUSTOM_EMBEDDING_API_KEY")
+                ),
+                "local": lambda: True,
+            }
+            embed_key_fn = embed_key_map.get(embed_provider, lambda: None)
+            self.embedding_provider_configured = bool(embed_key_fn())
+            self.embedding_provider_name = embed_provider.title() if embed_provider else ""
             self.embedding_model_name = settings.embedding.model or ""
 
         except Exception as e:

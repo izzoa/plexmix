@@ -198,7 +198,7 @@ class SettingsState(AppState):
                 key=str.lower,
             ),
             "cohere": sorted(
-                ["command", "command-light", "command-r"],
+                ["command-r7b-12-2024", "command-r-plus", "command-r", "command-a-03-2025"],
                 key=str.lower,
             ),
             # Sort local models alphabetically by display name for UI
@@ -211,7 +211,8 @@ class SettingsState(AppState):
         }
         models = ai_model_map.get(self.ai_provider, [])
         self.ai_models = models
-        if models and self.ai_model not in models:
+        # Only auto-select if model is empty (preserve custom model names)
+        if models and not self.ai_model:
             self.ai_model = models[0]
 
         embedding_model_map = {
@@ -225,7 +226,7 @@ class SettingsState(AppState):
                 key=str.lower,
             ),
             "cohere": sorted(
-                ["embed-english-v3.0", "embed-multilingual-v3.0"],
+                ["embed-v4.0", "embed-english-v3.0", "embed-multilingual-v3.0"],
                 key=str.lower,
             ),
             # Sort local embedding model ids alphabetically by key name
@@ -235,7 +236,8 @@ class SettingsState(AppState):
         }
         models = embedding_model_map.get(self.embedding_provider, [])
         self.embedding_models = models
-        if models and self.embedding_model not in models:
+        # Only auto-select if model is empty (preserve custom model names)
+        if models and not self.embedding_model:
             self.embedding_model = models[0]
         self._sync_embedding_dimension()
 
@@ -395,10 +397,12 @@ class SettingsState(AppState):
                     self.ai_test_status = "Testing Gemini API..."
 
                 def test_gemini():
-                    import google.generativeai as genai
-                    genai.configure(api_key=api_key)
-                    model = genai.GenerativeModel(self.ai_model or "gemini-2.5-flash")
-                    response = model.generate_content("Say 'test successful' in exactly two words.")
+                    from google import genai
+                    client = genai.Client(api_key=api_key)
+                    response = client.models.generate_content(
+                        model=self.ai_model or "gemini-2.5-flash",
+                        contents="Say 'test successful' in exactly two words.",
+                    )
                     return response.text
 
                 await loop.run_in_executor(None, test_gemini)
@@ -441,13 +445,13 @@ class SettingsState(AppState):
 
                 def test_cohere():
                     import cohere
-                    client = cohere.Client(api_key)
-                    response = client.generate(
-                        prompt="Say 'test' in one word.",
+                    client = cohere.ClientV2(api_key=api_key)
+                    response = client.chat(
+                        model=self.ai_model or "command-r7b-12-2024",
+                        messages=[{"role": "user", "content": "Say 'test' in one word."}],
                         max_tokens=10,
-                        model=self.ai_model or "command",
                     )
-                    return response.generations[0].text
+                    return response.message.content[0].text
 
                 await loop.run_in_executor(None, test_cohere)
 
@@ -550,13 +554,13 @@ class SettingsState(AppState):
                     self.embedding_test_status = "Testing Gemini embeddings..."
 
                 def test_gemini_embed():
-                    import google.generativeai as genai
-                    genai.configure(api_key=api_key)
-                    result = genai.embed_content(
-                        model=f"models/{self.embedding_model or 'gemini-embedding-001'}",
-                        content=test_text,
+                    from google import genai
+                    client = genai.Client(api_key=api_key)
+                    result = client.models.embed_content(
+                        model=self.embedding_model or "gemini-embedding-001",
+                        contents=test_text,
                     )
-                    return len(result['embedding'])
+                    return len(result.embeddings[0].values)
 
                 dim = await loop.run_in_executor(None, test_gemini_embed)
 
@@ -581,13 +585,18 @@ class SettingsState(AppState):
 
                 def test_cohere_embed():
                     import cohere
-                    client = cohere.Client(api_key)
-                    response = client.embed(
-                        texts=[test_text],
-                        model=self.embedding_model or "embed-english-v3.0",
-                        input_type="search_document",
-                    )
-                    return len(response.embeddings[0])
+                    client = cohere.ClientV2(api_key=api_key)
+                    embed_model = self.embedding_model or "embed-v4.0"
+                    embed_kwargs = {
+                        "texts": [test_text],
+                        "model": embed_model,
+                        "input_type": "search_document",
+                        "embedding_types": ["float"],
+                    }
+                    if "v4" in embed_model:
+                        embed_kwargs["output_dimension"] = self.embedding_dimension
+                    response = client.embed(**embed_kwargs)
+                    return len(response.embeddings.float_[0])
 
                 dim = await loop.run_in_executor(None, test_cohere_embed)
 

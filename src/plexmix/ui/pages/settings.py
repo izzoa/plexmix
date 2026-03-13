@@ -145,73 +145,82 @@ def ai_provider_tab() -> rx.Component:
                     rx.text("Model", size="3", weight="bold", margin_top="3"),
                     rx.cond(
                         SettingsState.ai_provider == "local",
-                rx.select.root(
-                    rx.select.trigger(
-                        placeholder="Select local model",
-                        # Keep the trigger compact and prevent overflow
-                        style={
-                            "white_space": "nowrap",
-                            "text_overflow": "ellipsis",
-                            "overflow": "hidden",
-                            "max_width": "100%",
-                        },
+                        rx.select.root(
+                            rx.select.trigger(
+                                placeholder="Select local model",
+                                style={
+                                    "white_space": "nowrap",
+                                    "text_overflow": "ellipsis",
+                                    "overflow": "hidden",
+                                    "max_width": "100%",
+                                },
+                            ),
+                            rx.select.content(
+                                *[
+                                    rx.select.item(
+                                        rx.text(
+                                            meta["display_name"],
+                                            size="2",
+                                            weight="bold",
+                                            style={
+                                                "white_space": "nowrap",
+                                                "text_overflow": "ellipsis",
+                                                "overflow": "hidden",
+                                                "max_width": "340px",
+                                                "display": "block",
+                                            },
+                                        ),
+                                        value=model_id,
+                                        key=model_id,
+                                    )
+                                    for model_id, meta in sorted(
+                                        LOCAL_LLM_MODELS.items(),
+                                        key=lambda kv: kv[1]["display_name"].lower(),
+                                    )
+                                ],
+                                style={
+                                    "max_width": "380px",
+                                    "max_height": "280px",
+                                    "overflow_y": "auto",
+                                },
+                            ),
+                            value=SettingsState.ai_model,
+                            on_change=SettingsState.set_ai_model,
+                            width="100%",
+                            style={"max_width": "420px"},
+                        ),
+                        rx.select(
+                            SettingsState.ai_models,
+                            value=SettingsState.ai_model,
+                            on_change=SettingsState.set_ai_model,
+                            placeholder="Select model...",
+                            width="100%",
+                        ),
                     ),
-                    rx.select.content(
-                        *[
-                            rx.select.item(
-                                rx.text(
-                                    meta["display_name"],
-                                    size="2",
-                                    weight="bold",
-                                    style={
-                                        "white_space": "nowrap",
-                                        "text_overflow": "ellipsis",
-                                        "overflow": "hidden",
-                                        "max_width": "340px",
-                                        "display": "block",
-                                    },
-                                ),
-                                value=model_id,
-                                key=model_id,
-                            )
-                            for model_id, meta in sorted(
-                                LOCAL_LLM_MODELS.items(),
-                                key=lambda kv: kv[1]["display_name"].lower(),
-                            )
-                        ],
-                        # Make the dropdown menu scroll when long, and keep width in bounds
-                        style={
-                            "max_width": "380px",
-                            "max_height": "280px",
-                            "overflow_y": "auto",
-                        },
+                    rx.cond(
+                        SettingsState.ai_provider == "local",
+                        rx.text(
+                            SettingsState.local_model_capabilities,
+                            size="1",
+                            color_scheme="gray",
+                            margin_top="1",
+                            style={"white_space": "normal", "line_height": "1.2"},
+                        ),
+                        rx.box(),
                     ),
-                    value=SettingsState.ai_model,
-                    on_change=SettingsState.set_ai_model,
-                    width="100%",
-                    style={"max_width": "420px"},
-                ),
-                rx.select(
-                    SettingsState.ai_models,
-                    value=SettingsState.ai_model,
-                    on_change=SettingsState.set_ai_model,
-                    placeholder="Select model...",
-                    width="100%",
-                ),
-                ),
-                rx.cond(
-                    SettingsState.ai_provider == "local",
+                    rx.input(
+                        placeholder="Or enter a custom model name...",
+                        value=SettingsState.ai_model,
+                        on_change=SettingsState.set_ai_model,
+                        width="100%",
+                    ),
                     rx.text(
-                        SettingsState.local_model_capabilities,
+                        "Type a model name to override the dropdown selection",
                         size="1",
                         color_scheme="gray",
-                        margin_top="1",
-                        style={"white_space": "normal", "line_height": "1.2"},
                     ),
-                    rx.box(),
-                ),
-                spacing="2",
-                width="100%",
+                    spacing="2",
+                    width="100%",
                 ),
                 rx.box(),
             ),
@@ -437,6 +446,17 @@ def embedding_tab() -> rx.Component:
                         on_change=SettingsState.set_embedding_model,
                         placeholder="Select model...",
                         width="100%",
+                    ),
+                    rx.input(
+                        placeholder="Or enter a custom model name...",
+                        value=SettingsState.embedding_model,
+                        on_change=SettingsState.set_embedding_model,
+                        width="100%",
+                    ),
+                    rx.text(
+                        "Type a model name to override the dropdown selection",
+                        size="1",
+                        color_scheme="gray",
                     ),
                     spacing="2",
                     width="100%",

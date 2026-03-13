@@ -199,7 +199,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
 
 class CohereEmbeddingProvider(EmbeddingProvider):
-    def __init__(self, api_key: str, model: str = "embed-v4", output_dimension: int = 1024):
+    def __init__(self, api_key: str, model: str = "embed-v4.0", output_dimension: int = 1024):
         super().__init__()
         try:
             import cohere
@@ -210,15 +210,21 @@ class CohereEmbeddingProvider(EmbeddingProvider):
         except ImportError:
             raise ImportError("cohere not installed. Run: pip install cohere")
 
+    def _embed_kwargs(self, texts: List[str]) -> dict:
+        """Build kwargs for client.embed(), adding output_dimension only for v4+ models."""
+        kwargs = {
+            "model": self.model_name,
+            "texts": texts,
+            "input_type": "search_document",
+            "embedding_types": ["float"],
+        }
+        if "v4" in self.model_name:
+            kwargs["output_dimension"] = self.dimension
+        return kwargs
+
     def generate_embedding(self, text: str) -> List[float]:
         try:
-            response = self.client.embed(
-                model=self.model_name,
-                texts=[text],
-                input_type="search_document",
-                embedding_types=["float"],
-                output_dimension=self.dimension
-            )
+            response = self.client.embed(**self._embed_kwargs([text]))
             return response.embeddings.float_[0]
         except Exception as e:
             logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
@@ -234,13 +240,7 @@ class CohereEmbeddingProvider(EmbeddingProvider):
 
             try:
                 logger.debug(f"[{self.provider_name}] Generating embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
-                response = self.client.embed(
-                    model=self.model_name,
-                    texts=batch,
-                    input_type="search_document",
-                    embedding_types=["float"],
-                    output_dimension=self.dimension
-                )
+                response = self.client.embed(**self._embed_kwargs(batch))
                 embeddings.extend(response.embeddings.float_)
                 logger.debug(f"[{self.provider_name}] Completed batch {batch_num}/{total_batches}")
             except Exception as e:
@@ -490,7 +490,7 @@ class EmbeddingGenerator:
         elif self.provider_name == "cohere":
             if not api_key:
                 raise ValueError("API key required for Cohere provider")
-            model = model or "embed-v4"
+            model = model or "embed-v4.0"
             self.provider = CohereEmbeddingProvider(api_key, model, output_dimension=1024)
         elif self.provider_name == "local":
             model = model or "all-MiniLM-L6-v2"
