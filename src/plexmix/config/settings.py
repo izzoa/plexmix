@@ -133,6 +133,7 @@ class AudioSettings(BaseSettings):
     enabled: bool = Field(default=False, description="Enable audio feature analysis")
     analyze_on_sync: bool = Field(default=False, description="Run analysis during sync")
     duration_limit: int = Field(default=60, description="Seconds of audio to analyze (0 = full track)")
+    workers: int = Field(default=4, description="Number of parallel audio analysis workers")
     path_prefix_from: Optional[str] = Field(
         default=None, description="Plex file path prefix to replace"
     )
@@ -223,6 +224,7 @@ class Settings(BaseSettings):
             ("AUDIO_ENABLED", "audio.enabled", lambda v: v.lower() in ("1", "true", "yes")),
             ("AUDIO_ANALYZE_ON_SYNC", "audio.analyze_on_sync", lambda v: v.lower() in ("1", "true", "yes")),
             ("AUDIO_DURATION_LIMIT", "audio.duration_limit", int),
+            ("AUDIO_WORKERS", "audio.workers", int),
             ("AUDIO_PATH_PREFIX_FROM", "audio.path_prefix_from", str),
             ("AUDIO_PATH_PREFIX_TO", "audio.path_prefix_to", str),
         ]

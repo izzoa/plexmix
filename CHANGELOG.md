@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.7] - 2026-03-13
+
+### Added
+- Parallel audio analysis with configurable worker count (`AUDIO_WORKERS`, default 4)
+- Concurrent sliding-window pattern for library, sync, and doctor audio analysis flows
+
+### Changed
+- Audio analysis now processes multiple tracks simultaneously via ThreadPoolExecutor
+
 ## [0.6.6] - 2026-03-13
 
 ### Added

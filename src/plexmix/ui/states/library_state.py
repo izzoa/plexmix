@@ -3,6 +3,7 @@ import asyncio
 import logging
 import atexit
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional
 from threading import Event
 from plexmix.ui.states.app_state import AppState
@@ -390,29 +391,51 @@ class LibraryState(AppState):
                 try:
                     from plexmix.audio.analyzer import EssentiaAnalyzer
                     analyzer = EssentiaAnalyzer()
-                    pending_tracks = db.get_tracks_without_audio_features()
+                    pending_tracks = [t for t in db.get_tracks_without_audio_features() if t.file_path]
                     if pending_tracks:
                         loop = asyncio.get_event_loop()
                         duration_limit = settings.audio.duration_limit
+                        num_workers = max(1, settings.audio.workers)
+                        executor = ThreadPoolExecutor(max_workers=num_workers)
                         analyzed = 0
                         total = len(pending_tracks)
-                        for track in pending_tracks:
+                        track_iter = iter(pending_tracks)
+                        in_flight: dict[asyncio.Future, object] = {}
+
+                        def _submit():
+                            t = next(track_iter, None)
+                            if t is None:
+                                return
+                            def do_analyze(trk=t):
+                                resolved = settings.audio.resolve_path(trk.file_path)
+                                return trk, analyzer.analyze(resolved, duration_limit=duration_limit)
+                            in_flight[loop.run_in_executor(executor, do_analyze)] = t
+
+                        for _ in range(min(num_workers, total)):
+                            _submit()
+
+                        while in_flight:
                             if _sync_cancel_events.get(token, Event()).is_set():
+                                for fut in in_flight:
+                                    fut.cancel()
                                 break
-                            if not track.file_path:
-                                continue
-                            try:
-                                def analyze_track(t=track):
-                                    resolved = settings.audio.resolve_path(t.file_path)
-                                    return analyzer.analyze(resolved, duration_limit=duration_limit)
-                                features_dict = await loop.run_in_executor(None, analyze_track)
-                                db.insert_audio_features(track.id, features_dict)
-                                analyzed += 1
-                                async with self:
-                                    self.sync_progress = int((analyzed / total) * 100) if total else 0
-                                    self.sync_message = f"Audio analysis: {analyzed}/{total} tracks"
-                            except Exception as e:
-                                logger.warning(f"Audio analysis failed for track {track.id}: {e}")
+                            done, _ = await asyncio.wait(
+                                in_flight.keys(), return_when=asyncio.FIRST_COMPLETED
+                            )
+                            for fut in done:
+                                in_flight.pop(fut)
+                                try:
+                                    track_obj, features = fut.result()
+                                    db.insert_audio_features(track_obj.id, features)
+                                    analyzed += 1
+                                except Exception as e:
+                                    logger.warning(f"Audio analysis failed: {e}")
+                                _submit()
+                            async with self:
+                                self.sync_progress = int((analyzed / total) * 100) if total else 0
+                                self.sync_message = f"Audio analysis: {analyzed}/{total} tracks ({num_workers} workers)"
+
+                        executor.shutdown(wait=False)
                 except ImportError:
                     logger.warning("Essentia not installed, skipping audio analysis")
                 except Exception as e:
@@ -654,6 +677,7 @@ class LibraryState(AppState):
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
             duration_limit = settings.audio.duration_limit
+            num_workers = max(1, settings.audio.workers)
 
             if not db_path.exists():
                 async with self:
@@ -666,7 +690,7 @@ class LibraryState(AppState):
             cancelled = False
 
             with SQLiteManager(str(db_path)) as db:
-                pending_tracks = db.get_tracks_without_audio_features()
+                pending_tracks = [t for t in db.get_tracks_without_audio_features() if t.file_path]
 
                 if not pending_tracks:
                     async with self:
@@ -679,39 +703,70 @@ class LibraryState(AppState):
                 eta_base_time = time.monotonic()
                 eta_base_count = 0
 
-                for track in pending_tracks:
+                executor = ThreadPoolExecutor(max_workers=num_workers)
+                track_iter = iter(pending_tracks)
+
+                # Sliding window: keep up to num_workers tasks in flight
+                in_flight: dict[asyncio.Future, object] = {}
+
+                def _submit_next() -> bool:
+                    """Submit the next track. Returns True if one was submitted."""
+                    track = next(track_iter, None)
+                    if track is None:
+                        return False
+
+                    def do_analyze(t=track):
+                        resolved = settings.audio.resolve_path(t.file_path)
+                        return t, analyzer.analyze(resolved, duration_limit=duration_limit).to_dict()
+
+                    fut = loop.run_in_executor(executor, do_analyze)
+                    in_flight[fut] = track
+                    return True
+
+                # Fill initial window
+                for _ in range(min(num_workers, total)):
+                    _submit_next()
+
+                while in_flight:
                     # Check cancellation
                     if _audio_cancel_events.get(token, Event()).is_set():
                         cancelled = True
+                        for fut in in_flight:
+                            fut.cancel()
                         break
 
-                    # Wait while paused (non-blocking check via asyncio)
+                    # Check pause — let in-flight work finish, then hold
                     pe = _audio_pause_events.get(token)
                     if pe and not pe.is_set():
                         async with self:
                             self.audio_analysis_message = f"Paused — {analyzed}/{total} tracks analyzed"
                         await pe.wait()
-                        # Re-check cancel after resume
                         if _audio_cancel_events.get(token, Event()).is_set():
                             cancelled = True
+                            for fut in in_flight:
+                                fut.cancel()
                             break
-                        # Reset ETA baseline after unpause
                         eta_base_time = time.monotonic()
                         eta_base_count = analyzed
 
-                    def analyze_track(t=track):
-                        resolved = settings.audio.resolve_path(t.file_path)
-                        features = analyzer.analyze(resolved, duration_limit=duration_limit)
-                        return features.to_dict()
+                    # Wait for at least one to complete
+                    done, _ = await asyncio.wait(
+                        in_flight.keys(), return_when=asyncio.FIRST_COMPLETED
+                    )
 
-                    try:
-                        features_dict = await loop.run_in_executor(None, analyze_track)
-                        db.insert_audio_features(track.id, features_dict)
-                        analyzed += 1
-                    except Exception as exc:
-                        logger.warning("Audio analysis failed for track %s: %s", track.id, exc)
+                    for fut in done:
+                        in_flight.pop(fut)
+                        try:
+                            track_obj, features_dict = fut.result()
+                            db.insert_audio_features(track_obj.id, features_dict)
+                            analyzed += 1
+                        except Exception as exc:
+                            logger.warning("Audio analysis failed: %s", exc)
 
-                    # Calculate ETA
+                        # Submit a replacement
+                        _submit_next()
+
+                    # Update progress & ETA
                     elapsed = time.monotonic() - eta_base_time
                     since_baseline = analyzed - eta_base_count
                     if since_baseline > 0 and elapsed > 0:
@@ -723,8 +778,10 @@ class LibraryState(AppState):
 
                     async with self:
                         self.audio_analysis_progress = int((analyzed / total) * 100) if total else 0
-                        self.audio_analysis_message = f"Analyzed {analyzed}/{total} tracks"
+                        self.audio_analysis_message = f"Analyzed {analyzed}/{total} tracks ({num_workers} workers)"
                         self.audio_analysis_eta = eta_str
+
+                executor.shutdown(wait=False)
 
             async with self:
                 self.is_analyzing_audio = False

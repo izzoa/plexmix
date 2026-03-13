@@ -1,6 +1,7 @@
 import reflex as rx
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any
 from pathlib import Path
 from plexmix.ui.states.app_state import AppState
@@ -497,9 +498,10 @@ class DoctorState(AppState):
 
             loop = asyncio.get_running_loop()
             analyzer = EssentiaAnalyzer()
+            num_workers = max(1, settings.audio.workers)
 
             with SQLiteManager(str(db_path)) as db:
-                pending_tracks = db.get_tracks_without_audio_features()
+                pending_tracks = [t for t in db.get_tracks_without_audio_features() if t.file_path]
 
                 if not pending_tracks:
                     async with self:
@@ -508,26 +510,47 @@ class DoctorState(AppState):
                     yield rx.toast.info("All tracks already have audio features.")
                     return
 
+                total = len(pending_tracks)
                 async with self:
-                    self.fix_total = len(pending_tracks)
+                    self.fix_total = total
 
                 analyzed = 0
-                for track in pending_tracks:
-                    def analyze_track(t=track):
-                        resolved = settings.audio.resolve_path(t.file_path)
-                        features = analyzer.analyze(resolved, duration_limit=duration_limit)
-                        return features.to_dict()
+                executor = ThreadPoolExecutor(max_workers=num_workers)
+                track_iter = iter(pending_tracks)
+                in_flight: dict[asyncio.Future, object] = {}
 
-                    try:
-                        features_dict = await loop.run_in_executor(None, analyze_track)
-                        db.insert_audio_features(track.id, features_dict)
-                        analyzed += 1
-                    except Exception as exc:
-                        logger.warning("Audio analysis failed for track %s: %s", track.id, exc)
+                def _submit():
+                    t = next(track_iter, None)
+                    if t is None:
+                        return
+                    def do_analyze(trk=t):
+                        resolved = settings.audio.resolve_path(trk.file_path)
+                        features = analyzer.analyze(resolved, duration_limit=duration_limit)
+                        return trk, features.to_dict()
+                    in_flight[loop.run_in_executor(executor, do_analyze)] = t
+
+                for _ in range(min(num_workers, total)):
+                    _submit()
+
+                while in_flight:
+                    done, _ = await asyncio.wait(
+                        in_flight.keys(), return_when=asyncio.FIRST_COMPLETED
+                    )
+                    for fut in done:
+                        in_flight.pop(fut)
+                        try:
+                            track_obj, features_dict = fut.result()
+                            db.insert_audio_features(track_obj.id, features_dict)
+                            analyzed += 1
+                        except Exception as exc:
+                            logger.warning("Audio analysis failed for track %s: %s", getattr(exc, 'track_id', '?'), exc)
+                        _submit()
 
                     async with self:
                         self.fix_progress = analyzed
-                        self.fix_message = f"Analyzing audio... {analyzed}/{self.fix_total}"
+                        self.fix_message = f"Analyzing audio... {analyzed}/{total} ({num_workers} workers)"
+
+                executor.shutdown(wait=False)
 
                 async with self:
                     self.fix_message = ""
