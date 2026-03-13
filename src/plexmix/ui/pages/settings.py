@@ -71,26 +71,10 @@ def ai_provider_tab() -> rx.Component:
         rx.heading("AI Provider", size="6", margin_bottom="4"),
         rx.vstack(
             rx.text("Provider", size="3", weight="bold"),
-            rx.select.root(
-                rx.select.trigger(placeholder="Select provider"),
-                rx.select.content(
-                    rx.select.item("Google", value="gemini"),
-                    rx.select.item("OpenAI", value="openai"),
-                    rx.select.item("Anthropic", value="anthropic"),
-                    rx.select.item("Cohere", value="cohere"),
-                    rx.select.item("Custom (OpenAI-Compatible)", value="custom"),
-                    rx.select.item(
-                        rx.cond(
-                            SettingsState.local_deps_available,
-                            "Local (Offline)",
-                            "Local (Offline) — not installed",
-                        ),
-                        value="local",
-                        disabled=~SettingsState.local_deps_available,
-                    ),
-                ),
-                value=SettingsState.ai_provider,
-                on_change=SettingsState.set_ai_provider,
+            rx.select(
+                ["Google", "OpenAI", "Anthropic", "Cohere", "Custom (OpenAI-Compatible)", "Local (Offline)"],
+                value=SettingsState.ai_provider_display,
+                on_change=SettingsState.set_ai_provider_from_display,
                 width="100%",
             ),
             rx.cond(
@@ -368,25 +352,10 @@ def embedding_tab() -> rx.Component:
         rx.heading("Embedding Provider", size="6", margin_bottom="4"),
         rx.vstack(
             rx.text("Provider", size="3", weight="bold"),
-            rx.select.root(
-                rx.select.trigger(placeholder="Select provider"),
-                rx.select.content(
-                    rx.select.item("Gemini", value="gemini"),
-                    rx.select.item("OpenAI", value="openai"),
-                    rx.select.item("Cohere", value="cohere"),
-                    rx.select.item("Custom (OpenAI-Compatible)", value="custom"),
-                    rx.select.item(
-                        rx.cond(
-                            SettingsState.local_deps_available,
-                            "Local (Offline)",
-                            "Local (Offline) — not installed",
-                        ),
-                        value="local",
-                        disabled=~SettingsState.local_deps_available,
-                    ),
-                ),
-                value=SettingsState.embedding_provider,
-                on_change=SettingsState.set_embedding_provider,
+            rx.select(
+                ["Gemini", "OpenAI", "Cohere", "Custom (OpenAI-Compatible)", "Local (Offline)"],
+                value=SettingsState.embedding_provider_display,
+                on_change=SettingsState.set_embedding_provider_from_display,
                 width="100%",
             ),
             rx.cond(

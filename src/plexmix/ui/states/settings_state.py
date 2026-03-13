@@ -955,3 +955,40 @@ class SettingsState(AppState):
         if not model_info:
             return ""
         return model_info.get("capabilities", "")
+
+    # --- Provider display name mappings for simple rx.select ---
+
+    _AI_PROVIDER_MAP: dict[str, str] = {
+        "Google": "gemini",
+        "OpenAI": "openai",
+        "Anthropic": "anthropic",
+        "Cohere": "cohere",
+        "Custom (OpenAI-Compatible)": "custom",
+        "Local (Offline)": "local",
+    }
+    _AI_PROVIDER_REVERSE: dict[str, str] = {v: k for k, v in _AI_PROVIDER_MAP.items()}
+
+    _EMBEDDING_PROVIDER_MAP: dict[str, str] = {
+        "Gemini": "gemini",
+        "OpenAI": "openai",
+        "Cohere": "cohere",
+        "Custom (OpenAI-Compatible)": "custom",
+        "Local (Offline)": "local",
+    }
+    _EMBEDDING_PROVIDER_REVERSE: dict[str, str] = {v: k for k, v in _EMBEDDING_PROVIDER_MAP.items()}
+
+    @rx.var(cache=True)
+    def ai_provider_display(self) -> str:
+        return self._AI_PROVIDER_REVERSE.get(self.ai_provider, "Google")
+
+    def set_ai_provider_from_display(self, display_name: str):
+        value = self._AI_PROVIDER_MAP.get(display_name, "gemini")
+        self.set_ai_provider(value)
+
+    @rx.var(cache=True)
+    def embedding_provider_display(self) -> str:
+        return self._EMBEDDING_PROVIDER_REVERSE.get(self.embedding_provider, "Gemini")
+
+    def set_embedding_provider_from_display(self, display_name: str):
+        value = self._EMBEDDING_PROVIDER_MAP.get(display_name, "gemini")
+        self.set_embedding_provider(value)

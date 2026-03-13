@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-03-13
+
+### Fixed
+- Fix Docker healthcheck always reporting unhealthy — Reflex backend returns 404 on `/`, use `/ping` endpoint instead
+- Fix React `useEffect` null crash caused by `rx.select.item` with reactive `disabled` prop — revert to simple `rx.select` with display name mapping
+- Increase healthcheck `start-period` from 30s to 60s to allow Reflex compilation time
+
 ## [0.5.6] - 2026-03-13
 
 ### Added

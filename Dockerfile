@@ -69,10 +69,10 @@ RUN mkdir -p /data
 
 VOLUME /data
 
-EXPOSE 3000 8000
+EXPOSE ${PLEXMIX_UI_PORT} ${PLEXMIX_BACKEND_PORT}
 
 ENTRYPOINT ["poetry", "run", "plexmix"]
 CMD ["ui", "--host", "0.0.0.0"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD curl -f http://localhost:${PLEXMIX_BACKEND_PORT:-8000}/ || exit 1
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:${PLEXMIX_BACKEND_PORT:-8000}/ping || exit 1
