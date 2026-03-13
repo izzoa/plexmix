@@ -310,6 +310,20 @@ After any user-facing feature change (new settings, CLI options, env vars, Docke
 - Update the page in `src/plexmix/ui/pages/` and any shared components in `src/plexmix/ui/components/`
 - If you add a new route, register it in `plexmix_ui/plexmix_ui.py`
 
+#### Add or update screenshots
+
+Screenshots for the README use composite "hero" images (browser chrome + gradient background). The process:
+
+1. **Capture raw screenshots** using `take_screenshots.py` (Playwright). This saves raw PNGs to `docs/screenshots/` (e.g., `dashboard-dark.png`, `generator.png`).
+   - Light mode screenshots use `localStorage.setItem('theme', 'light')` via `addInitScript` + page reload (Reflex uses localStorage, not CSS `prefers-color-scheme`).
+   - Run with: `python take_screenshots.py` (requires the Reflex UI running on `localhost:3000`).
+2. **Generate hero composites** using `make_hero_screenshots.py` (Pillow). This wraps each raw screenshot in a macOS-style browser frame (traffic lights + URL bar) on a gradient background, outputting `docs/screenshots/hero-*.png`.
+   - Run with: `python make_hero_screenshots.py`
+   - To add a new screenshot: add its name and gradient config to the `GRADIENTS` dict in the script.
+3. **Reference hero images in README.md** using plain `<img>` tags (no inline CSS styles — GitHub strips them).
+
+**Important**: GitHub markdown strips all `style` attributes. Never use inline CSS for screenshot presentation — always bake visual effects into the composite PNG images.
+
 ---
 
 ### Guardrails for agents
