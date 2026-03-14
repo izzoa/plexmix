@@ -198,6 +198,18 @@ pip install "plexmix[audio]"
 poetry install -E audio
 ```
 
+### Multiple Extras
+
+Combine any extras in a single install:
+
+```bash
+# Install with UI + audio + local LLM support
+pip install "plexmix[ui,audio,local]"
+
+# Or with Poetry
+poetry install -E ui -E audio -E local
+```
+
 ### With Docker
 
 ```bash
