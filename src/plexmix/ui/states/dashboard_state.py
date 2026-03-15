@@ -25,6 +25,7 @@ class DashboardState(AppState):
     def load_recent_playlists(self):
         try:
             from plexmix.config.settings import Settings
+
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
 
@@ -33,26 +34,24 @@ class DashboardState(AppState):
                 return
 
             import sqlite3
+
             conn = sqlite3.connect(str(db_path))
             cursor = conn.cursor()
 
-            cursor.execute("""
+            cursor.execute(
+                """
                 SELECT p.name, p.created_at, COUNT(pt.track_id) as track_count
                 FROM playlists p
                 LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
                 GROUP BY p.id, p.name, p.created_at
                 ORDER BY p.created_at DESC
                 LIMIT 10
-            """)
+            """
+            )
             rows = cursor.fetchall()
 
             self.recent_playlists = [
-                {
-                    "name": row[0],
-                    "created_at": row[1],
-                    "track_count": str(row[2])
-                }
-                for row in rows
+                {"name": row[0], "created_at": row[1], "track_count": str(row[2])} for row in rows
             ]
 
             conn.close()

@@ -75,7 +75,7 @@ def validate_plex_token(token: str) -> Tuple[bool, Optional[str]]:
         return False, f"Plex token should be 20 characters (got {len(token)})"
 
     # Should be alphanumeric
-    if not re.match(r'^[a-zA-Z0-9_-]+$', token):
+    if not re.match(r"^[a-zA-Z0-9_-]+$", token):
         return False, "Plex token contains invalid characters"
 
     return True, None
@@ -85,7 +85,7 @@ def validate_number_range(
     value: any,
     min_val: Optional[float] = None,
     max_val: Optional[float] = None,
-    field_name: str = "Value"
+    field_name: str = "Value",
 ) -> Tuple[bool, Optional[str]]:
     """
     Validate a number is within range.
@@ -160,7 +160,7 @@ def validate_playlist_name(name: str) -> Tuple[bool, Optional[str]]:
         return False, "Playlist name is too long (max 255 characters)"
 
     # Check for invalid characters that might cause filesystem issues
-    invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
+    invalid_chars = ["/", "\\", ":", "*", "?", '"', "<", ">", "|"]
     for char in invalid_chars:
         if char in name:
             return False, f"Playlist name cannot contain '{char}'"
@@ -177,7 +177,7 @@ def validate_search_query(query: str) -> Tuple[bool, Optional[str]]:
         return False, "Search query is too long (max 500 characters)"
 
     # Check for potential SQL injection patterns
-    dangerous_patterns = [';', '--', '/*', '*/', 'DROP', 'DELETE', 'INSERT', 'UPDATE']
+    dangerous_patterns = [";", "--", "/*", "*/", "DROP", "DELETE", "INSERT", "UPDATE"]
     query_upper = query.upper()
     for pattern in dangerous_patterns:
         if pattern in query_upper:

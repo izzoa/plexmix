@@ -1,10 +1,5 @@
 """Unit tests for UI state management - Fixed version."""
 import pytest
-from unittest.mock import Mock, patch, MagicMock, AsyncMock
-from pathlib import Path
-import sys
-import asyncio
-from datetime import datetime
 
 # Mock Reflex must happen before imports - handled in conftest.py
 
@@ -12,7 +7,9 @@ from datetime import datetime
 class TestAppState:
     """Test cases for AppState base class."""
 
-    @pytest.mark.skip(reason="Reflex state management makes mocking difficult - test UI functionality manually")
+    @pytest.mark.skip(
+        reason="Reflex state management makes mocking difficult - test UI functionality manually"
+    )
     def test_on_load_checks_configuration(self):
         """Test that on_load properly checks configuration status."""
         pass
@@ -30,12 +27,12 @@ class TestHistoryState:
         # Show confirmation
         state.show_delete_confirmation("5")
         assert state.playlist_to_delete == "5"
-        assert state.is_delete_confirmation_open == True
+        assert state.is_delete_confirmation_open is True
 
         # Cancel confirmation
         state.cancel_delete()
         assert state.playlist_to_delete == ""
-        assert state.is_delete_confirmation_open == False
+        assert state.is_delete_confirmation_open is False
 
     def test_sort_playlists_by_name(self):
         """Test sorting playlists by name."""
@@ -116,13 +113,13 @@ class TestHistoryState:
         from plexmix.ui.states.history_state import HistoryState
 
         state = HistoryState()
-        assert state.sort_descending == True  # Default
+        assert state.sort_descending is True  # Default
 
         state.toggle_sort_order()
-        assert state.sort_descending == False
+        assert state.sort_descending is False
 
         state.toggle_sort_order()
-        assert state.sort_descending == True
+        assert state.sort_descending is True
 
     def test_close_detail_modal(self):
         """Test closing detail modal clears selected data."""
@@ -138,7 +135,7 @@ class TestHistoryState:
         state.close_detail_modal()
 
         # Verify cleared
-        assert state.is_detail_modal_open == False
+        assert state.is_detail_modal_open is False
         assert state.selected_playlist == {}
         assert state.selected_playlist_tracks == []
 
@@ -160,7 +157,7 @@ class TestHistoryState:
         state.selected_playlist = {"id": "1"}
         state.selected_playlist_tracks = [{"id": "1"}]
         state.set_detail_modal_open(False)
-        assert state.is_detail_modal_open == False
+        assert state.is_detail_modal_open is False
         assert state.selected_playlist == {}
         assert state.selected_playlist_tracks == []
 
@@ -211,20 +208,20 @@ class TestSettingsState:
         state = SettingsState()
 
         # Initially invalid (missing required fields)
-        assert state.is_form_valid() == False
+        assert state.is_form_valid() is False
 
         # Set required fields
         state.plex_url = "http://localhost:32400"
         state.plex_token = "test_token"
 
         # Should be valid now
-        assert state.is_form_valid() == True
+        assert state.is_form_valid() is True
 
         # Add validation error
         state.plex_url_error = "Invalid URL"
 
         # Should be invalid
-        assert state.is_form_valid() == False
+        assert state.is_form_valid() is False
 
     def test_update_model_lists(self):
         """Test model list updates."""
@@ -280,6 +277,7 @@ class TestGeneratorState:
 
     def test_set_max_tracks_clamps(self):
         from plexmix.ui.states.generator_state import GeneratorState
+
         state = GeneratorState()
         state.set_max_tracks(5)
         assert state.max_tracks == 10  # clamped to min 10
@@ -290,6 +288,7 @@ class TestGeneratorState:
 
     def test_set_candidate_pool_multiplier_clamps(self):
         from plexmix.ui.states.generator_state import GeneratorState
+
         state = GeneratorState()
         state.set_candidate_pool_multiplier(0)
         assert state.candidate_pool_multiplier == 1
@@ -300,6 +299,7 @@ class TestGeneratorState:
 
     def test_set_year_min_max(self):
         from plexmix.ui.states.generator_state import GeneratorState
+
         state = GeneratorState()
         state.set_year_min("2000")
         assert state.year_min == "2000"
@@ -312,6 +312,7 @@ class TestGeneratorState:
 
     def test_audio_setters(self):
         from plexmix.ui.states.generator_state import GeneratorState
+
         state = GeneratorState()
         state.set_tempo_min("80")
         assert state.tempo_min == "80"
@@ -326,6 +327,7 @@ class TestGeneratorState:
 
     def test_format_duration(self):
         from plexmix.ui.states.generator_state import GeneratorState
+
         state = GeneratorState()
         assert state.format_duration(0) == "0:00"
         assert state.format_duration(185000) == "3:05"
@@ -393,15 +395,15 @@ class TestLibraryState:
         state = LibraryState()
 
         # Initially not showing
-        assert state.show_regenerate_confirm == False
+        assert state.show_regenerate_confirm is False
 
         # Show confirmation
         state.confirm_regenerate_sync()
-        assert state.show_regenerate_confirm == True
+        assert state.show_regenerate_confirm is True
 
         # Cancel confirmation
         state.cancel_regenerate_confirm()
-        assert state.show_regenerate_confirm == False
+        assert state.show_regenerate_confirm is False
 
     def test_sync_mode_setter(self):
         """Test sync mode setter."""
@@ -486,7 +488,7 @@ class TestTaggingState:
         assert state.year_min == "2010"
         assert state.year_max == "2020"
         assert state.artist_filter == "Miles"
-        assert state.has_no_tags == True
+        assert state.has_no_tags is True
 
     def test_filter_setters(self):
         """Test filter setter methods."""
@@ -517,11 +519,11 @@ class TestTaggingState:
         assert state.year_max == ""
 
         # Test toggle_has_no_tags
-        assert state.has_no_tags == False
+        assert state.has_no_tags is False
         state.toggle_has_no_tags()
-        assert state.has_no_tags == True
+        assert state.has_no_tags is True
         state.toggle_has_no_tags()
-        assert state.has_no_tags == False
+        assert state.has_no_tags is False
 
     def test_tag_editing(self):
         """Test inline tag editing state."""
@@ -530,7 +532,12 @@ class TestTaggingState:
         state = TaggingState()
 
         # Start editing a track
-        track = {"id": "1", "tags": "chill,relaxing", "environments": "study", "instruments": "piano"}
+        track = {
+            "id": "1",
+            "tags": "chill,relaxing",
+            "environments": "study",
+            "instruments": "piano",
+        }
         state.start_edit_tag(track)
 
         # Verify editing state
@@ -565,33 +572,25 @@ class TestTaggingState:
         assert state.edit_instruments == "guitar,drums"
 
     def test_cancel_tagging(self):
-        """Test cancel tagging sets cancellation event via module-level dict."""
-        from plexmix.ui.states.tagging_state import TaggingState, _tagging_cancel_events
-        import threading
-        from unittest.mock import MagicMock, PropertyMock
+        """Test cancel tagging sets cancellation event via task store."""
+        from plexmix.ui.states.tagging_state import TaggingState
+        from plexmix.ui.job_manager import task_store
 
         state = TaggingState()
 
-        # Mock the router.session.client_token
-        mock_router = MagicMock()
-        mock_session = MagicMock()
-        mock_session.client_token = "test-client-token"
-        mock_router.session = mock_session
-        type(state).router = PropertyMock(return_value=mock_router)
+        # Simulate that a persistent task was started
+        task_store.start("tagging")
 
-        # Simulate that a cancel event was created for this client
-        _tagging_cancel_events["test-client-token"] = threading.Event()
-
-        # Initially not set
-        assert not _tagging_cancel_events["test-client-token"].is_set()
+        # Initially not cancelled
+        assert not task_store.is_cancelled("tagging")
 
         # Cancel should set the event
         state.cancel_tagging()
-        assert _tagging_cancel_events["test-client-token"].is_set()
+        assert task_store.is_cancelled("tagging")
         assert state.tagging_message == "Cancelling tagging..."
 
         # Clean up
-        del _tagging_cancel_events["test-client-token"]
+        task_store.clear("tagging")
 
 
 class TestValidation:
@@ -603,24 +602,24 @@ class TestValidation:
 
         # Valid URLs
         valid, error = validate_url("http://localhost:32400")
-        assert valid == True
+        assert valid is True
         assert error is None
 
         valid, error = validate_url("https://example.com")
-        assert valid == True
+        assert valid is True
         assert error is None
 
         # Invalid URLs
         valid, error = validate_url("not a url")
-        assert valid == False
+        assert valid is False
         assert error is not None
 
         valid, error = validate_url("")
-        assert valid == False
+        assert valid is False
         assert error is not None
 
         valid, error = validate_url("ftp://example.com")
-        assert valid == False
+        assert valid is False
         assert "http or https" in error
 
     def test_validate_api_key(self):
@@ -629,17 +628,17 @@ class TestValidation:
 
         # OpenAI key
         valid, error = validate_api_key("sk-" + "a" * 48, "openai")
-        assert valid == True
+        assert valid is True
 
         valid, error = validate_api_key("wrong-prefix", "openai")
-        assert valid == False
+        assert valid is False
 
         # Gemini key
         valid, error = validate_api_key("a" * 39, "gemini")
-        assert valid == True
+        assert valid is True
 
         valid, error = validate_api_key("short", "gemini")
-        assert valid == False
+        assert valid is False
 
     def test_validate_playlist_name(self):
         """Test playlist name validation."""
@@ -647,17 +646,17 @@ class TestValidation:
 
         # Valid names
         valid, error = validate_playlist_name("My Playlist")
-        assert valid == True
+        assert valid is True
 
         # Invalid names
         valid, error = validate_playlist_name("")
-        assert valid == False
+        assert valid is False
 
         valid, error = validate_playlist_name("Playlist/With/Slashes")
-        assert valid == False
+        assert valid is False
 
         valid, error = validate_playlist_name("a" * 256)
-        assert valid == False
+        assert valid is False
 
     def test_validate_year(self):
         """Test year validation."""
@@ -665,20 +664,20 @@ class TestValidation:
 
         # Valid years
         valid, error = validate_year(2020)
-        assert valid == True
+        assert valid is True
 
         valid, error = validate_year(None)  # Optional
-        assert valid == True
+        assert valid is True
 
         # Invalid years
         valid, error = validate_year(1899)
-        assert valid == False
+        assert valid is False
 
         valid, error = validate_year(2101)
-        assert valid == False
+        assert valid is False
 
         valid, error = validate_year("not a year")
-        assert valid == False
+        assert valid is False
 
     def test_validate_batch_size(self):
         """Test batch size validation."""
@@ -686,17 +685,17 @@ class TestValidation:
 
         # Valid sizes
         valid, error = validate_batch_size(50)
-        assert valid == True
+        assert valid is True
 
         # Invalid sizes
         valid, error = validate_batch_size(0)
-        assert valid == False
+        assert valid is False
 
         valid, error = validate_batch_size(101)
-        assert valid == False
+        assert valid is False
 
         valid, error = validate_batch_size("not a number")
-        assert valid == False
+        assert valid is False
 
 
 class TestSettingsStateExpanded:
@@ -704,6 +703,7 @@ class TestSettingsStateExpanded:
 
     def test_set_audio_enabled(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.set_audio_enabled(True)
         assert state.audio_enabled is True
@@ -712,36 +712,42 @@ class TestSettingsStateExpanded:
 
     def test_set_audio_analyze_on_sync(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.set_audio_analyze_on_sync(True)
         assert state.audio_analyze_on_sync is True
 
     def test_set_audio_duration_limit_valid(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.set_audio_duration_limit("30")
         assert state.audio_duration_limit == 30
 
     def test_set_audio_duration_limit_clamp_high(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.set_audio_duration_limit("999")
         assert state.audio_duration_limit == 300
 
     def test_set_audio_duration_limit_clamp_low(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.set_audio_duration_limit("-5")
         assert state.audio_duration_limit == 0
 
     def test_set_audio_duration_limit_invalid(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.set_audio_duration_limit("abc")
         assert state.audio_duration_limit == 60  # fallback
 
     def test_sync_embedding_dimension_gemini(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.embedding_provider = "gemini"
         state._sync_embedding_dimension()
@@ -749,6 +755,7 @@ class TestSettingsStateExpanded:
 
     def test_sync_embedding_dimension_openai(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.embedding_provider = "openai"
         state._sync_embedding_dimension()
@@ -756,6 +763,7 @@ class TestSettingsStateExpanded:
 
     def test_sync_embedding_dimension_cohere(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.embedding_provider = "cohere"
         state._sync_embedding_dimension()
@@ -763,6 +771,7 @@ class TestSettingsStateExpanded:
 
     def test_sync_embedding_dimension_local_known(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.embedding_provider = "local"
         state.embedding_model = "all-MiniLM-L6-v2"
@@ -771,6 +780,7 @@ class TestSettingsStateExpanded:
 
     def test_sync_embedding_dimension_local_unknown(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.embedding_provider = "local"
         state.embedding_model = "unknown-model"
@@ -779,6 +789,7 @@ class TestSettingsStateExpanded:
 
     def test_set_embedding_provider_triggers_sync(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.set_embedding_provider("openai")
         assert state.embedding_dimension == 1536
@@ -786,10 +797,13 @@ class TestSettingsStateExpanded:
     def test_set_ai_provider_loads_key_for_new_provider(self):
         from unittest.mock import patch
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.ai_api_key = "old_gemini_key"
         # When no key is available for the new provider, field should be empty
-        with patch("plexmix.ui.states.settings_state.SettingsState._load_ai_api_key_for_provider") as mock_load:
+        with patch(
+            "plexmix.ui.states.settings_state.SettingsState._load_ai_api_key_for_provider"
+        ) as mock_load:
             mock_load.side_effect = lambda p: setattr(state, "ai_api_key", "")
             state.set_ai_provider("openai")
             mock_load.assert_called_once_with("openai")
@@ -797,6 +811,7 @@ class TestSettingsStateExpanded:
 
     def test_set_ai_local_mode_clears_endpoint_error(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.local_endpoint_error = "some error"
         state.set_ai_local_mode("builtin")
@@ -804,6 +819,7 @@ class TestSettingsStateExpanded:
 
     def test_set_ai_local_mode_keeps_endpoint_error(self):
         from plexmix.ui.states.settings_state import SettingsState
+
         state = SettingsState()
         state.local_endpoint_error = "some error"
         state.set_ai_local_mode("endpoint")
@@ -815,24 +831,28 @@ class TestDoctorStateExpanded:
 
     def test_orphaned_embeddings_label(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.doctor_orphaned_embeddings = 5
         assert state.orphaned_embeddings_label == "5 Orphaned Embeddings"
 
     def test_missing_embeddings_label(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.doctor_tracks_needing_embeddings = 10
         assert state.missing_embeddings_label == "10 Tracks Need Embeddings"
 
     def test_missing_audio_label(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.doctor_tracks_without_audio = 7
         assert state.missing_audio_label == "7 Tracks Need Audio Analysis"
 
     def test_fix_progress_label_zero(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.fix_total = 0
         state.fix_progress = 0
@@ -840,6 +860,7 @@ class TestDoctorStateExpanded:
 
     def test_fix_progress_label_nonzero(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.fix_total = 20
         state.fix_progress = 5
@@ -847,6 +868,7 @@ class TestDoctorStateExpanded:
 
     def test_embedding_job_running(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.current_fix_target = "embeddings_incremental"
         assert state.embedding_job_running is True
@@ -857,6 +879,7 @@ class TestDoctorStateExpanded:
 
     def test_incremental_embedding_running(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.current_fix_target = "embeddings_incremental"
         assert state.incremental_embedding_running is True
@@ -865,6 +888,7 @@ class TestDoctorStateExpanded:
 
     def test_full_embedding_running(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.current_fix_target = "embeddings_full"
         assert state.full_embedding_running is True
@@ -873,6 +897,7 @@ class TestDoctorStateExpanded:
 
     def test_tag_job_running(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.current_fix_target = "tags"
         assert state.tag_job_running is True
@@ -881,6 +906,7 @@ class TestDoctorStateExpanded:
 
     def test_audio_job_running(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.current_fix_target = "audio_analysis"
         assert state.audio_job_running is True
@@ -889,6 +915,7 @@ class TestDoctorStateExpanded:
 
     def test_untagged_tracks_message_with_untagged(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.doctor_untagged_tracks = 15
         msg = state.untagged_tracks_message
@@ -897,6 +924,7 @@ class TestDoctorStateExpanded:
 
     def test_untagged_tracks_message_all_tagged(self):
         from plexmix.ui.states.doctor_state import DoctorState
+
         state = DoctorState()
         state.doctor_untagged_tracks = 0
         msg = state.untagged_tracks_message

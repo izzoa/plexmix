@@ -11,12 +11,11 @@ from unittest.mock import MagicMock, patch
 
 from plexmix.database.sqlite_manager import SQLiteManager
 from plexmix.database.models import Artist, Album, Track
-from plexmix.plex.sync import SyncEngine
 
 
 @pytest.fixture
 def db_manager():
-    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
 
     manager = SQLiteManager(db_path)
@@ -44,10 +43,10 @@ class TestAlbumArtistMapping:
         album = Album(
             plex_key="12345",  # Just a numeric rating key, not a path
             title="Test Album",
-            artist_id=0
+            artist_id=0,
         )
         # Simulate the _artist_key being set by PlexClient.extract_album_metadata
-        album.__dict__['_artist_key'] = "67890"
+        album.__dict__["_artist_key"] = "67890"
 
         # Insert an artist with matching plex_key
         artist = Artist(plex_key="67890", name="Test Artist")
@@ -57,7 +56,7 @@ class TestAlbumArtistMapping:
         artist_map = {"67890": artist_id}
 
         # Apply the mapping logic (same as sync.py)
-        artist_plex_key = album.__dict__.get('_artist_key')
+        artist_plex_key = album.__dict__.get("_artist_key")
         if artist_plex_key and artist_plex_key in artist_map:
             album.artist_id = artist_map[artist_plex_key]
         else:
@@ -69,17 +68,13 @@ class TestAlbumArtistMapping:
 
     def test_album_without_artist_key_falls_back(self, db_manager):
         """Test that albums without _artist_key fall back to default artist."""
-        album = Album(
-            plex_key="12345",
-            title="Orphan Album",
-            artist_id=0
-        )
+        album = Album(plex_key="12345", title="Orphan Album", artist_id=0)
         # No _artist_key set
 
         artist_map = {"67890": 5}  # Some other artist
 
         # Apply the mapping logic
-        artist_plex_key = album.__dict__.get('_artist_key')
+        artist_plex_key = album.__dict__.get("_artist_key")
         if artist_plex_key and artist_plex_key in artist_map:
             album.artist_id = artist_map[artist_plex_key]
         else:
@@ -99,7 +94,7 @@ class TestTrackUpdateDetection:
         mock_plex = MagicMock()
         mock_vector_index = MagicMock()
 
-        with patch.object(SyncEngine, '__init__', lambda x, **kwargs: None):
+        with patch.object(SyncEngine, "__init__", lambda x, **kwargs: None):
             engine = SyncEngine()
             engine.db = db_manager
             engine.plex = mock_plex
@@ -115,7 +110,7 @@ class TestTrackUpdateDetection:
                 album_id=1,
                 duration_ms=180000,
                 rating=3.0,
-                play_count=10
+                play_count=10,
             )
 
             # Create Plex track with different rating
@@ -126,7 +121,7 @@ class TestTrackUpdateDetection:
                 album_id=1,
                 duration_ms=180000,
                 rating=4.5,  # Changed
-                play_count=10
+                play_count=10,
             )
 
             assert engine._track_needs_update(db_track, plex_track) is True
@@ -138,7 +133,7 @@ class TestTrackUpdateDetection:
         mock_plex = MagicMock()
         mock_vector_index = MagicMock()
 
-        with patch.object(SyncEngine, '__init__', lambda x, **kwargs: None):
+        with patch.object(SyncEngine, "__init__", lambda x, **kwargs: None):
             engine = SyncEngine()
             engine.db = db_manager
             engine.plex = mock_plex
@@ -152,7 +147,7 @@ class TestTrackUpdateDetection:
                 artist_id=1,
                 album_id=1,
                 duration_ms=180000,
-                play_count=10
+                play_count=10,
             )
 
             plex_track = Track(
@@ -161,7 +156,7 @@ class TestTrackUpdateDetection:
                 artist_id=1,
                 album_id=1,
                 duration_ms=180000,
-                play_count=15  # Changed
+                play_count=15,  # Changed
             )
 
             assert engine._track_needs_update(db_track, plex_track) is True
@@ -173,7 +168,7 @@ class TestTrackUpdateDetection:
         mock_plex = MagicMock()
         mock_vector_index = MagicMock()
 
-        with patch.object(SyncEngine, '__init__', lambda x, **kwargs: None):
+        with patch.object(SyncEngine, "__init__", lambda x, **kwargs: None):
             engine = SyncEngine()
             engine.db = db_manager
             engine.plex = mock_plex
@@ -190,7 +185,7 @@ class TestTrackUpdateDetection:
                 rating=4.0,
                 play_count=10,
                 genre="Jazz",
-                year=2020
+                year=2020,
             )
 
             # Same track data
@@ -218,7 +213,7 @@ class TestTagPreservation:
             duration_ms=180000,
             tags="chill,relaxing",
             environments="study,focus",
-            instruments="piano"
+            instruments="piano",
         )
         track_id = db_manager.insert_track(track)
 
@@ -231,7 +226,7 @@ class TestTagPreservation:
             duration_ms=185000,
             tags=None,
             environments=None,
-            instruments=None
+            instruments=None,
         )
         db_manager.insert_track(updated_track)
 

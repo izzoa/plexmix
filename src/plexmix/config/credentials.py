@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -18,10 +18,11 @@ _ENV_VAR_MAP = {
 }
 
 
-def _get_keyring() -> Optional[object]:
+def _get_keyring() -> Any:
     """Import keyring, returning None if unavailable (e.g. in containers)."""
     try:
-        import keyring  # noqa: F811
+        import keyring  # type: ignore[import-untyped]  # noqa: F811
+
         return keyring
     except Exception:
         return None
@@ -55,10 +56,10 @@ def get_credential(key: str) -> Optional[str]:
     if kr is None:
         return None
     try:
-        value = kr.get_password(SERVICE_NAME, key)
-        if value:
+        kr_value: Optional[str] = kr.get_password(SERVICE_NAME, key)
+        if kr_value:
             logger.debug(f"Retrieved credential: {key}")
-        return value
+        return kr_value
     except Exception as e:
         logger.error(f"Failed to retrieve credential {key}: {e}")
         return None

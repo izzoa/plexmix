@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any
 from pathlib import Path
 from plexmix.ui.states.app_state import AppState
+from plexmix.ui.job_manager import task_store
 
 logger = logging.getLogger(__name__)
 
@@ -21,136 +22,159 @@ class DoctorState(AppState):
     is_healthy: bool = False
     is_checking: bool = False
     check_message: str = ""
-    
+
     is_fixing: bool = False
     fix_message: str = ""
     fix_progress: int = 0
     fix_total: int = 0
     current_fix_target: str = ""
-    
+
     @rx.event
     def on_load(self):
         if not self.check_auth():
             self.is_page_loading = False
             return
         super().on_load()
+        self.poll_task_progress()
         return DoctorState.run_health_check
-    
-    @rx.event(background=True)
-    async def run_health_check(self):
-        async with self:
-            self.is_checking = True
-            self.check_message = "Running health check..."
-        
+
+    def _refresh_health_stats(self) -> None:
+        """Synchronous health check -- updates state vars from DB."""
         try:
             from plexmix.config.settings import Settings
             from plexmix.database.sqlite_manager import SQLiteManager
-            
+
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
-            
+
             if not db_path.exists():
-                async with self:
-                    self.check_message = "Database not found. Please run a sync first."
-                    self.is_checking = False
-                    self.is_page_loading = False
                 return
-            
+
             with SQLiteManager(str(db_path)) as db:
                 cursor = db.get_connection().cursor()
-                
+
                 # Get total tracks
-                cursor.execute('SELECT COUNT(*) FROM tracks')
+                cursor.execute("SELECT COUNT(*) FROM tracks")
                 total_tracks = cursor.fetchone()[0]
-                
+
                 # Get tracks with embeddings
-                cursor.execute('SELECT COUNT(DISTINCT track_id) FROM embeddings')
+                cursor.execute("SELECT COUNT(DISTINCT track_id) FROM embeddings")
                 tracks_with_embeddings = cursor.fetchone()[0]
-                
+
                 # Get orphaned embeddings
-                cursor.execute('''
+                cursor.execute(
+                    """
                     SELECT COUNT(*) FROM embeddings
                     WHERE track_id NOT IN (SELECT id FROM tracks)
-                ''')
+                """
+                )
                 orphaned_count = cursor.fetchone()[0]
-                
+
                 # Get untagged tracks
                 cursor.execute('SELECT COUNT(*) FROM tracks WHERE tags IS NULL OR tags = ""')
                 untagged_count = cursor.fetchone()[0]
-                
+
                 # Get tracks needing embeddings
-                cursor.execute('SELECT COUNT(*) FROM tracks WHERE id NOT IN (SELECT DISTINCT track_id FROM embeddings)')
+                cursor.execute(
+                    "SELECT COUNT(*) FROM tracks WHERE id NOT IN (SELECT DISTINCT track_id FROM embeddings)"
+                )
                 tracks_needing_embeddings = cursor.fetchone()[0]
 
                 # Get audio analysis stats
                 audio_features_count = db.get_audio_features_count()
                 tracks_without_audio = len(db.get_tracks_without_audio_features())
 
-                async with self:
-                    self.doctor_total_tracks = total_tracks
-                    self.doctor_tracks_with_embeddings = tracks_with_embeddings
-                    self.doctor_orphaned_embeddings = orphaned_count
-                    self.doctor_untagged_tracks = untagged_count
-                    self.doctor_tracks_needing_embeddings = tracks_needing_embeddings
-                    self.doctor_audio_features_count = audio_features_count
-                    self.doctor_tracks_without_audio = tracks_without_audio
-                    
-                    if orphaned_count == 0 and tracks_needing_embeddings == 0:
-                        self.is_healthy = True
-                        self.check_message = "✓ Database is healthy! All tracks have embeddings and no orphaned data."
-                    else:
-                        self.is_healthy = False
-                        issues = []
-                        if orphaned_count > 0:
-                            issues.append(f"{orphaned_count} orphaned embeddings")
-                        if tracks_needing_embeddings > 0:
-                            issues.append(f"{tracks_needing_embeddings} tracks need embeddings")
-                        self.check_message = f"⚠️ Issues found: {', '.join(issues)}"
+                self.doctor_total_tracks = total_tracks
+                self.doctor_tracks_with_embeddings = tracks_with_embeddings
+                self.doctor_orphaned_embeddings = orphaned_count
+                self.doctor_untagged_tracks = untagged_count
+                self.doctor_tracks_needing_embeddings = tracks_needing_embeddings
+                self.doctor_audio_features_count = audio_features_count
+                self.doctor_tracks_without_audio = tracks_without_audio
 
+                if orphaned_count == 0 and tracks_needing_embeddings == 0:
+                    self.is_healthy = True
+                    self.check_message = "✓ Database is healthy! All tracks have embeddings and no orphaned data."
+                else:
+                    self.is_healthy = False
+                    issues = []
+                    if orphaned_count > 0:
+                        issues.append(f"{orphaned_count} orphaned embeddings")
+                    if tracks_needing_embeddings > 0:
+                        issues.append(f"{tracks_needing_embeddings} tracks need embeddings")
+                    self.check_message = f"⚠️ Issues found: {', '.join(issues)}"
+
+        except Exception as e:
+            logger.error("Error during health check: %s", e)
+
+    @rx.event(background=True)
+    async def run_health_check(self):
+        async with self:
+            self.is_checking = True
+            self.check_message = "Running health check..."
+
+        try:
+            from plexmix.config.settings import Settings
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+
+            if not db_path.exists():
+                async with self:
+                    self.check_message = "Database not found. Please run a sync first."
                     self.is_checking = False
                     self.is_page_loading = False
+                return
+
+            async with self:
+                self._refresh_health_stats()
+                self.is_checking = False
+                self.is_page_loading = False
 
         except Exception as e:
             async with self:
                 self.check_message = f"Error during health check: {str(e)}"
                 self.is_checking = False
                 self.is_page_loading = False
-    
+
     @rx.event(background=True)
     async def delete_orphaned_embeddings(self):
         async with self:
             self.is_fixing = True
             self.fix_message = "Deleting orphaned embeddings..."
             self.current_fix_target = "cleanup"
-        
+
+        cancel_event = task_store.start("doctor_fix", message="Deleting orphaned embeddings...")
+        if cancel_event is None:
+            return  # already running
+
         try:
             from plexmix.config.settings import Settings
             from plexmix.database.sqlite_manager import SQLiteManager
-            
+
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
-            
+
             with SQLiteManager(str(db_path)) as db:
                 cursor = db.get_connection().cursor()
-                cursor.execute('DELETE FROM embeddings WHERE track_id NOT IN (SELECT id FROM tracks)')
+                cursor.execute(
+                    "DELETE FROM embeddings WHERE track_id NOT IN (SELECT id FROM tracks)"
+                )
                 deleted = cursor.rowcount
                 db._commit()
-                
-                async with self:
-                    self.fix_message = ""
-                    self.is_fixing = False
-                    self.current_fix_target = ""
 
-            yield rx.toast.success(f"Deleted {deleted} orphaned embeddings")
-            yield DoctorState.run_health_check()
+            task_store.update(
+                "doctor_fix",
+                extra={
+                    "fix_target": "cleanup",
+                    "result_msg": f"Deleted {deleted} orphaned embeddings",
+                },
+            )
+            task_store.complete("doctor_fix")
 
         except Exception as e:
-            async with self:
-                self.fix_message = ""
-                self.is_fixing = False
-                self.current_fix_target = ""
-            yield rx.toast.error(f"Error deleting orphaned embeddings: {str(e)}")
-    
+            task_store.complete("doctor_fix", status="failed", message=str(e))
+
     @rx.event(background=True)
     async def generate_missing_embeddings(self):
         async with self:
@@ -158,62 +182,37 @@ class DoctorState(AppState):
             self.fix_message = "Generating embeddings for missing tracks..."
             self.fix_progress = 0
             self.current_fix_target = "embeddings_incremental"
-        
+
+        cancel_event = task_store.start(
+            "doctor_fix", message="Generating embeddings for missing tracks..."
+        )
+        if cancel_event is None:
+            return  # already running
+
         try:
             from plexmix.config.settings import Settings
             from plexmix.database.sqlite_manager import SQLiteManager
-            from plexmix.utils.embeddings import EmbeddingGenerator
             from plexmix.database.vector_index import VectorIndex
-            from plexmix.config.credentials import (
-                get_google_api_key, get_openai_api_key, get_cohere_api_key,
-                get_custom_embedding_api_key,
-            )
+            from plexmix.services.providers import build_embedding_generator
 
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
 
-            # Get API key based on provider
-            provider = settings.embedding.default_provider
-            api_key = None
-            embed_kwargs = {}
-            if provider == "gemini":
-                api_key = get_google_api_key()
-            elif provider == "openai":
-                api_key = get_openai_api_key()
-            elif provider == "cohere":
-                api_key = get_cohere_api_key()
-            elif provider == "custom":
-                embed_kwargs = {
-                    "custom_endpoint": settings.embedding.custom_endpoint,
-                    "custom_api_key": (
-                        settings.embedding.custom_api_key or get_custom_embedding_api_key()
-                    ),
-                    "custom_dimension": settings.embedding.custom_dimension,
-                }
-
-            if not api_key and provider not in ("local", "custom"):
-                async with self:
-                    self.is_fixing = False
-                yield rx.toast.error(f"API key required for {provider} provider")
+            embedding_generator = build_embedding_generator(settings)
+            if embedding_generator is None:
+                provider = settings.embedding.default_provider
+                task_store.complete(
+                    "doctor_fix",
+                    status="failed",
+                    message=f"API key required for {provider} provider",
+                )
                 return
 
-            embed_model = settings.embedding.model
-            if provider == "custom":
-                embed_model = settings.embedding.custom_model or embed_model
-
-            embedding_generator = EmbeddingGenerator(
-                provider=provider,
-                api_key=api_key,
-                model=embed_model,
-                **embed_kwargs,
-            )
-            
             index_path = settings.database.get_index_path()
             vector_index = VectorIndex(
-                dimension=embedding_generator.get_dimension(),
-                index_path=str(index_path)
+                dimension=embedding_generator.get_dimension(), index_path=str(index_path)
             )
-            
+
             with SQLiteManager(str(db_path)) as db:
                 all_tracks = db.get_all_tracks()
                 tracks_to_embed = [t for t in all_tracks if not db.get_embedding_by_track_id(t.id)]
@@ -224,21 +223,23 @@ class DoctorState(AppState):
                     db=db,
                     index_path=index_path,
                     progress_label="Generating embeddings...",
+                    cancel_event=cancel_event,
                 )
 
-            if count > 0:
-                yield rx.toast.success(f"Successfully generated {count} embeddings!")
-            else:
-                yield rx.toast.info("All tracks already have embeddings.")
-            yield DoctorState.run_health_check()
+            result_msg = (
+                f"Successfully generated {count} embeddings!"
+                if count > 0
+                else "All tracks already have embeddings."
+            )
+            task_store.update(
+                "doctor_fix",
+                extra={"fix_target": "embeddings_incremental", "result_msg": result_msg},
+            )
+            task_store.complete("doctor_fix")
 
         except Exception as e:
-            async with self:
-                self.fix_message = ""
-                self.is_fixing = False
-                self.current_fix_target = ""
-            yield rx.toast.error(f"Error generating embeddings: {str(e)}")
-    
+            task_store.complete("doctor_fix", status="failed", message=str(e))
+
     @rx.event(background=True)
     async def regenerate_all_embeddings(self):
         async with self:
@@ -247,59 +248,35 @@ class DoctorState(AppState):
             self.fix_progress = 0
             self.current_fix_target = "embeddings_full"
 
+        cancel_event = task_store.start(
+            "doctor_fix", message="Regenerating all embeddings..."
+        )
+        if cancel_event is None:
+            return  # already running
+
         try:
             from plexmix.config.settings import Settings
             from plexmix.database.sqlite_manager import SQLiteManager
-            from plexmix.utils.embeddings import EmbeddingGenerator
             from plexmix.database.vector_index import VectorIndex
-            from plexmix.config.credentials import (
-                get_google_api_key, get_openai_api_key, get_cohere_api_key,
-                get_custom_embedding_api_key,
-            )
+            from plexmix.services.providers import build_embedding_generator
 
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
 
-            provider = settings.embedding.default_provider
-            api_key = None
-            embed_kwargs = {}
-            if provider == "gemini":
-                api_key = get_google_api_key()
-            elif provider == "openai":
-                api_key = get_openai_api_key()
-            elif provider == "cohere":
-                api_key = get_cohere_api_key()
-            elif provider == "custom":
-                embed_kwargs = {
-                    "custom_endpoint": settings.embedding.custom_endpoint,
-                    "custom_api_key": (
-                        settings.embedding.custom_api_key or get_custom_embedding_api_key()
-                    ),
-                    "custom_dimension": settings.embedding.custom_dimension,
-                }
-
-            if not api_key and provider not in ("local", "custom"):
-                async with self:
-                    self.is_fixing = False
-                    self.current_fix_target = ""
-                yield rx.toast.error(f"API key required for {provider} provider")
+            embedding_generator = build_embedding_generator(settings)
+            if embedding_generator is None:
+                provider = settings.embedding.default_provider
+                task_store.complete(
+                    "doctor_fix",
+                    status="failed",
+                    message=f"API key required for {provider} provider",
+                )
                 return
-
-            embed_model = settings.embedding.model
-            if provider == "custom":
-                embed_model = settings.embedding.custom_model or embed_model
-
-            embedding_generator = EmbeddingGenerator(
-                provider=provider,
-                api_key=api_key,
-                model=embed_model,
-                **embed_kwargs,
-            )
 
             index_path = settings.database.get_index_path()
             if index_path.exists():
                 index_path.unlink()
-            metadata_path = index_path.with_suffix('.metadata')
+            metadata_path = index_path.with_suffix(".metadata")
             if metadata_path.exists():
                 metadata_path.unlink()
 
@@ -310,7 +287,7 @@ class DoctorState(AppState):
 
             with SQLiteManager(str(db_path)) as db:
                 cursor = db.get_connection().cursor()
-                cursor.execute('DELETE FROM embeddings')
+                cursor.execute("DELETE FROM embeddings")
                 db._commit()
 
                 tracks_to_embed = db.get_all_tracks()
@@ -322,20 +299,22 @@ class DoctorState(AppState):
                     db=db,
                     index_path=index_path,
                     progress_label="Regenerating embeddings...",
+                    cancel_event=cancel_event,
                 )
 
-            if count > 0:
-                yield rx.toast.success(f"Rebuilt embedding index with {count} vectors!")
-            else:
-                yield rx.toast.info("No tracks available to embed.")
-            yield DoctorState.run_health_check()
+            result_msg = (
+                f"Rebuilt embedding index with {count} vectors!"
+                if count > 0
+                else "No tracks available to embed."
+            )
+            task_store.update(
+                "doctor_fix",
+                extra={"fix_target": "embeddings_full", "result_msg": result_msg},
+            )
+            task_store.complete("doctor_fix")
 
         except Exception as e:
-            async with self:
-                self.fix_message = ""
-                self.is_fixing = False
-                self.current_fix_target = ""
-            yield rx.toast.error(f"Error regenerating embeddings: {str(e)}")
+            task_store.complete("doctor_fix", status="failed", message=str(e))
 
     @rx.event(background=True)
     async def regenerate_missing_tags(self):
@@ -345,61 +324,37 @@ class DoctorState(AppState):
             self.fix_progress = 0
             self.current_fix_target = "tags"
 
+        cancel_event = task_store.start(
+            "doctor_fix", message="Regenerating tags for untagged tracks..."
+        )
+        if cancel_event is None:
+            return  # already running
+
         try:
             from plexmix.config.settings import Settings
             from plexmix.database.sqlite_manager import SQLiteManager
-            from plexmix.ai import get_ai_provider
             from plexmix.ai.tag_generator import TagGenerator
-            from plexmix.config.credentials import (
-                get_google_api_key,
-                get_openai_api_key,
-                get_anthropic_api_key,
-                get_cohere_api_key,
-            )
+            from plexmix.services.providers import build_ai_provider
 
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
 
             if not db_path.exists():
-                async with self:
-                    self.is_fixing = False
-                    self.current_fix_target = ""
-                yield rx.toast.error("Database not found. Please run a sync first.")
+                task_store.complete(
+                    "doctor_fix",
+                    status="failed",
+                    message="Database not found. Please run a sync first.",
+                )
                 return
 
-            ai_provider_name = settings.ai.default_provider or "gemini"
-            provider_alias = "claude" if ai_provider_name == "anthropic" else ai_provider_name
-            api_key = None
-            if provider_alias == "gemini":
-                api_key = get_google_api_key()
-            elif provider_alias == "openai":
-                api_key = get_openai_api_key()
-            elif provider_alias == "claude":
-                api_key = get_anthropic_api_key()
-            elif provider_alias == "cohere":
-                api_key = get_cohere_api_key()
-            elif provider_alias == "custom":
-                from plexmix.config.credentials import get_custom_ai_api_key
-                api_key = settings.ai.custom_api_key or get_custom_ai_api_key()
-
-            try:
-                ai_provider = get_ai_provider(
-                    provider_name=ai_provider_name,
-                    api_key=api_key,
-                    model=settings.ai.custom_model if ai_provider_name == "custom" else settings.ai.model,
-                    temperature=settings.ai.temperature,
-                    local_mode=settings.ai.local_mode,
-                    local_endpoint=settings.ai.local_endpoint,
-                    local_auth_token=settings.ai.local_auth_token,
-                    local_max_output_tokens=settings.ai.local_max_output_tokens,
-                    custom_endpoint=settings.ai.custom_endpoint,
-                    custom_api_key=api_key if ai_provider_name == "custom" else None,
+            ai_provider = build_ai_provider(settings, silent=True)
+            if ai_provider is None:
+                ai_provider_name = settings.ai.default_provider or "gemini"
+                task_store.complete(
+                    "doctor_fix",
+                    status="failed",
+                    message=f"AI provider '{ai_provider_name}' is not fully configured.",
                 )
-            except ValueError:
-                async with self:
-                    self.is_fixing = False
-                    self.current_fix_target = ""
-                yield rx.toast.error(f"AI provider '{ai_provider_name}' is not fully configured.")
                 return
 
             tag_generator = TagGenerator(ai_provider)
@@ -408,22 +363,29 @@ class DoctorState(AppState):
                 untagged_tracks = db.get_tracks_by_filter(has_no_tags=True)
 
                 if not untagged_tracks:
-                    async with self:
-                        self.is_fixing = False
-                        self.current_fix_target = ""
-                    yield rx.toast.info("All tracks already have AI-generated tags.")
+                    task_store.update(
+                        "doctor_fix",
+                        extra={
+                            "fix_target": "tags",
+                            "result_msg": "All tracks already have AI-generated tags.",
+                        },
+                    )
+                    task_store.complete("doctor_fix")
                     return
 
-                async with self:
-                    self.fix_total = len(untagged_tracks)
+                total_untagged = len(untagged_tracks)
+                task_store.update(
+                    "doctor_fix",
+                    extra={"fix_target": "tags", "fix_total": total_untagged},
+                )
 
                 def progress_callback(batch_num: int, total: int, tracks_tagged: int):
-                    async def update_progress():
-                        async with self:
-                            self.fix_progress = tracks_tagged
-                            self.fix_message = f"Regenerating tags... {tracks_tagged}/{self.fix_total}"
-
-                    asyncio.create_task(update_progress())
+                    task_store.update(
+                        "doctor_fix",
+                        progress=tracks_tagged,
+                        message=f"Regenerating tags... {tracks_tagged}/{total_untagged}",
+                        extra={"fix_target": "tags", "fix_total": total_untagged},
+                    )
 
                 results = tag_generator.generate_tags_batch(
                     untagged_tracks,
@@ -433,9 +395,9 @@ class DoctorState(AppState):
 
                 updated = 0
                 for track_id, tag_data in results.items():
-                    tags = ','.join(tag_data.get('tags', []))
-                    environments = ','.join(tag_data.get('environments', []))
-                    instruments = ','.join(tag_data.get('instruments', []))
+                    tags = ",".join(tag_data.get("tags", []))
+                    environments = ",".join(tag_data.get("environments", []))
+                    instruments = ",".join(tag_data.get("instruments", []))
 
                     if tags or environments or instruments:
                         db.update_track_tags(
@@ -446,24 +408,18 @@ class DoctorState(AppState):
                         )
                         updated += 1
 
-                async with self:
-                    self.fix_message = ""
-                    self.is_fixing = False
-                    self.fix_progress = 0
-                    self.fix_total = 0
-                    self.current_fix_target = ""
-
-                yield rx.toast.success(f"Regenerated tags for {updated} tracks")
-
-            yield DoctorState.run_health_check()
+            task_store.update(
+                "doctor_fix",
+                extra={
+                    "fix_target": "tags",
+                    "result_msg": f"Regenerated tags for {updated} tracks",
+                },
+            )
+            task_store.complete("doctor_fix")
 
         except Exception as e:
-            async with self:
-                self.fix_message = ""
-                self.is_fixing = False
-                self.current_fix_target = ""
-            yield rx.toast.error(f"Error regenerating tags: {str(e)}")
-    
+            task_store.complete("doctor_fix", status="failed", message=str(e))
+
     @rx.event(background=True)
     async def analyze_missing_audio(self):
         async with self:
@@ -472,6 +428,12 @@ class DoctorState(AppState):
             self.fix_progress = 0
             self.current_fix_target = "audio_analysis"
 
+        cancel_event = task_store.start(
+            "doctor_fix", message="Analyzing audio features for unanalyzed tracks..."
+        )
+        if cancel_event is None:
+            return  # already running
+
         try:
             from plexmix.config.settings import Settings
             from plexmix.database.sqlite_manager import SQLiteManager
@@ -479,10 +441,11 @@ class DoctorState(AppState):
             try:
                 from plexmix.audio.analyzer import EssentiaAnalyzer
             except ImportError:
-                async with self:
-                    self.is_fixing = False
-                    self.current_fix_target = ""
-                yield rx.toast.error("Essentia is not installed. Run: poetry install -E audio")
+                task_store.complete(
+                    "doctor_fix",
+                    status="failed",
+                    message="Essentia is not installed. Run: poetry install -E audio",
+                )
                 return
 
             settings = Settings.load_from_file()
@@ -490,10 +453,11 @@ class DoctorState(AppState):
             duration_limit = settings.audio.duration_limit
 
             if not db_path.exists():
-                async with self:
-                    self.is_fixing = False
-                    self.current_fix_target = ""
-                yield rx.toast.error("Database not found. Please run a sync first.")
+                task_store.complete(
+                    "doctor_fix",
+                    status="failed",
+                    message="Database not found. Please run a sync first.",
+                )
                 return
 
             loop = asyncio.get_running_loop()
@@ -504,15 +468,21 @@ class DoctorState(AppState):
                 pending_tracks = [t for t in db.get_tracks_without_audio_features() if t.file_path]
 
                 if not pending_tracks:
-                    async with self:
-                        self.is_fixing = False
-                        self.current_fix_target = ""
-                    yield rx.toast.info("All tracks already have audio features.")
+                    task_store.update(
+                        "doctor_fix",
+                        extra={
+                            "fix_target": "audio_analysis",
+                            "result_msg": "All tracks already have audio features.",
+                        },
+                    )
+                    task_store.complete("doctor_fix")
                     return
 
                 total = len(pending_tracks)
-                async with self:
-                    self.fix_total = total
+                task_store.update(
+                    "doctor_fix",
+                    extra={"fix_target": "audio_analysis", "fix_total": total},
+                )
 
                 analyzed = 0
                 executor = ThreadPoolExecutor(max_workers=num_workers)
@@ -523,10 +493,12 @@ class DoctorState(AppState):
                     t = next(track_iter, None)
                     if t is None:
                         return
+
                     def do_analyze(trk=t):
                         resolved = settings.audio.resolve_path(trk.file_path)
                         features = analyzer.analyze(resolved, duration_limit=duration_limit)
                         return trk, features.to_dict()
+
                     in_flight[loop.run_in_executor(executor, do_analyze)] = t
 
                 for _ in range(min(num_workers, total)):
@@ -543,32 +515,33 @@ class DoctorState(AppState):
                             db.insert_audio_features(track_obj.id, features_dict)
                             analyzed += 1
                         except Exception as exc:
-                            logger.warning("Audio analysis failed for track %s: %s", getattr(exc, 'track_id', '?'), exc)
+                            logger.warning(
+                                "Audio analysis failed for track %s: %s",
+                                getattr(exc, "track_id", "?"),
+                                exc,
+                            )
                         _submit()
 
-                    async with self:
-                        self.fix_progress = analyzed
-                        self.fix_message = f"Analyzing audio... {analyzed}/{total} ({num_workers} workers)"
+                    task_store.update(
+                        "doctor_fix",
+                        progress=analyzed,
+                        message=f"Analyzing audio... {analyzed}/{total} ({num_workers} workers)",
+                        extra={"fix_target": "audio_analysis", "fix_total": total},
+                    )
 
                 executor.shutdown(wait=False)
 
-                async with self:
-                    self.fix_message = ""
-                    self.is_fixing = False
-                    self.fix_progress = 0
-                    self.fix_total = 0
-                    self.current_fix_target = ""
-
-                yield rx.toast.success(f"Analyzed audio features for {analyzed} tracks")
-
-            yield DoctorState.run_health_check()
+            task_store.update(
+                "doctor_fix",
+                extra={
+                    "fix_target": "audio_analysis",
+                    "result_msg": f"Analyzed audio features for {analyzed} tracks",
+                },
+            )
+            task_store.complete("doctor_fix")
 
         except Exception as e:
-            async with self:
-                self.fix_message = ""
-                self.is_fixing = False
-                self.current_fix_target = ""
-            yield rx.toast.error(f"Error analyzing audio: {str(e)}")
+            task_store.complete("doctor_fix", status="failed", message=str(e))
 
     async def _generate_embeddings_for_tracks(
         self,
@@ -578,25 +551,24 @@ class DoctorState(AppState):
         db,
         index_path: Path,
         progress_label: str,
+        cancel_event=None,
     ) -> int:
         """Generate embeddings for tracks. Returns count of embeddings saved."""
         from plexmix.database.models import Embedding
         from plexmix.utils.embeddings import create_track_text
 
         if not tracks_to_embed:
-            async with self:
-                self.is_fixing = False
-                self.current_fix_target = ""
             return 0
 
-        async with self:
-            self.fix_total = len(tracks_to_embed)
-
+        total = len(tracks_to_embed)
         batch_size = 50
         embeddings_saved = 0
 
         for i in range(0, len(tracks_to_embed), batch_size):
-            batch_tracks = tracks_to_embed[i:i + batch_size]
+            if cancel_event is not None and cancel_event.is_set():
+                break
+
+            batch_tracks = tracks_to_embed[i : i + batch_size]
 
             track_data_list: List[Dict[str, Any]] = []
             for track in batch_tracks:
@@ -604,13 +576,13 @@ class DoctorState(AppState):
                 album = db.get_album_by_id(track.album_id)
 
                 track_data = {
-                    'id': track.id,
-                    'title': track.title,
-                    'artist': artist.name if artist else 'Unknown',
-                    'album': album.title if album else 'Unknown',
-                    'genre': track.genre or '',
-                    'year': track.year or '',
-                    'tags': track.tags or ''
+                    "id": track.id,
+                    "title": track.title,
+                    "artist": artist.name if artist else "Unknown",
+                    "album": album.title if album else "Unknown",
+                    "genre": track.genre or "",
+                    "year": track.year or "",
+                    "tags": track.tags or "",
                 }
                 track_data_list.append(track_data)
 
@@ -619,17 +591,20 @@ class DoctorState(AppState):
 
             for track_data, embedding_vector in zip(track_data_list, embeddings):
                 embedding = Embedding(
-                    track_id=track_data['id'],
+                    track_id=track_data["id"],
                     embedding_model=embedding_generator.provider_name,
                     embedding_dim=embedding_generator.get_dimension(),
-                    vector=embedding_vector
+                    vector=embedding_vector,
                 )
                 db.insert_embedding(embedding)
                 embeddings_saved += 1
 
-                async with self:
-                    self.fix_progress = embeddings_saved
-                    self.fix_message = f"{progress_label} {embeddings_saved}/{self.fix_total}"
+                task_store.update(
+                    "doctor_fix",
+                    progress=embeddings_saved,
+                    message=f"{progress_label} {embeddings_saved}/{total}",
+                    extra={"fix_total": total},
+                )
 
         all_embeddings = db.get_all_embeddings()
         track_ids = [emb[0] for emb in all_embeddings]
@@ -639,14 +614,40 @@ class DoctorState(AppState):
             vector_index.build_index(vectors, track_ids)
             vector_index.save_index(str(index_path))
 
-        async with self:
-            self.fix_message = ""
+        return embeddings_saved
+
+    @rx.event
+    def poll_task_progress(self):
+        """Client-initiated poll for doctor fix progress."""
+        entry = task_store.get("doctor_fix")
+        if entry is None:
+            return
+
+        if entry.status == "running":
+            self.is_fixing = True
+            self.fix_progress = entry.progress
+            self.fix_message = entry.message
+            self.fix_total = int(entry.extra.get("fix_total", 0))
+            self.current_fix_target = entry.extra.get("fix_target", "")
+        elif entry.status == "completed":
             self.is_fixing = False
+            self.fix_message = ""
             self.fix_progress = 0
             self.fix_total = 0
             self.current_fix_target = ""
-
-        return embeddings_saved
+            self._refresh_health_stats()
+            msg = entry.extra.get("result_msg", "Fix completed!")
+            task_store.clear("doctor_fix")
+            return rx.toast.success(msg)
+        elif entry.status == "failed":
+            self.is_fixing = False
+            self.fix_message = ""
+            self.fix_progress = 0
+            self.fix_total = 0
+            self.current_fix_target = ""
+            msg = entry.message or "Fix failed"
+            task_store.clear("doctor_fix")
+            return rx.toast.error(msg)
 
     @rx.var(cache=True)
     def orphaned_embeddings_label(self) -> str:

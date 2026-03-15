@@ -18,8 +18,9 @@ class TestProviderComplete:
         mock_client = MagicMock()
         mock_client.models.generate_content.return_value = mock_response
 
-        with patch('google.genai.Client', return_value=mock_client):
+        with patch("google.genai.Client", return_value=mock_client):
             from plexmix.ai.gemini_provider import GeminiProvider
+
             provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
 
             result = provider.complete("Test prompt", temperature=0.3, max_tokens=1000)
@@ -29,7 +30,7 @@ class TestProviderComplete:
 
     def test_openai_provider_complete(self):
         """Test OpenAIProvider.complete() with mocked API."""
-        with patch('openai.OpenAI') as mock_client_class:
+        with patch("openai.OpenAI") as mock_client_class:
             # Setup mock
             mock_message = MagicMock()
             mock_message.content = '{"tags": ["chill", "relaxing"]}'
@@ -43,6 +44,7 @@ class TestProviderComplete:
             mock_client_class.return_value = mock_client
 
             from plexmix.ai.openai_provider import OpenAIProvider
+
             provider = OpenAIProvider(api_key="test-key", model="gpt-5-mini")
 
             result = provider.complete("Test prompt", temperature=0.3, max_tokens=1000)
@@ -52,7 +54,7 @@ class TestProviderComplete:
 
     def test_claude_provider_complete(self):
         """Test ClaudeProvider.complete() with mocked API."""
-        with patch('anthropic.Anthropic') as mock_client_class:
+        with patch("anthropic.Anthropic") as mock_client_class:
             # Setup mock
             mock_text = MagicMock()
             mock_text.text = '{"tags": ["melancholic", "slow"]}'
@@ -65,6 +67,7 @@ class TestProviderComplete:
             mock_client_class.return_value = mock_client
 
             from plexmix.ai.claude_provider import ClaudeProvider
+
             provider = ClaudeProvider(api_key="test-key", model="claude-sonnet-4-5-20250929")
 
             result = provider.complete("Test prompt", temperature=0.3, max_tokens=1000)
@@ -75,7 +78,7 @@ class TestProviderComplete:
     def test_cohere_provider_complete(self):
         """Test CohereProvider.complete() with mocked API."""
         pytest.importorskip("cohere")
-        with patch('cohere.ClientV2') as mock_client_class:
+        with patch("cohere.ClientV2") as mock_client_class:
             # Setup mock
             mock_text = MagicMock()
             mock_text.text = '{"tags": ["energetic", "happy"]}'
@@ -89,6 +92,7 @@ class TestProviderComplete:
             mock_client_class.return_value = mock_client
 
             from plexmix.ai.cohere_provider import CohereProvider
+
             provider = CohereProvider(api_key="test-key", model="command-r7b-12-2024")
 
             result = provider.complete("Test prompt", temperature=0.3, max_tokens=1000)
@@ -106,18 +110,18 @@ class TestTagGenerator:
 
         # Create mock provider with complete() method
         mock_provider = MagicMock()
-        mock_provider.complete.return_value = '''
+        mock_provider.complete.return_value = """
         {
             "1": {"tags": ["energetic", "upbeat"], "environments": ["workout"], "instruments": ["drums"]},
             "2": {"tags": ["calm", "peaceful"], "environments": ["relax"], "instruments": ["piano"]}
         }
-        '''
+        """
 
         generator = TagGenerator(mock_provider)
 
         tracks = [
-            {'id': 1, 'title': 'Track 1', 'artist': 'Artist 1', 'genre': 'Rock'},
-            {'id': 2, 'title': 'Track 2', 'artist': 'Artist 2', 'genre': 'Classical'}
+            {"id": 1, "title": "Track 1", "artist": "Artist 1", "genre": "Rock"},
+            {"id": 2, "title": "Track 2", "artist": "Artist 2", "genre": "Classical"},
         ]
 
         results = generator._generate_batch(tracks)
@@ -128,8 +132,8 @@ class TestTagGenerator:
         # Verify results
         assert 1 in results
         assert 2 in results
-        assert 'energetic' in results[1]['tags']
-        assert 'calm' in results[2]['tags']
+        assert "energetic" in results[1]["tags"]
+        assert "calm" in results[2]["tags"]
 
     def test_tag_generator_handles_json_errors(self):
         """Test that TagGenerator handles malformed JSON gracefully."""
@@ -141,15 +145,13 @@ class TestTagGenerator:
 
         generator = TagGenerator(mock_provider)
 
-        tracks = [
-            {'id': 1, 'title': 'Track 1', 'artist': 'Artist 1', 'genre': 'Rock'}
-        ]
+        tracks = [{"id": 1, "title": "Track 1", "artist": "Artist 1", "genre": "Rock"}]
 
         # Should return empty results, not crash
         results = generator._generate_batch(tracks)
 
         assert 1 in results
-        assert results[1]['tags'] == []
+        assert results[1]["tags"] == []
 
 
 class TestProviderRetry:
@@ -163,12 +165,13 @@ class TestProviderRetry:
         mock_client = MagicMock()
         mock_client.models.generate_content.side_effect = [
             Exception("429 Too Many Requests"),
-            mock_response
+            mock_response,
         ]
 
-        with patch('google.genai.Client', return_value=mock_client):
-            with patch('time.sleep'):  # Don't actually sleep in tests
+        with patch("google.genai.Client", return_value=mock_client):
+            with patch("time.sleep"):  # Don't actually sleep in tests
                 from plexmix.ai.gemini_provider import GeminiProvider
+
                 provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
 
                 result = provider.complete("Test prompt")
@@ -182,9 +185,10 @@ class TestProviderRetry:
         mock_client = MagicMock()
         mock_client.models.generate_content.side_effect = Exception("429 Too Many Requests")
 
-        with patch('google.genai.Client', return_value=mock_client):
-            with patch('time.sleep'):
+        with patch("google.genai.Client", return_value=mock_client):
+            with patch("time.sleep"):
                 from plexmix.ai.gemini_provider import GeminiProvider
+
                 provider = GeminiProvider(api_key="test-key", model="gemini-2.5-flash")
 
                 with pytest.raises(Exception):

@@ -7,6 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-03-15
+
+### Added
+- Persistent `TaskStore` architecture for background tasks — sync, tagging, audio analysis, embeddings, and doctor fixes survive browser disconnects and reconnects
+- Client-pull polling via hidden DOM buttons + `setInterval` replaces server-push progress updates, eliminating "disconnected client" warnings
+- `TaskEntry` dataclass with status tracking (running/completed/failed/cancelled), progress, messages, and extensible `extra` dict
+- Global exclusivity per job type prevents concurrent DB-contending operations (e.g., two syncs)
+- Multi-user forward compatibility: TaskStore keyed by `(user_id, job_type)` with `"default"` for single-user mode
+- `poll_task_progress()` handlers on library, tagging, and doctor pages for session recovery on page load
+- Shared service modules: `sync_service.py`, `playlist_service.py`, `tagging_service.py`, `audio_service.py`
+- Centralized constants module (`config/constants.py`) for batch sizes, pagination, retry defaults, and diversity constraints
+- Reusable form field components (`ui/utils/form_utils.py`): `form_field`, `year_range_field`, `help_text`
+- 29 new tests for `TaskStore` and `JobManager` lifecycle, progress, cancel/pause, and exclusivity
+
+### Changed
+- Refactor library, tagging, and doctor states to write progress to `TaskStore` instead of `async with self:` inside loops
+- Refactor CLI commands (sync, create, tags, embeddings, audio) to use shared service layer — removes duplicated provider/connection setup
+- Refactor UI states (library, generator, tagging) to use shared service layer and centralized constants
+- Split `SettingsState` (1,068 → 638 lines) into core state + `_settings_testing.py` + `_settings_downloads.py`
+- Split `settings.py` page (1,045 → 364 lines) into core page + `_settings_sections.py`
+- Cancel/pause/resume operations no longer require client token — work directly on TaskStore by job type
+
+## [0.7.0] - 2026-03-14
+
+### Added
+- Shared service layer (`services/providers.py`) centralizing provider construction and credential resolution across CLI and UI
+- Unified provider registry (`services/registry.py`) — single source of truth for all provider model lists, default models, embedding dimensions, and API key requirements
+- Reusable `stat_tile` component and `str_dict`/`format_eta` helpers extracted from duplicated code
+- CI pipeline hardening: Black, Ruff, and Mypy checks in GitHub Actions; 35% coverage threshold
+- 204 new tests (520 total, 47% coverage): registry, Plex client, doctor/config CLI, and database playlist/FTS tests
+- Playlist export/import CLI commands (`plexmix playlist export/import/list`) with JSON and M3U format support
+- JSON export button on History page (card + detail modal)
+- Smart shuffle & ordering: 4 track ordering modes (`similarity`, `random`, `alternating_artists`, `energy_curve`)
+- Energy curve algorithm orders tracks in an arc shape using audio features (energy, danceability, tempo)
+- Alternating artists algorithm maximizes artist diversity via round-robin interleaving
+- Shuffle mode selector on Generator page and `--shuffle` CLI option on `plexmix create`
+- Playlist templates with database storage, CRUD API, and 5 built-in presets (Morning Commute, Workout, Study Session, Dinner Party, Late Night)
+- Template gallery on Generator page: horizontally scrollable cards, one-click apply, save current config as template
+- Import modal on History page with file upload supporting JSON and M3U formats with auto-detection and track matching
+- Centralized job manager (`ui/job_manager.py`) replacing scattered module-global dicts for background task lifecycle management
+- Versioned schema migration system with `schema_version` table replacing ad-hoc migration checks
+- Provider auto-discovery for Ollama and OpenAI-compatible endpoints (supports `/v1/models` and `/api/tags`)
+- "Discover Models" button on Settings page for custom and local provider endpoint modes with clickable model badges
+- Smarter tag regeneration: `tags_generated_at` timestamp on tracks, `--retag-stale DAYS` CLI option, stale days filter on Tagging page
+- Incremental FAISS index updates via `IndexIDMap`: `update_vectors()` and `remove_vectors()` without full rebuild; auto-migrates legacy `IndexFlatIP` indexes
+- Streaming SSE responses for local LLM endpoint mode (Ollama/LM Studio) with non-streaming fallback
+- Plex token pre-flight validation before sync operations with clear error messages for expired/invalid tokens
+- Duplicate avoidance: `--avoid-recent N` CLI option and "Avoid Recent" input on Generator page to exclude tracks from recent playlists
+- `EmbeddingGenerator.verify_dimension()` method for runtime dimension auto-detection
+- Bulk operations in Library: "Apply Tags" dialog and "Delete Selected" with confirmation for multi-selected tracks
+- Playlist track reordering in History detail view with move up/down buttons and persistent save
+- Global keyboard shortcuts: vim-style `g+key` navigation (d=dashboard, g=generator, l=library, etc.), `/` to focus search, `Esc` to blur
+- Library drill-down filters: filter by tag substring and "has audio features" checkbox
+- Playlist rerun from History: full generation config stored with saved playlists, "Rerun" button loads all parameters into Generator
+- `generation_config` JSON column on playlists table (Migration 9) for preserving generation parameters
+- Mobile-responsive button labels: icon-only on mobile for Library floating bar, Generator action bar, and History detail modal
+
+### Changed
+- Split `cli/main.py` (1,579 lines) into 9 focused command modules (largest is 305 lines)
+- Refactor CLI, library state, tagging state, generator state, doctor state, and settings state to use shared provider service
+- Replace hardcoded provider/model lists in `ai/__init__.py`, `config/settings.py`, `ui/states/settings_state.py`, and `services/providers.py` with registry lookups
+- Delete dead `ui/app.py` entrypoint (consolidated into `plexmix_ui/plexmix_ui.py`)
+- Refactor `library_state.py` and `tagging_state.py` to use centralized job manager (removed 5 module-global dicts, 4 cleanup functions, 2 atexit registrations)
+
+### Fixed
+- Fix undefined `embedding_provider` variable in create playlist command
+- Fix CLI help failing in restricted environments (best-effort file logging)
+- Fix 171 mypy errors across 28 core source files
+- Clean all Ruff lint warnings in source and test files
+
 ## [0.6.7] - 2026-03-13
 
 ### Added
@@ -420,7 +490,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI interface with Rich formatting
 - Tag generation and management
 
-[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.5.5...HEAD
+[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/izzoa/plexmix/compare/v0.6.7...v0.7.0
+[0.6.7]: https://github.com/izzoa/plexmix/compare/v0.6.6...v0.6.7
+[0.6.6]: https://github.com/izzoa/plexmix/compare/v0.6.5...v0.6.6
+[0.6.5]: https://github.com/izzoa/plexmix/compare/v0.6.4...v0.6.5
+[0.6.4]: https://github.com/izzoa/plexmix/compare/v0.6.3...v0.6.4
+[0.6.3]: https://github.com/izzoa/plexmix/compare/v0.6.2...v0.6.3
+[0.6.2]: https://github.com/izzoa/plexmix/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/izzoa/plexmix/compare/v0.6.0...v0.6.1
+[0.6.0]: https://github.com/izzoa/plexmix/compare/v0.5.8...v0.6.0
+[0.5.8]: https://github.com/izzoa/plexmix/compare/v0.5.7...v0.5.8
+[0.5.7]: https://github.com/izzoa/plexmix/compare/v0.5.6...v0.5.7
+[0.5.6]: https://github.com/izzoa/plexmix/compare/v0.5.5...v0.5.6
 [0.5.5]: https://github.com/izzoa/plexmix/compare/v0.5.4...v0.5.5
 [0.5.4]: https://github.com/izzoa/plexmix/compare/v0.5.3...v0.5.4
 [0.4.0]: https://github.com/izzoa/plexmix/compare/v0.3.1...v0.4.0

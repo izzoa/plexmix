@@ -18,7 +18,7 @@ class AIProvider(ABC):
         prompt: str,
         temperature: Optional[float] = None,
         max_tokens: int = 4096,
-        timeout: int = 30
+        timeout: int = 30,
     ) -> str:
         """
         Send a prompt to the AI provider and return the text response.

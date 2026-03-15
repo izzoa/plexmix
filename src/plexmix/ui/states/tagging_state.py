@@ -1,39 +1,16 @@
 import logging
 import reflex as rx
 import asyncio
-import threading
 import time
-import atexit
-from typing import Dict, Optional
+from plexmix.config.constants import TAG_BATCH_SIZE
 from plexmix.ui.states.app_state import AppState
+from plexmix.ui.job_manager import task_store
 
 
-def _str_dict(d: dict) -> dict[str, str]:
-    """Convert a dict with mixed-type values to all-string values for Reflex."""
-    return {k: ("" if v is None else str(v)) for k, v in d.items()}
+from plexmix.ui.utils.helpers import str_dict as _str_dict
+
 
 logger = logging.getLogger(__name__)
-
-# Per-client cancel events for tagging operations
-_tagging_cancel_events: Dict[str, threading.Event] = {}
-
-
-def _cleanup_tagging_state(client_token: str) -> None:
-    """Clean up any state associated with a disconnected client."""
-    if client_token in _tagging_cancel_events:
-        _tagging_cancel_events[client_token].set()
-        del _tagging_cancel_events[client_token]
-
-
-def _cleanup_all_tagging_state() -> None:
-    """Clean up all tagging state on process exit."""
-    for token in list(_tagging_cancel_events.keys()):
-        _tagging_cancel_events[token].set()
-    _tagging_cancel_events.clear()
-
-
-# Register cleanup on process exit
-atexit.register(_cleanup_all_tagging_state)
 
 
 class TaggingState(AppState):
@@ -43,6 +20,7 @@ class TaggingState(AppState):
     year_max: str = ""
     artist_filter: str = ""
     has_no_tags: bool = False
+    stale_days: str = ""
 
     # Preview and progress
     preview_count: int = 0
@@ -53,6 +31,9 @@ class TaggingState(AppState):
     tags_generated_count: int = 0
     estimated_time_remaining: int = 0
     tagging_message: str = ""
+
+    # Stale tag stats
+    stale_track_count: int = 0
 
     # Confirmation dialog
     show_tag_all_confirm: bool = False
@@ -73,7 +54,55 @@ class TaggingState(AppState):
             return
         super().on_load()
         self.load_recently_tagged()
+        self._load_stale_count()
+        self.poll_task_progress()  # Recover in-progress tagging from TaskStore
         self.is_page_loading = False
+
+    def poll_task_progress(self):
+        """Client-initiated poll: read TaskStore -> update state vars."""
+        entry = task_store.get("tagging")
+        if entry is None:
+            return
+        if entry.status == "running":
+            self.is_tagging = True
+            self.tagging_progress = entry.progress
+            self.tagging_message = entry.message
+            self.current_batch = int(entry.extra.get("current_batch", 0))
+            self.total_batches = int(entry.extra.get("total_batches", 0))
+            self.tags_generated_count = int(entry.extra.get("tags_generated_count", 0))
+            self.estimated_time_remaining = int(entry.extra.get("estimated_time_remaining", 0))
+        elif entry.status == "completed":
+            self.is_tagging = False
+            self.tagging_progress = 100
+            self.tagging_message = ""
+            self.load_recently_tagged()
+            count = entry.extra.get("tags_generated_count", 0)
+            task_store.clear("tagging")
+            return rx.toast.success(f"Successfully tagged {count} tracks!")
+        elif entry.status == "failed":
+            self.is_tagging = False
+            self.tagging_message = ""
+            msg = entry.message or "Tagging failed"
+            task_store.clear("tagging")
+            return rx.toast.error(f"Error during tagging: {msg}")
+        elif entry.status == "cancelled":
+            self.is_tagging = False
+            self.tagging_message = ""
+            task_store.clear("tagging")
+            return rx.toast.warning("Tagging cancelled")
+
+    def _load_stale_count(self):
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+            if db_path.exists():
+                with SQLiteManager(str(db_path)) as db:
+                    self.stale_track_count = db.count_stale_tagged_tracks(30)
+        except Exception as e:
+            logger.error("Error loading stale track count: %s", e)
 
     def load_recently_tagged(self):
         try:
@@ -111,6 +140,9 @@ class TaggingState(AppState):
     def toggle_has_no_tags(self):
         self.has_no_tags = not self.has_no_tags
 
+    def set_stale_days(self, value: str):
+        self.stale_days = value
+
     @rx.event(background=True)
     async def preview_selection(self):
         async with self:
@@ -134,6 +166,7 @@ class TaggingState(AppState):
 
             year_min_int = int(self.year_min) if self.year_min else None
             year_max_int = int(self.year_max) if self.year_max else None
+            stale_days_int = int(self.stale_days) if self.stale_days else None
 
             # Get matching tracks
             tracks = db.get_tracks_by_filter(
@@ -141,13 +174,18 @@ class TaggingState(AppState):
                 year_min=year_min_int,
                 year_max=year_max_int,
                 artist=self.artist_filter if self.artist_filter else None,
-                has_no_tags=self.has_no_tags
+                has_no_tags=self.has_no_tags,
+                stale_days=stale_days_int,
             )
+
+            # Also count stale tracks for the UI badge
+            stale_count = db.count_stale_tagged_tracks(30)
 
             db.close()
 
             async with self:
                 self.preview_count = len(tracks)
+                self.stale_track_count = stale_count
                 self.tagging_message = f"{len(tracks)} tracks match your filters"
 
         except Exception as e:
@@ -156,7 +194,6 @@ class TaggingState(AppState):
 
     @rx.event(background=True)
     async def start_tagging(self):
-        token = self.router.session.client_token
         async with self:
             if self.preview_count == 0:
                 self.tagging_message = "No tracks to tag. Preview selection first."
@@ -168,7 +205,10 @@ class TaggingState(AppState):
             self.tags_generated_count = 0
             self.tagging_message = "Starting tag generation..."
 
-        _tagging_cancel_events[token] = threading.Event()
+        cancel_event = task_store.start("tagging", message="Starting tag generation...")
+        if cancel_event is None:
+            # Already running — polling will show existing task's progress
+            return
 
         try:
             from plexmix.config.settings import Settings
@@ -179,9 +219,7 @@ class TaggingState(AppState):
             db_path = settings.database.get_db_path()
 
             if not db_path.exists():
-                async with self:
-                    self.tagging_message = "Database not found."
-                    self.is_tagging = False
+                task_store.complete("tagging", status="failed", message="Database not found.")
                 return
 
             db = SQLiteManager(str(db_path))
@@ -189,6 +227,7 @@ class TaggingState(AppState):
 
             year_min_int = int(self.year_min) if self.year_min else None
             year_max_int = int(self.year_max) if self.year_max else None
+            stale_days_int = int(self.stale_days) if self.stale_days else None
 
             # Get tracks to tag
             tracks = db.get_tracks_by_filter(
@@ -196,71 +235,48 @@ class TaggingState(AppState):
                 year_min=year_min_int,
                 year_max=year_max_int,
                 artist=self.artist_filter if self.artist_filter else None,
-                has_no_tags=self.has_no_tags
+                has_no_tags=self.has_no_tags,
+                stale_days=stale_days_int,
             )
 
             if not tracks:
-                async with self:
-                    self.tagging_message = "No tracks found matching filters."
-                    self.is_tagging = False
+                task_store.complete(
+                    "tagging", status="failed", message="No tracks found matching filters."
+                )
                 db.close()
                 return
 
             # Set up AI provider
-            from plexmix.ai import get_ai_provider
-            from plexmix.config.credentials import get_google_api_key, get_openai_api_key, get_anthropic_api_key, get_cohere_api_key
-            
-            ai_provider_name = settings.ai.default_provider or "gemini"
-            api_key = None
+            from plexmix.services.providers import build_ai_provider
 
-            provider_alias = "claude" if ai_provider_name == "anthropic" else ai_provider_name
-
-            if provider_alias == "gemini":
-                api_key = get_google_api_key()
-            elif provider_alias == "openai":
-                api_key = get_openai_api_key()
-            elif provider_alias == "claude":
-                api_key = get_anthropic_api_key()
-            elif provider_alias == "cohere":
-                api_key = get_cohere_api_key()
-            elif provider_alias == "custom":
-                from plexmix.config.credentials import get_custom_ai_api_key
-                api_key = settings.ai.custom_api_key or get_custom_ai_api_key()
-
-            try:
-                ai_provider = get_ai_provider(
-                    provider_name=ai_provider_name,
-                    api_key=api_key,
-                    model=settings.ai.custom_model if ai_provider_name == "custom" else settings.ai.model,
-                    temperature=settings.ai.temperature,
-                    local_mode=settings.ai.local_mode,
-                    local_endpoint=settings.ai.local_endpoint,
-                    local_auth_token=settings.ai.local_auth_token,
-                    local_max_output_tokens=settings.ai.local_max_output_tokens,
-                    custom_endpoint=settings.ai.custom_endpoint,
-                    custom_api_key=api_key if ai_provider_name == "custom" else None,
+            ai_provider = build_ai_provider(settings, silent=True)
+            if ai_provider is None:
+                task_store.complete(
+                    "tagging",
+                    status="failed",
+                    message="Error initializing AI provider — check settings.",
                 )
-            except Exception as e:
-                async with self:
-                    self.tagging_message = f"Error initializing AI provider: {str(e)}"
-                    self.is_tagging = False
                 db.close()
                 return
 
             tag_generator = TagGenerator(ai_provider)
 
             # Calculate batches
-            batch_size = 20
+            batch_size = TAG_BATCH_SIZE
             total_batches = (len(tracks) + batch_size - 1) // batch_size
 
-            async with self:
-                self.total_batches = total_batches
-                self.tagging_message = f"Tagging {len(tracks)} tracks in {total_batches} batches..."
+            task_store.update(
+                "tagging",
+                message=f"Tagging {len(tracks)} tracks in {total_batches} batches...",
+                extra={"total_batches": total_batches},
+            )
 
             # Progress callback
             start_time = time.time()
 
             def progress_callback(batch_num: int, total: int, tracks_tagged: int):
+                if cancel_event.is_set():
+                    return
                 elapsed = time.time() - start_time
                 if tracks_tagged > 0:
                     time_per_track = elapsed / tracks_tagged
@@ -269,71 +285,55 @@ class TaggingState(AppState):
                 else:
                     estimated_remaining = 0
 
-                async def update_progress():
-                    async with self:
-                        self.current_batch = batch_num
-                        self.tags_generated_count = tracks_tagged
-                        self.tagging_progress = int((tracks_tagged / len(tracks) * 100)) if tracks else 0
-                        self.estimated_time_remaining = estimated_remaining
-                        self.tagging_message = f"Processing batch {batch_num}/{total} - {tracks_tagged} tracks tagged"
-
-                asyncio.create_task(update_progress())
+                task_store.update(
+                    "tagging",
+                    progress=int((tracks_tagged / len(tracks) * 100)) if tracks else 0,
+                    message=f"Processing batch {batch_num}/{total} - {tracks_tagged} tracks tagged",
+                    extra={
+                        "current_batch": batch_num,
+                        "total_batches": total,
+                        "tags_generated_count": tracks_tagged,
+                        "estimated_time_remaining": estimated_remaining,
+                    },
+                )
 
             # Generate tags
             results = tag_generator.generate_tags_batch(
                 tracks,
                 batch_size=batch_size,
                 progress_callback=progress_callback,
-                cancel_event=_tagging_cancel_events.get(token)
+                cancel_event=cancel_event,
             )
 
             # Save tags to database
+            saved_count = 0
             for track_id, tag_data in results.items():
-                if tag_data['tags'] or tag_data['environments'] or tag_data['instruments']:
+                if tag_data["tags"] or tag_data["environments"] or tag_data["instruments"]:
                     db.update_track_tags(
                         track_id,
-                        tags=','.join(tag_data['tags']),
-                        environments=','.join(tag_data['environments']),
-                        instruments=','.join(tag_data['instruments'])
+                        tags=",".join(tag_data["tags"]),
+                        environments=",".join(tag_data["environments"]),
+                        instruments=",".join(tag_data["instruments"]),
                     )
+                    saved_count += 1
 
             db.close()
 
-            # Reload recently tagged tracks
-            self.load_recently_tagged()
-
-            # Clean up cancel event
-            if token in _tagging_cancel_events:
-                del _tagging_cancel_events[token]
-
-            async with self:
-                self.is_tagging = False
-                self.tagging_progress = 100
-                self.tagging_message = ""
-
-            yield rx.toast.success(f"Successfully tagged {self.tags_generated_count} tracks!")
+            task_store.update("tagging", extra={"tags_generated_count": saved_count})
+            task_store.complete("tagging")
 
         except Exception as e:
-            # Clean up cancel event on error
-            if token in _tagging_cancel_events:
-                del _tagging_cancel_events[token]
-            async with self:
-                self.is_tagging = False
-                self.tagging_message = ""
-
-            yield rx.toast.error(f"Error during tagging: {str(e)}")
+            task_store.complete("tagging", status="failed", message=str(e))
 
     def cancel_tagging(self):
-        token = self.router.session.client_token
-        if token in _tagging_cancel_events:
-            _tagging_cancel_events[token].set()
-            self.tagging_message = "Cancelling tagging..."
+        task_store.cancel("tagging")
+        self.tagging_message = "Cancelling tagging..."
 
     def start_edit_tag(self, track: dict[str, str]):
-        self.editing_track_id = track['id']
-        self.edit_tags = track.get('tags', '')
-        self.edit_environments = track.get('environments', '')
-        self.edit_instruments = track.get('instruments', '')
+        self.editing_track_id = track["id"]
+        self.edit_tags = track.get("tags", "")
+        self.edit_environments = track.get("environments", "")
+        self.edit_instruments = track.get("instruments", "")
 
     def cancel_edit(self):
         self.editing_track_id = ""
@@ -372,7 +372,7 @@ class TaggingState(AppState):
                 track_id,
                 tags=self.edit_tags,
                 environments=self.edit_environments,
-                instruments=self.edit_instruments
+                instruments=self.edit_instruments,
             )
 
             db.close()

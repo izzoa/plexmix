@@ -1,14 +1,11 @@
 import reflex as rx
 import asyncio
 import logging
-from typing import Optional
+from plexmix.config.constants import GENERATION_LOG_MAX
 from plexmix.ui.states.app_state import AppState
 
 
-def _str_dict(d: dict) -> dict[str, str]:
-    """Convert a dict with mixed-type values to all-string values for Reflex."""
-    return {k: ("" if v is None else str(v)) for k, v in d.items()}
-
+from plexmix.ui.utils.helpers import str_dict as _str_dict
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +19,8 @@ class GeneratorState(AppState):
     include_artists: str = ""
     exclude_artists: str = ""
     candidate_pool_multiplier: int = 25
+    shuffle_mode: str = "similarity"
+    avoid_recent: int = 0
 
     tempo_min: str = ""
     tempo_max: str = ""
@@ -42,12 +41,17 @@ class GeneratorState(AppState):
 
     _generation_id: int = 0
 
+    # Templates
+    templates: list[dict[str, str]] = []
+    show_save_template_dialog: bool = False
+    template_name_input: str = ""
+
     mood_examples: list[str] = [
         "Chill rainy day vibes with acoustic guitar",
         "Energetic workout music to pump me up",
         "Relaxing background music for studying",
         "Upbeat party anthems from the 2000s",
-        "Melancholic indie tracks for late night reflection"
+        "Melancholic indie tracks for late night reflection",
     ]
 
     def on_load(self):
@@ -56,6 +60,13 @@ class GeneratorState(AppState):
             return
         super().on_load()
         self._load_audio_stats()
+        self._load_templates()
+
+        # Check for rerun config from History page
+        if self._rerun_generation_config:
+            self.load_generation_config(self._rerun_generation_config)
+            self._rerun_generation_config = ""
+
         self.is_page_loading = False
 
     def _load_audio_stats(self):
@@ -77,6 +88,227 @@ class GeneratorState(AppState):
         except Exception:
             self.audio_analyzed_count = 0
 
+    def _load_templates(self):
+        """Load saved templates from database."""
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+            if db_path.exists():
+                db = SQLiteManager(str(db_path))
+                db.connect()
+                templates = db.get_templates()
+                db.close()
+                self.templates = [
+                    _str_dict(
+                        {
+                            "id": str(t.id or ""),
+                            "name": t.name,
+                            "mood_query": t.mood_query,
+                            "max_tracks": str(t.max_tracks),
+                            "genre_filter": t.genre_filter,
+                            "year_min": str(t.year_min or ""),
+                            "year_max": str(t.year_max or ""),
+                            "tempo_min": str(t.tempo_min or ""),
+                            "tempo_max": str(t.tempo_max or ""),
+                            "energy_level": t.energy_level,
+                            "key_filter": t.key_filter,
+                            "danceability_min": str(t.danceability_min or ""),
+                            "shuffle_mode": t.shuffle_mode,
+                            "candidate_pool_multiplier": str(t.candidate_pool_multiplier),
+                            "is_preset": "1" if t.is_preset else "0",
+                        }
+                    )
+                    for t in templates
+                ]
+            else:
+                self.templates = []
+
+            # Seed built-in presets if none exist
+            if not any(t.get("is_preset") == "1" for t in self.templates):
+                self._seed_presets()
+
+        except Exception:
+            self.templates = []
+
+    def _seed_presets(self):
+        """Insert built-in template presets into the database."""
+        from plexmix.config.settings import Settings
+        from plexmix.database.sqlite_manager import SQLiteManager
+        from plexmix.database.models import PlaylistTemplate
+
+        presets = [
+            PlaylistTemplate(
+                name="Morning Commute",
+                mood_query="Upbeat feel-good songs to start the day",
+                max_tracks=30,
+                energy_level="medium",
+                shuffle_mode="alternating_artists",
+                is_preset=True,
+            ),
+            PlaylistTemplate(
+                name="Workout",
+                mood_query="High energy pump-up workout music",
+                max_tracks=40,
+                energy_level="high",
+                shuffle_mode="energy_curve",
+                is_preset=True,
+            ),
+            PlaylistTemplate(
+                name="Study Session",
+                mood_query="Calm instrumental focus music for studying",
+                max_tracks=50,
+                energy_level="low",
+                shuffle_mode="similarity",
+                is_preset=True,
+            ),
+            PlaylistTemplate(
+                name="Dinner Party",
+                mood_query="Sophisticated jazz and soul for an evening gathering",
+                max_tracks=40,
+                genre_filter="jazz",
+                shuffle_mode="alternating_artists",
+                is_preset=True,
+            ),
+            PlaylistTemplate(
+                name="Late Night",
+                mood_query="Mellow downtempo and ambient tracks for winding down",
+                max_tracks=30,
+                energy_level="low",
+                shuffle_mode="similarity",
+                is_preset=True,
+            ),
+        ]
+
+        try:
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+            if db_path.exists():
+                db = SQLiteManager(str(db_path))
+                db.connect()
+                for preset in presets:
+                    db.insert_template(preset)
+                db.close()
+                self._load_templates()
+        except Exception:
+            pass
+
+    def apply_template(self, template_id: str):
+        """Load a template's settings into the generator form."""
+        template = next((t for t in self.templates if t.get("id") == template_id), None)
+        if not template:
+            return
+
+        self.mood_query = template.get("mood_query", "")
+        self.max_tracks = int(template.get("max_tracks", "50") or "50")
+        self.genre_filter = template.get("genre_filter", "")
+        self.year_min = template.get("year_min", "")
+        self.year_max = template.get("year_max", "")
+        self.tempo_min = template.get("tempo_min", "")
+        self.tempo_max = template.get("tempo_max", "")
+        self.energy_level = template.get("energy_level", "")
+        self.key_filter = template.get("key_filter", "")
+        self.danceability_min = template.get("danceability_min", "")
+        self.shuffle_mode = template.get("shuffle_mode", "similarity")
+        self.candidate_pool_multiplier = int(
+            template.get("candidate_pool_multiplier", "25") or "25"
+        )
+
+    def open_save_template_dialog(self):
+        self.template_name_input = ""
+        self.show_save_template_dialog = True
+
+    def close_save_template_dialog(self):
+        self.show_save_template_dialog = False
+
+    def set_template_name_input(self, value: str):
+        self.template_name_input = value
+
+    def save_current_as_template(self):
+        """Save the current generator config as a named template."""
+        name = self.template_name_input.strip()
+        if not name:
+            return
+
+        from plexmix.config.settings import Settings
+        from plexmix.database.sqlite_manager import SQLiteManager
+        from plexmix.database.models import PlaylistTemplate
+
+        try:
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+            db = SQLiteManager(str(db_path))
+            db.connect()
+
+            template = PlaylistTemplate(
+                name=name,
+                mood_query=self.mood_query,
+                max_tracks=self.max_tracks,
+                genre_filter=self.genre_filter,
+                year_min=int(self.year_min) if self.year_min else None,
+                year_max=int(self.year_max) if self.year_max else None,
+                tempo_min=float(self.tempo_min) if self.tempo_min else None,
+                tempo_max=float(self.tempo_max) if self.tempo_max else None,
+                energy_level=self.energy_level,
+                key_filter=self.key_filter,
+                danceability_min=float(self.danceability_min) if self.danceability_min else None,
+                shuffle_mode=self.shuffle_mode,
+                candidate_pool_multiplier=self.candidate_pool_multiplier,
+                is_preset=False,
+            )
+
+            db.insert_template(template)
+            db.close()
+            self._load_templates()
+            self.show_save_template_dialog = False
+        except Exception as e:
+            logger.error("Failed to save template: %s", e)
+
+    def delete_template(self, template_id: str):
+        """Delete a user-created template (presets cannot be deleted)."""
+        template = next((t for t in self.templates if t.get("id") == template_id), None)
+        if not template or template.get("is_preset") == "1":
+            return
+
+        from plexmix.config.settings import Settings
+        from plexmix.database.sqlite_manager import SQLiteManager
+
+        try:
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+            db = SQLiteManager(str(db_path))
+            db.connect()
+            db.delete_template(int(template_id))
+            db.close()
+            self._load_templates()
+        except Exception as e:
+            logger.error("Failed to delete template: %s", e)
+
+    def load_generation_config(self, config_json: str):
+        """Load generation parameters from a JSON config string (used by rerun)."""
+        import json as _json
+
+        try:
+            config = _json.loads(config_json)
+        except (ValueError, TypeError):
+            return
+
+        self.mood_query = config.get("mood_query", "")
+        self.max_tracks = int(config.get("max_tracks", 50))
+        self.genre_filter = config.get("genre_filter", "")
+        self.year_min = str(config.get("year_min", "") or "")
+        self.year_max = str(config.get("year_max", "") or "")
+        self.tempo_min = str(config.get("tempo_min", "") or "")
+        self.tempo_max = str(config.get("tempo_max", "") or "")
+        self.energy_level = config.get("energy_level", "")
+        self.key_filter = config.get("key_filter", "")
+        self.danceability_min = str(config.get("danceability_min", "") or "")
+        self.shuffle_mode = config.get("shuffle_mode", "similarity")
+        self.candidate_pool_multiplier = int(config.get("candidate_pool_multiplier", 25))
+        self.avoid_recent = int(config.get("avoid_recent", 0))
+
     def use_example(self, example: str):
         self.mood_query = example
 
@@ -94,6 +326,15 @@ class GeneratorState(AppState):
 
     def set_candidate_pool_multiplier(self, value: int):
         self.candidate_pool_multiplier = max(1, min(100, value))
+
+    def set_shuffle_mode(self, value: str):
+        self.shuffle_mode = value
+
+    def set_avoid_recent(self, value: str):
+        try:
+            self.avoid_recent = max(0, int(value)) if value else 0
+        except ValueError:
+            self.avoid_recent = 0
 
     def set_year_range(self, year_min: str, year_max: str):
         self.year_min = year_min
@@ -138,14 +379,10 @@ class GeneratorState(AppState):
 
         try:
             from plexmix.config.settings import Settings
-            from plexmix.config.credentials import (
-                get_google_api_key, get_openai_api_key, get_cohere_api_key,
-                get_custom_embedding_api_key,
-            )
             from plexmix.database.sqlite_manager import SQLiteManager
             from plexmix.database.vector_index import VectorIndex
-            from plexmix.utils.embeddings import EmbeddingGenerator
             from plexmix.playlist.generator import PlaylistGenerator
+            from plexmix.services.providers import build_embedding_generator
 
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
@@ -156,61 +393,22 @@ class GeneratorState(AppState):
                     self.is_generating = False
                 return
 
-            # Get the embedding settings (but don't create generator yet - it blocks!)
+            # Resolve embedding settings now (but don't instantiate generator yet - it blocks!)
             embedding_provider = settings.embedding.default_provider
-            embedding_model = settings.embedding.model
             index_path = str(settings.database.get_index_path())
 
-            embedding_api_key = None
-            embedding_kwargs = {}
-            if embedding_provider == "gemini":
-                embedding_api_key = get_google_api_key()
-            elif embedding_provider == "openai":
-                embedding_api_key = get_openai_api_key()
-            elif embedding_provider == "cohere":
-                embedding_api_key = get_cohere_api_key()
-            elif embedding_provider == "custom":
-                embedding_model = settings.embedding.custom_model or embedding_model
-                embedding_kwargs = {
-                    "custom_endpoint": settings.embedding.custom_endpoint,
-                    "custom_api_key": (
-                        settings.embedding.custom_api_key or get_custom_embedding_api_key()
-                    ),
-                    "custom_dimension": settings.embedding.custom_dimension,
-                }
+            from plexmix.services.playlist_service import build_generation_filters, safe_int, safe_float
 
-            filters = {}
-            if self.genre_filter:
-                filters['genre'] = self.genre_filter
-            if self.year_min:
-                try:
-                    filters['year_min'] = int(self.year_min)
-                except ValueError:
-                    pass
-            if self.year_max:
-                try:
-                    filters['year_max'] = int(self.year_max)
-                except ValueError:
-                    pass
-            if self.tempo_min:
-                try:
-                    filters['tempo_min'] = float(self.tempo_min)
-                except ValueError:
-                    pass
-            if self.tempo_max:
-                try:
-                    filters['tempo_max'] = float(self.tempo_max)
-                except ValueError:
-                    pass
-            if self.energy_level:
-                filters['energy_level'] = self.energy_level
-            if self.key_filter:
-                filters['key'] = self.key_filter
-            if self.danceability_min:
-                try:
-                    filters['danceability_min'] = float(self.danceability_min)
-                except ValueError:
-                    pass
+            filters = build_generation_filters(
+                genre=self.genre_filter or None,
+                year_min=safe_int(self.year_min),
+                year_max=safe_int(self.year_max),
+                tempo_min=safe_float(self.tempo_min),
+                tempo_max=safe_float(self.tempo_max),
+                energy_level=self.energy_level or None,
+                key=self.key_filter or None,
+                danceability_min=safe_float(self.danceability_min),
+            )
 
             loop = asyncio.get_running_loop()
 
@@ -220,30 +418,34 @@ class GeneratorState(AppState):
                         progress_value = max(0, min(100, int(progress * 100)))
                         self.generation_progress = progress_value
                         self.generation_message = message
-                        self.generation_log = (self.generation_log + [message])[-25:]
+                        self.generation_log = (self.generation_log + [message])[-GENERATION_LOG_MAX:]
 
                 asyncio.run_coroutine_threadsafe(update(), loop)
 
             mood_query_text = self.mood_query
             max_tracks_val = self.max_tracks
             pool_multiplier = self.candidate_pool_multiplier
+            shuffle = self.shuffle_mode
+            avoid_recent_val = self.avoid_recent
 
             logger.info(
-                "Playlist generation started | mood='%s' max_tracks=%s multiplier=%s",
+                "Playlist generation started | mood='%s' max_tracks=%s multiplier=%s shuffle=%s",
                 mood_query_text,
                 max_tracks_val,
                 pool_multiplier,
+                shuffle,
             )
 
             def run_generation():
                 # Create EmbeddingGenerator inside executor to avoid blocking UI
                 # (LocalEmbeddingProvider spawns subprocess and waits for model load)
-                embedding_generator = EmbeddingGenerator(
-                    provider=embedding_provider,
-                    api_key=embedding_api_key,
-                    model=embedding_model,
-                    **embedding_kwargs,
-                )
+                embedding_generator = build_embedding_generator(settings)
+                if embedding_generator is None:
+                    return {
+                        "tracks": [],
+                        "total_duration": 0,
+                        "error": "Embedding provider not configured. Check your API keys.",
+                    }
                 dimension = embedding_generator.get_dimension()
 
                 local_db = SQLiteManager(str(db_path))
@@ -281,9 +483,11 @@ class GeneratorState(AppState):
                         candidate_pool_multiplier=pool_multiplier,
                         filters=filters if filters else None,
                         progress_callback=progress_callback,
+                        shuffle_mode=shuffle,
+                        avoid_recent=avoid_recent_val,
                     )
 
-                    total_duration = sum(track.get('duration_ms', 0) for track in tracks)
+                    total_duration = sum(track.get("duration_ms", 0) for track in tracks)
 
                     return {
                         "tracks": tracks,
@@ -301,7 +505,7 @@ class GeneratorState(AppState):
                 async with self:
                     self.is_generating = False
                     self.generation_message = error_message
-                    self.generation_log = (self.generation_log + [error_message])[-25:]
+                    self.generation_log = (self.generation_log + [error_message])[-GENERATION_LOG_MAX:]
                 return
 
             playlist_tracks = generation_result["tracks"]
@@ -311,13 +515,13 @@ class GeneratorState(AppState):
 
             # Format durations for display
             for track in playlist_tracks:
-                duration_ms = track.get('duration_ms', 0)
+                duration_ms = track.get("duration_ms", 0)
                 if duration_ms:
                     minutes = duration_ms // 60000
                     seconds = (duration_ms // 1000) % 60
-                    track['duration_formatted'] = f"{minutes}:{seconds:02d}"
+                    track["duration_formatted"] = f"{minutes}:{seconds:02d}"
                 else:
-                    track['duration_formatted'] = "0:00"
+                    track["duration_formatted"] = "0:00"
 
             async with self:
                 self.generated_playlist = [_str_dict(t) for t in playlist_tracks]
@@ -329,7 +533,7 @@ class GeneratorState(AppState):
                 else:
                     final_msg = "No tracks generated. Check logs for details."
                 self.generation_message = final_msg
-                self.generation_log = (self.generation_log + [final_msg])[-25:]
+                self.generation_log = (self.generation_log + [final_msg])[-GENERATION_LOG_MAX:]
 
             # Auto-dismiss success message after 5 seconds (keep errors/warnings visible)
             if len(playlist_tracks) > 0:
@@ -341,20 +545,25 @@ class GeneratorState(AppState):
 
         except Exception as e:
             import traceback
+
             logger.error("Playlist generation failed: %s", e, exc_info=True)
             async with self:
                 self.is_generating = False
                 error_msg = f"Generation failed: {str(e)}"
                 self.generation_message = error_msg
-                self.generation_log = (self.generation_log + [error_msg, traceback.format_exc()])[-25:]
+                self.generation_log = (self.generation_log + [error_msg, traceback.format_exc()])[
+                    -GENERATION_LOG_MAX:
+                ]
 
     @rx.event(background=True)
     async def regenerate(self):
         await self.generate_playlist()
 
     def remove_track(self, track_id: str):
-        self.generated_playlist = [t for t in self.generated_playlist if t['id'] != track_id]
-        self.total_duration_ms = sum(int(track.get('duration_ms', '0') or '0') for track in self.generated_playlist)
+        self.generated_playlist = [t for t in self.generated_playlist if t["id"] != track_id]
+        self.total_duration_ms = sum(
+            int(track.get("duration_ms", "0") or "0") for track in self.generated_playlist
+        )
 
     @rx.event(background=True)
     async def save_to_plex(self):
@@ -367,36 +576,28 @@ class GeneratorState(AppState):
 
         try:
             from plexmix.config.settings import Settings
-            from plexmix.config.credentials import get_plex_token
-            from plexmix.plex.client import PlexClient
+            from plexmix.services.sync_service import connect_plex, PlexConnectionError
 
             settings = Settings.load_from_file()
-            plex_token = get_plex_token()
 
-            if not settings.plex.url or not plex_token:
-                async with self:
-                    self.generation_message = ""
-                    self.is_generating = False
-                yield rx.toast.error("Plex not configured")
-                return
-
-            plex_client = PlexClient(settings.plex.url, plex_token)
-            if not plex_client.connect():
+            try:
+                plex_client = connect_plex(settings)
+            except PlexConnectionError as e:
                 async with self:
                     self.is_generating = False
                     self.generation_message = ""
-                yield rx.toast.error("Failed to connect to Plex server")
+                yield rx.toast.error(str(e))
                 return
 
-            if not settings.plex.library_name or not plex_client.select_library(settings.plex.library_name):
+            if not settings.plex.library_name:
                 async with self:
                     self.is_generating = False
                     self.generation_message = ""
-                yield rx.toast.error(f"Music library not found: {settings.plex.library_name or '(not configured)'}")
+                yield rx.toast.error("Music library not configured")
                 return
 
-            track_plex_keys = [int(track['plex_key']) for track in self.generated_playlist]
-            plex_key = plex_client.create_playlist(self.playlist_name, track_plex_keys)
+            track_plex_keys = [int(track["plex_key"]) for track in self.generated_playlist]
+            plex_client.create_playlist(self.playlist_name, track_plex_keys)
 
             async with self:
                 self.is_generating = False
@@ -431,12 +632,34 @@ class GeneratorState(AppState):
             db = SQLiteManager(str(db_path))
             db.connect()
 
-            track_ids = [int(track['id']) for track in self.generated_playlist]
+            import json as _json
+
+            track_ids = [int(track["id"]) for track in self.generated_playlist]
+
+            # Store full generation config for rerun capability
+            gen_config = _json.dumps(
+                {
+                    "mood_query": self.mood_query,
+                    "max_tracks": self.max_tracks,
+                    "genre_filter": self.genre_filter,
+                    "year_min": self.year_min,
+                    "year_max": self.year_max,
+                    "tempo_min": self.tempo_min,
+                    "tempo_max": self.tempo_max,
+                    "energy_level": self.energy_level,
+                    "key_filter": self.key_filter,
+                    "danceability_min": self.danceability_min,
+                    "shuffle_mode": self.shuffle_mode,
+                    "candidate_pool_multiplier": self.candidate_pool_multiplier,
+                    "avoid_recent": self.avoid_recent,
+                }
+            )
 
             playlist = Playlist(
                 name=self.playlist_name,
                 created_by_ai=True,
-                mood_query=self.mood_query
+                mood_query=self.mood_query,
+                generation_config=gen_config,
             )
 
             playlist_id = db.insert_playlist(playlist)
@@ -472,15 +695,16 @@ class GeneratorState(AppState):
             return
 
         from plexmix.config.settings import Settings
+
         settings = Settings.load_from_file()
 
         m3u_content = "#EXTM3U\n"
         for track in self.generated_playlist:
-            duration_sec = int(track.get('duration_ms', '0') or '0') // 1000
-            artist = track.get('artist', 'Unknown')
-            title = track.get('title', 'Unknown')
+            duration_sec = int(track.get("duration_ms", "0") or "0") // 1000
+            artist = track.get("artist", "Unknown")
+            title = track.get("title", "Unknown")
             m3u_content += f"#EXTINF:{duration_sec},{artist} - {title}\n"
-            file_path = track.get('file_path') or ""
+            file_path = track.get("file_path") or ""
             if file_path:
                 file_path = settings.audio.resolve_path(file_path)
             m3u_content += f"{file_path}\n" if file_path else f"track_{track['id']}.mp3\n"

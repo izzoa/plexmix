@@ -4,7 +4,6 @@ import logging
 import time
 import re
 import threading
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 
 from .base import AIProvider
 
@@ -20,7 +19,7 @@ class TagGenerator:
         tracks: List[Dict[str, Any]],
         batch_size: int = 20,
         progress_callback: Optional[Callable[[int, int, int], None]] = None,
-        cancel_event: Optional[threading.Event] = None
+        cancel_event: Optional[threading.Event] = None,
     ) -> Dict[int, Dict[str, Any]]:
         logger.debug(f"Generating tags for {len(tracks)} tracks")
 
@@ -57,7 +56,7 @@ class TagGenerator:
         prompt = self._prepare_tag_prompt(tracks)
 
         max_retries = 3
-        base_delay = 1
+        base_delay: float = 1
 
         for attempt in range(max_retries):
             try:
@@ -67,17 +66,30 @@ class TagGenerator:
             except json.JSONDecodeError as e:
                 if attempt < max_retries - 1:
                     delay = base_delay * (attempt + 1)
-                    logger.warning(f"JSON parse error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                    logger.warning(
+                        f"JSON parse error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s..."
+                    )
                     time.sleep(delay)
                     continue
                 else:
                     logger.error(f"Failed to parse JSON after {max_retries} attempts: {e}")
-                    return {track['id']: {'tags': [], 'environments': [], 'instruments': []} for track in tracks}
+                    return {
+                        track["id"]: {"tags": [], "environments": [], "instruments": []}
+                        for track in tracks
+                    }
             except Exception as e:
                 error_str = str(e)
 
-                is_rate_limit = "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower()
-                is_timeout = "504" in error_str or "timeout" in error_str.lower() or "timed out" in error_str.lower()
+                is_rate_limit = (
+                    "429" in error_str
+                    or "quota" in error_str.lower()
+                    or "rate" in error_str.lower()
+                )
+                is_timeout = (
+                    "504" in error_str
+                    or "timeout" in error_str.lower()
+                    or "timed out" in error_str.lower()
+                )
                 is_server_error = "500" in error_str or "502" in error_str or "503" in error_str
 
                 if is_rate_limit or is_timeout or is_server_error:
@@ -86,33 +98,49 @@ class TagGenerator:
 
                         if retry_after:
                             delay = retry_after * 1.5
-                            logger.warning(f"API error (attempt {attempt + 1}/{max_retries}). Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
+                            logger.warning(
+                                f"API error (attempt {attempt + 1}/{max_retries}). Server suggested {retry_after}s, using {delay:.1f}s with backoff..."
+                            )
                         else:
-                            delay = base_delay * (2 ** attempt)
+                            delay = base_delay * (2**attempt)
                             if is_rate_limit:
-                                logger.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                                logger.warning(
+                                    f"Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s..."
+                                )
                             elif is_timeout:
-                                logger.warning(f"Request timeout (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                                logger.warning(
+                                    f"Request timeout (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s..."
+                                )
                             else:
-                                logger.warning(f"Server error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                                logger.warning(
+                                    f"Server error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s..."
+                                )
 
                         time.sleep(delay)
                         continue
                     else:
                         logger.error(f"Failed after {max_retries} attempts: {e}")
-                        return {track['id']: {'tags': [], 'environments': [], 'instruments': []} for track in tracks}
+                        return {
+                            track["id"]: {"tags": [], "environments": [], "instruments": []}
+                            for track in tracks
+                        }
                 else:
                     logger.error(f"Failed to generate tags for batch: {e}")
-                    return {track['id']: {'tags': [], 'environments': [], 'instruments': []} for track in tracks}
+                    return {
+                        track["id"]: {"tags": [], "environments": [], "instruments": []}
+                        for track in tracks
+                    }
 
-        return {track['id']: {'tags': [], 'environments': [], 'instruments': []} for track in tracks}
+        return {
+            track["id"]: {"tags": [], "environments": [], "instruments": []} for track in tracks
+        }
 
     def _extract_retry_delay(self, error_message: str) -> Optional[float]:
-        retry_match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)', error_message)
+        retry_match = re.search(r"retry_delay\s*\{\s*seconds:\s*(\d+)", error_message)
         if retry_match:
             return float(retry_match.group(1))
 
-        retry_after_match = re.search(r'Retry-After:\s*(\d+)', error_message, re.IGNORECASE)
+        retry_after_match = re.search(r"Retry-After:\s*(\d+)", error_message, re.IGNORECASE)
         if retry_after_match:
             return float(retry_after_match.group(1))
 
@@ -156,12 +184,14 @@ Example output format:
 
         tracks_list = []
         for track in tracks:
-            tracks_list.append({
-                'id': track['id'],
-                'title': track['title'],
-                'artist': track['artist'],
-                'genre': track.get('genre', 'unknown')
-            })
+            tracks_list.append(
+                {
+                    "id": track["id"],
+                    "title": track["title"],
+                    "artist": track["artist"],
+                    "genre": track.get("genre", "unknown"),
+                }
+            )
 
         tracks_json = json.dumps(tracks_list, indent=2)
 
@@ -181,16 +211,14 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
                 prompt=prompt,
                 temperature=0.3,  # Lower temperature for consistent tagging
                 max_tokens=8192,
-                timeout=60  # Longer timeout for batch tagging
+                timeout=60,  # Longer timeout for batch tagging
             )
         except Exception as e:
             logger.error(f"AI provider call failed: {e}")
             raise
 
     def _parse_tag_response(
-        self,
-        response: str,
-        tracks: List[Dict[str, Any]]
+        self, response: str, tracks: List[Dict[str, Any]]
     ) -> Dict[int, Dict[str, Any]]:
         try:
             response = response.strip()
@@ -199,27 +227,27 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
                 lines = response.split("\n")
                 response = "\n".join([line for line in lines if not line.startswith("```")])
 
-            json_match = re.search(r'\{.*\}', response, re.DOTALL)
+            json_match = re.search(r"\{.*\}", response, re.DOTALL)
             if json_match:
                 response = json_match.group(0)
 
-            response = re.sub(r',\s*}', '}', response)
-            response = re.sub(r',\s*\]', ']', response)
+            response = re.sub(r",\s*}", "}", response)
+            response = re.sub(r",\s*\]", "]", response)
 
             tags_dict = json.loads(response)
 
             result = {}
             for track in tracks:
-                track_id = track['id']
+                track_id = track["id"]
                 track_id_str = str(track_id)
 
                 if track_id_str in tags_dict:
                     data = tags_dict[track_id_str]
 
                     if isinstance(data, dict):
-                        tags = data.get('tags', [])
-                        environments = data.get('environments', [])
-                        instruments = data.get('instruments', [])
+                        tags = data.get("tags", [])
+                        environments = data.get("environments", [])
+                        instruments = data.get("instruments", [])
 
                         if isinstance(tags, list):
                             tags = [str(tag).lower().strip() for tag in tags[:5]]
@@ -241,20 +269,20 @@ Return a JSON object mapping each track ID to an array of 3-5 descriptive tags."
                             instruments = []
 
                         result[track_id] = {
-                            'tags': tags,
-                            'environments': environments,
-                            'instruments': instruments
+                            "tags": tags,
+                            "environments": environments,
+                            "instruments": instruments,
                         }
                     elif isinstance(data, list):
                         result[track_id] = {
-                            'tags': [str(tag).lower().strip() for tag in data[:5]],
-                            'environments': [],
-                            'instruments': []
+                            "tags": [str(tag).lower().strip() for tag in data[:5]],
+                            "environments": [],
+                            "instruments": [],
                         }
                     else:
-                        result[track_id] = {'tags': [], 'environments': [], 'instruments': []}
+                        result[track_id] = {"tags": [], "environments": [], "instruments": []}
                 else:
-                    result[track_id] = {'tags': [], 'environments': [], 'instruments': []}
+                    result[track_id] = {"tags": [], "environments": [], "instruments": []}
 
             return result
 

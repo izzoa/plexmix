@@ -15,15 +15,19 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 ## Features
 
 - ✨ **Simple Setup** - Only requires a Google API key to get started
-- 🎵 **Smart Sync** - Syncs Plex music library with incremental updates
+- 🎵 **Smart Sync** - Syncs Plex music library with incremental updates and pre-flight token validation
 - 🤖 **AI-Powered** - Uses Google Gemini, OpenAI GPT, Anthropic Claude, Cohere Command, or fully local Gemma/Mistral models
-- 🔌 **Bring-Your-Own LLM** - Point PlexMix at any OpenAI-compatible local endpoint (Ollama, LM Studio, llama.cpp)
-- 🏷️ **AI Tagging** - Automatically generates tags, environments, and instruments for tracks
+- 🔌 **Bring-Your-Own LLM** - Point PlexMix at any OpenAI-compatible local endpoint (Ollama, LM Studio, llama.cpp) with auto-discovery and SSE streaming
+- 🏷️ **AI Tagging** - Automatically generates tags, environments, and instruments with stale tag detection and re-tagging
 - 🎵 **Audio Analysis** - Extract tempo, key, energy, danceability via Essentia DSP (optional)
-- 🔍 **Semantic Search** - FAISS vector similarity search for intelligent track matching
+- 🔍 **Semantic Search** - FAISS vector similarity search with incremental index updates
 - 🎨 **Mood-Based** - Generate playlists from natural language descriptions
-- ⚡ **Fast** - Local database with optimized indexes and full-text search
+- 🔀 **Smart Ordering** - 4 track ordering modes: similarity, random, alternating artists, and energy curve
+- 📋 **Templates** - Save and reuse playlist generation configs with 5 built-in presets
+- ⚡ **Fast** - Local database with optimized indexes, full-text search, and versioned migrations
 - 🎯 **Flexible** - Filter by genre, year, rating, artist, environment, instrument, tempo, energy, key, and danceability
+- 📦 **Export/Import** - Export playlists as JSON or M3U; import from files with track matching
+- ⌨️ **Keyboard Shortcuts** - Vim-style navigation (`g+key`), `/` to search, `Esc` to blur
 - 🐳 **Docker Ready** - Deploy with Docker Compose for containerized setups
 - 🛡️ **Resilient** - Automatic database recovery if deleted or corrupted
 
@@ -56,8 +60,23 @@ plexmix create "focus music" --environment study --instrument piano
 # Filter by audio features (requires audio analysis)
 plexmix create "dance party" --tempo-min 120 --energy high --danceable 0.7
 
+# Smart ordering modes
+plexmix create "workout mix" --shuffle energy_curve
+plexmix create "variety hour" --shuffle alternating_artists
+
+# Avoid tracks from recent playlists
+plexmix create "fresh picks" --avoid-recent 5
+
 # Use alternative AI provider
 plexmix create "workout motivation" --provider openai
+
+# Retag tracks older than 30 days
+plexmix tags generate --retag-stale 30
+
+# Export/import playlists
+plexmix playlist list
+plexmix playlist export 1 --format json
+plexmix playlist import my_playlist.json
 
 # If you encounter issues (e.g., "0 candidate tracks")
 plexmix doctor
@@ -147,20 +166,22 @@ PLEXMIX_UI_PASSWORD=mysecret plexmix ui --host 0.0.0.0
 The web interface provides a modern, intuitive way to interact with PlexMix:
 
 - **📊 Dashboard** - Overview of library stats, configuration status, and quick actions
-- **⚙️ Settings** - Configure Plex, AI providers, and embeddings with real-time validation
-- **📚 Library Manager** - Browse, search, and sync your music library with live progress tracking
-- **🎵 Playlist Generator** - Create mood-based playlists with advanced filters and instant preview
-- **🏷️ AI Tagging** - Batch generate tags for tracks with progress monitoring
-- **📜 Playlist History** - View, export, and manage all generated playlists
+- **⚙️ Settings** - Configure Plex, AI providers, and embeddings with real-time validation and model auto-discovery
+- **📚 Library Manager** - Browse, search, filter by tag/genre/audio, sync with live progress, bulk tag/delete operations
+- **🎵 Playlist Generator** - Create mood-based playlists with template gallery, 4 ordering modes, and advanced audio filters
+- **🏷️ AI Tagging** - Batch generate tags with stale tag detection and retag support
+- **📜 Playlist History** - View, reorder, rerun, export (JSON/M3U/Plex), and import playlists
+- **🩺 Doctor** - Database health dashboard with automated repair
 
 #### Key UI Features
 
 - **🌓 Dark/Light Mode** - Toggle between themes with automatic logo switching
+- **⌨️ Keyboard Shortcuts** - Vim-style `g+key` navigation, `/` for search, `Esc` to blur
 - **Real-time Progress** - Live updates for sync, tagging, and generation operations
 - **Form Validation** - Instant feedback on configuration settings
 - **Loading States** - Skeleton screens and spinners for smooth UX
 - **Error Handling** - User-friendly error messages with recovery options
-- **Responsive Design** - Works on desktop and tablet devices
+- **Responsive Design** - Mobile-optimized with icon-only buttons, hidden columns, and adaptive layouts
 
 ## Installation
 
@@ -397,6 +418,9 @@ By default, a timestamped backup is created in `~/.plexmix/backups/` before dele
 # Generate AI tags for all untagged tracks
 plexmix tags generate
 
+# Also retag tracks whose tags are older than 30 days
+plexmix tags generate --retag-stale 30
+
 # Use alternative AI provider
 plexmix tags generate --provider openai
 
@@ -493,11 +517,35 @@ plexmix create "dance floor bangers" --danceable 0.7
 # Custom playlist name
 plexmix create "morning coffee" --name "Perfect Morning Mix"
 
+# Track ordering modes
+plexmix create "workout" --shuffle energy_curve       # Arc-shaped energy progression
+plexmix create "party" --shuffle alternating_artists   # Maximize artist diversity
+plexmix create "random mix" --shuffle random           # Fully random order
+
+# Avoid tracks from recent playlists
+plexmix create "fresh discoveries" --avoid-recent 10
+
 # Adjust candidate pool multiplier (default: 25x playlist length)
 plexmix create "diverse mix" --limit 20 --pool-multiplier 50
 
 # Don't create in Plex (save locally only)
 plexmix create "test playlist" --no-create-in-plex
+```
+
+### Playlist Management
+
+```bash
+# List all saved playlists
+plexmix playlist list
+
+# Export a playlist to JSON
+plexmix playlist export 1 --format json --output my_playlist.json
+
+# Export to M3U format
+plexmix playlist export 1 --format m3u
+
+# Import a playlist from file
+plexmix playlist import my_playlist.json
 ```
 
 ## Architecture
@@ -519,6 +567,11 @@ PlexMix uses a multi-stage pipeline for intelligent playlist generation:
      - Max 3 tracks per artist
      - Max 2 tracks per album
      - No duplicate track/artist combinations
+   - **Track Ordering** → Apply selected ordering mode:
+     - `similarity` (default): Closest semantic match first
+     - `random`: Fully randomized order
+     - `alternating_artists`: Round-robin artist interleaving for maximum variety
+     - `energy_curve`: Arc-shaped energy progression using audio features
    - **Final Playlist** → Return curated, diverse track list
 
 ### Technology Stack
@@ -544,36 +597,43 @@ plexmix/
 │   │   ├── openai_provider.py
 │   │   ├── claude_provider.py
 │   │   ├── cohere_provider.py
-│   │   ├── local_provider.py   # Managed Hugging Face + custom endpoint support
-│   │   └── tag_generator.py  # AI-based tag generation
+│   │   ├── local_provider.py   # Managed Hugging Face + custom endpoint (SSE streaming)
+│   │   └── tag_generator.py    # AI-based tag generation
 │   ├── audio/            # Audio feature analysis (optional)
 │   │   └── analyzer.py   # Essentia-based DSP feature extraction
-│   ├── cli/              # Command-line interface
-│   │   └── main.py       # Typer CLI app
+│   ├── cli/              # Command-line interface (modular)
+│   │   ├── main.py       # Typer CLI app (entrypoint)
+│   │   ├── create_cmd.py # Playlist creation with shuffle/avoid-recent
+│   │   ├── tags_cmd.py   # Tag generation with --retag-stale
+│   │   ├── playlist_cmd.py # Playlist export/import/list
+│   │   └── ...           # sync, config, db, doctor, embeddings, audio, ui
 │   ├── config/           # Configuration management
 │   │   ├── settings.py   # Pydantic settings
 │   │   └── credentials.py # Keyring + env var credential storage
 │   ├── database/         # Database layer
-│   │   ├── models.py     # Pydantic models
-│   │   ├── sqlite_manager.py # SQLite CRUD (incl. audio_features)
-│   │   └── vector_index.py   # FAISS index
+│   │   ├── models.py     # Pydantic models (incl. PlaylistTemplate)
+│   │   ├── sqlite_manager.py # SQLite CRUD with versioned migrations
+│   │   └── vector_index.py   # FAISS IndexIDMap (incremental updates)
 │   ├── plex/             # Plex integration
-│   │   ├── client.py     # PlexAPI wrapper (extracts file paths)
+│   │   ├── client.py     # PlexAPI wrapper (token validation, file paths)
 │   │   └── sync.py       # Sync engine (audio-aware embeddings)
 │   ├── playlist/         # Playlist generation
-│   │   └── generator.py  # Core generation logic (audio filters)
+│   │   └── generator.py  # Core logic (4 ordering modes, audio filters)
+│   ├── services/         # Shared service layer
+│   │   ├── providers.py  # Centralized provider construction
+│   │   └── registry.py   # Provider/model/dimension registry
 │   ├── ui/               # Web UI (Reflex)
-│   │   ├── app.py        # Main Reflex app
-│   │   ├── pages/        # UI pages
+│   │   ├── pages/        # UI pages (8 pages)
 │   │   ├── states/       # State management
-│   │   ├── components/   # Reusable components
+│   │   ├── components/   # Reusable components (navbar, track_table, etc.)
+│   │   ├── job_manager.py # Centralized background task lifecycle
 │   │   └── utils/        # UI utilities
 │   └── utils/            # Utilities
-│       ├── embeddings.py # Embedding providers (audio-enriched)
+│       ├── embeddings.py # Embedding providers (audio-enriched, dimension verify)
 │       └── logging.py    # Logging setup
 ├── Dockerfile            # Container image definition
 ├── docker-compose.yml    # Multi-service orchestration
-└── tests/                # Test suite
+└── tests/                # Test suite (520+ tests)
     └── ui/               # UI tests
 ```
 
@@ -583,10 +643,13 @@ PlexMix stores all music metadata locally:
 
 - **artists**: Artist information
 - **albums**: Album details with artist relationships
-- **tracks**: Track metadata with full-text search, AI-generated tags (3-5), environments (1-3), and instruments (1-3)
+- **tracks**: Track metadata with full-text search, AI-generated tags (3-5), environments (1-3), instruments (1-3), and `tags_generated_at` timestamp
 - **embeddings**: Vector embeddings for semantic search (includes all AI-generated metadata + audio features)
 - **audio_features**: DSP-extracted features per track (tempo, key, scale, energy, danceability, loudness, spectral centroid, MFCCs, zero crossing rate)
-- **playlists**: Generated playlist metadata
+- **playlists**: Generated playlist metadata with `generation_config` JSON for rerun capability
+- **playlist_tracks**: Track positions within playlists (supports reordering)
+- **playlist_templates**: Saved generation presets (5 built-in + user-created)
+- **schema_version**: Versioned migration tracking (currently 9 migrations)
 - **sync_history**: Synchronization audit log
 
 ## AI Provider Comparison
@@ -690,7 +753,7 @@ If you ever want to nuke cached weights, delete the relevant directories under `
 
 ### Fully Local (Offline-Friendly)
 
-- **AI Provider:** `OpenRouter` (planned) or a self-hosted LLM (future). Until then, use Gemini with cached responses if you need to stay mostly offline.
+- **AI Provider:** Use `local` with managed models (Gemma 3 1B/4B, Liquid LFM 1.2B, Yarn-Mistral 7B) or point at any Ollama/LM Studio endpoint. SSE streaming keeps the UI responsive.
 - **Embeddings:** `mixedbread-ai/mxbai-embed-large-v1` (1024d) for the best similarity recall while keeping everything on disk.
 - **Device:** Set `PLEXMIX_LOCAL_EMBEDDING_DEVICE=cpu` (or `cuda` if you have a local GPU) so sentence-transformers always uses the right hardware.
 - **Storage Tips:** Keep FAISS index on SSD (`~/.plexmix/embeddings.index`) and prune unused tracks to reduce RAM usage when generating playlists.
@@ -992,10 +1055,14 @@ Absolutely! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines. We welcome bu
 
 - [x] Docker support
 - [x] Audio feature analysis integration (Essentia)
+- [x] Playlist templates (5 built-in presets + user-created)
+- [x] Smart shuffle and ordering (similarity, random, alternating artists, energy curve)
+- [x] Export/import playlists (M3U, JSON) — CLI and UI
+- [x] Keyboard shortcuts and mobile-responsive UI
+- [x] Provider auto-discovery (Ollama, OpenAI-compatible endpoints)
+- [x] Incremental FAISS index updates
 - [ ] Multi-library support
-- [ ] Playlist templates
-- [ ] Smart shuffle and ordering
-- [ ] Export/import playlists (M3U, JSON)
+- [ ] PWA support for mobile
 
 ## Contributing
 

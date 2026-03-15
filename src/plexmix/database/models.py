@@ -11,11 +11,11 @@ class Artist(BaseModel):
     genre: Optional[str] = None
     bio: Optional[str] = None
 
-    @field_validator('name')
+    @field_validator("name")
     @classmethod
     def name_must_not_be_empty(cls, v: str) -> str:
         if not v or not v.strip():
-            raise ValueError('Artist name cannot be empty')
+            raise ValueError("Artist name cannot be empty")
         return v.strip()
 
 
@@ -28,18 +28,18 @@ class Album(BaseModel):
     genre: Optional[str] = None
     cover_art_url: Optional[str] = None
 
-    @field_validator('title')
+    @field_validator("title")
     @classmethod
     def title_must_not_be_empty(cls, v: str) -> str:
         if not v or not v.strip():
-            raise ValueError('Album title cannot be empty')
+            raise ValueError("Album title cannot be empty")
         return v.strip()
 
-    @field_validator('year')
+    @field_validator("year")
     @classmethod
     def year_must_be_valid(cls, v: Optional[int]) -> Optional[int]:
         if v is not None and (v < 1900 or v > 2100):
-            raise ValueError('Year must be between 1900 and 2100')
+            raise ValueError("Year must be between 1900 and 2100")
         return v
 
 
@@ -59,48 +59,49 @@ class Track(BaseModel):
     tags: Optional[str] = None
     environments: Optional[str] = None
     instruments: Optional[str] = None
+    tags_generated_at: Optional[datetime] = None
 
-    @field_validator('title')
+    @field_validator("title")
     @classmethod
     def title_must_not_be_empty(cls, v: str) -> str:
         if not v or not v.strip():
-            raise ValueError('Track title cannot be empty')
+            raise ValueError("Track title cannot be empty")
         return v.strip()
 
-    @field_validator('rating')
+    @field_validator("rating")
     @classmethod
     def rating_must_be_valid(cls, v: Optional[float]) -> Optional[float]:
         if v is not None and (v < 0.0 or v > 5.0):
-            raise ValueError('Rating must be between 0.0 and 5.0')
+            raise ValueError("Rating must be between 0.0 and 5.0")
         return v
 
-    @field_validator('duration_ms')
+    @field_validator("duration_ms")
     @classmethod
     def duration_must_be_positive(cls, v: Optional[int]) -> Optional[int]:
         if v is not None and v < 0:
-            raise ValueError('Duration cannot be negative')
+            raise ValueError("Duration cannot be negative")
         return v
 
     def get_tags_list(self) -> List[str]:
         if not self.tags:
             return []
-        return [tag.strip() for tag in self.tags.split(',') if tag.strip()]
+        return [tag.strip() for tag in self.tags.split(",") if tag.strip()]
 
     def set_tags_list(self, tags: List[str]) -> None:
         if len(tags) > 5:
             tags = tags[:5]
-        self.tags = ', '.join(tags) if tags else None
+        self.tags = ", ".join(tags) if tags else None
 
 
 class Genre(BaseModel):
     id: Optional[int] = None
     name: str
 
-    @field_validator('name')
+    @field_validator("name")
     @classmethod
     def name_must_not_be_empty(cls, v: str) -> str:
         if not v or not v.strip():
-            raise ValueError('Genre name cannot be empty')
+            raise ValueError("Genre name cannot be empty")
         return v.strip().lower()
 
 
@@ -113,18 +114,18 @@ class Embedding(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
 
-    @field_validator('embedding_dim')
+    @field_validator("embedding_dim")
     @classmethod
     def embedding_dim_must_be_positive(cls, v: int) -> int:
         if v <= 0:
-            raise ValueError('Embedding dimension must be positive')
+            raise ValueError("Embedding dimension must be positive")
         return v
 
-    @field_validator('vector')
+    @field_validator("vector")
     @classmethod
     def vector_must_match_dim(cls, v: List[float]) -> List[float]:
         if not v:
-            raise ValueError('Vector cannot be empty')
+            raise ValueError("Vector cannot be empty")
         return v
 
     def to_numpy(self) -> np.ndarray:
@@ -140,13 +141,39 @@ class SyncHistory(BaseModel):
     status: str = "success"
     error_message: Optional[str] = None
 
-    @field_validator('status')
+    @field_validator("status")
     @classmethod
     def status_must_be_valid(cls, v: str) -> str:
-        valid_statuses = ['success', 'failed', 'partial', 'interrupted']
+        valid_statuses = ["success", "failed", "partial", "interrupted"]
         if v not in valid_statuses:
-            raise ValueError(f'Status must be one of {valid_statuses}')
+            raise ValueError(f"Status must be one of {valid_statuses}")
         return v
+
+
+class PlaylistTemplate(BaseModel):
+    id: Optional[int] = None
+    name: str
+    mood_query: str = ""
+    max_tracks: int = 50
+    genre_filter: str = ""
+    year_min: Optional[int] = None
+    year_max: Optional[int] = None
+    tempo_min: Optional[float] = None
+    tempo_max: Optional[float] = None
+    energy_level: str = ""
+    key_filter: str = ""
+    danceability_min: Optional[float] = None
+    shuffle_mode: str = "similarity"
+    candidate_pool_multiplier: int = 25
+    is_preset: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+    @field_validator("name")
+    @classmethod
+    def name_must_not_be_empty(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("Template name cannot be empty")
+        return v.strip()
 
 
 class Playlist(BaseModel):
@@ -156,12 +183,13 @@ class Playlist(BaseModel):
     description: Optional[str] = None
     created_by_ai: bool = False
     mood_query: Optional[str] = None
+    generation_config: Optional[str] = None  # JSON blob of generation parameters
     created_at: datetime = Field(default_factory=datetime.utcnow)
     track_count: int = 0  # Number of tracks in the playlist
 
-    @field_validator('name')
+    @field_validator("name")
     @classmethod
     def name_must_not_be_empty(cls, v: str) -> str:
         if not v or not v.strip():
-            raise ValueError('Playlist name cannot be empty')
+            raise ValueError("Playlist name cannot be empty")
         return v.strip()

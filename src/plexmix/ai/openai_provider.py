@@ -12,6 +12,7 @@ class OpenAIProvider(AIProvider):
         super().__init__(api_key, model, temperature)
         try:
             from openai import OpenAI
+
             self.client = OpenAI(api_key=api_key)
             logger.info(f"Initialized OpenAI provider with model {model}")
         except ImportError:
@@ -22,7 +23,7 @@ class OpenAIProvider(AIProvider):
         prompt: str,
         temperature: Optional[float] = None,
         max_tokens: int = 4096,
-        timeout: int = 30
+        timeout: int = 30,
     ) -> str:
         """Send a prompt to OpenAI and return the text response."""
         temp = temperature if temperature is not None else self.temperature
@@ -38,7 +39,7 @@ class OpenAIProvider(AIProvider):
                     messages=[{"role": "user", "content": prompt}],
                     temperature=temp,
                     max_tokens=max_tokens,
-                    timeout=timeout
+                    timeout=timeout,
                 )
 
                 if not response.choices or not response.choices[0].message.content:
@@ -51,11 +52,12 @@ class OpenAIProvider(AIProvider):
                 is_retryable = any(x in error_str for x in ["timeout", "429", "rate", "overloaded"])
 
                 if is_retryable and attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
-                    logger.warning(f"[OpenAI] Retryable error on attempt {attempt + 1}: {e}. Retrying in {delay}s...")
+                    delay = base_delay * (2**attempt)
+                    logger.warning(
+                        f"[OpenAI] Retryable error on attempt {attempt + 1}: {e}. Retrying in {delay}s..."
+                    )
                     time.sleep(delay)
                     continue
                 raise
 
         raise RuntimeError("Failed to get response from OpenAI after retries")
-

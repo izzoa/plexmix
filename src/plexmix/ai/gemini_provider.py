@@ -25,7 +25,7 @@ class GeminiProvider(AIProvider):
         prompt: str,
         temperature: Optional[float] = None,
         max_tokens: int = 4096,
-        timeout: int = 30
+        timeout: int = 30,
     ) -> str:
         """Send a prompt to Gemini and return the text response."""
         temp = temperature if temperature is not None else self.temperature
@@ -52,25 +52,36 @@ class GeminiProvider(AIProvider):
                     raise ValueError("Empty response from Gemini")
 
                 try:
-                    return response.text
+                    text = response.text
+                    if text is None:
+                        raise ValueError("Empty text response from Gemini")
+                    return text
                 except (ValueError, AttributeError):
-                    if response.candidates and response.candidates[0].content.parts:
+                    if (
+                        response.candidates
+                        and response.candidates[0].content is not None
+                        and response.candidates[0].content.parts
+                    ):
                         return "".join(
-                            part.text for part in response.candidates[0].content.parts
-                            if hasattr(part, 'text')
+                            str(part.text)
+                            for part in response.candidates[0].content.parts
+                            if hasattr(part, "text")
                         )
                     raise ValueError("Could not extract text from Gemini response")
 
             except Exception as e:
                 error_str = str(e).lower()
-                is_retryable = any(x in error_str for x in ["504", "timeout", "429", "quota", "rate"])
+                is_retryable = any(
+                    x in error_str for x in ["504", "timeout", "429", "quota", "rate"]
+                )
 
                 if is_retryable and attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
-                    logger.warning(f"[Gemini] Retryable error on attempt {attempt + 1}: {e}. Retrying in {delay}s...")
+                    delay = base_delay * (2**attempt)
+                    logger.warning(
+                        f"[Gemini] Retryable error on attempt {attempt + 1}: {e}. Retrying in {delay}s..."
+                    )
                     time.sleep(delay)
                     continue
                 raise
 
         raise RuntimeError("Failed to get response from Gemini after retries")
-

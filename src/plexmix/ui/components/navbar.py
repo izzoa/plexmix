@@ -30,6 +30,7 @@ def _nav_links() -> list:
 
 # ── Section label ─────────────────────────────────────────────────────
 
+
 def _section_label(text: str) -> rx.Component:
     """Uppercase muted section label for nav grouping."""
     return rx.text(
@@ -49,6 +50,7 @@ def _section_label(text: str) -> rx.Component:
 
 
 # ── Nav link (desktop) ────────────────────────────────────────────────
+
 
 def navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
     """Create a navbar link with icon, active highlight, and left accent bar."""
@@ -90,6 +92,7 @@ def navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
 
 # ── Nav link (mobile) ────────────────────────────────────────────────
 
+
 def mobile_navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
     """Create a mobile navbar link that closes the nav on click."""
     is_active = AppState.router.page.path == href
@@ -129,6 +132,7 @@ def mobile_navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
 
 # ── Theme toggle ─────────────────────────────────────────────────────
 
+
 def _theme_toggle() -> rx.Component:
     """Segmented-style theme toggle (sun / switch / moon)."""
     return rx.hstack(
@@ -145,6 +149,7 @@ def _theme_toggle() -> rx.Component:
 
 
 # ── Logout button ────────────────────────────────────────────────────
+
 
 def _logout_button() -> rx.Component:
     """Icon-only logout button, shown when auth is required."""
@@ -166,6 +171,7 @@ def _logout_button() -> rx.Component:
 
 
 # ── Logo ──────────────────────────────────────────────────────────────
+
 
 def _logo(size: str = "80px") -> rx.Component:
     """Theme-aware logo with hover glow."""
@@ -191,6 +197,7 @@ def _logo(size: str = "80px") -> rx.Component:
 
 
 # ── Grouped nav links ────────────────────────────────────────────────
+
 
 def _desktop_nav_groups() -> list:
     """Return nav links with section labels for the desktop sidebar."""
@@ -225,6 +232,7 @@ def _mobile_nav_groups() -> list:
 # ══════════════════════════════════════════════════════════════════════
 #  Desktop Sidebar
 # ══════════════════════════════════════════════════════════════════════
+
 
 def navbar() -> rx.Component:
     return rx.box(
@@ -274,6 +282,7 @@ def navbar() -> rx.Component:
 #  Mobile Top Bar
 # ══════════════════════════════════════════════════════════════════════
 
+
 def mobile_top_bar() -> rx.Component:
     """Fixed top bar with hamburger + centered logo + theme toggle."""
     return rx.box(
@@ -309,6 +318,7 @@ def mobile_top_bar() -> rx.Component:
 # ══════════════════════════════════════════════════════════════════════
 #  Mobile Slide-out Sidebar
 # ══════════════════════════════════════════════════════════════════════
+
 
 def mobile_sidebar() -> rx.Component:
     """Slide-out sidebar overlay for mobile navigation."""
@@ -371,6 +381,7 @@ def mobile_sidebar() -> rx.Component:
 #  Mobile Backdrop
 # ══════════════════════════════════════════════════════════════════════
 
+
 def mobile_nav_backdrop() -> rx.Component:
     """Semi-transparent blurred overlay behind mobile sidebar."""
     return rx.cond(
@@ -395,6 +406,7 @@ def mobile_nav_backdrop() -> rx.Component:
 #  Page Loading Indicator
 # ══════════════════════════════════════════════════════════════════════
 
+
 def loading_overlay() -> rx.Component:
     """Thin progress bar at the top of the content area (replaces old full-screen overlay)."""
     return rx.box(
@@ -417,11 +429,48 @@ def loading_overlay() -> rx.Component:
 #  Layout Shell
 # ══════════════════════════════════════════════════════════════════════
 
+
+def _keyboard_shortcuts() -> rx.Component:
+    """Global keyboard shortcuts for navigation and common actions."""
+    return rx.script(
+        """
+        document.addEventListener('keydown', function(e) {
+            // Ignore when typing in inputs/textareas
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
+
+            // Navigation: g then letter (vim-style)
+            if (e.key === 'g') {
+                window._plexmix_g = true;
+                setTimeout(function() { window._plexmix_g = false; }, 500);
+                return;
+            }
+            if (window._plexmix_g) {
+                window._plexmix_g = false;
+                var routes = {d: '/dashboard', g: '/generator', l: '/library', t: '/tagging', h: '/history', s: '/settings', x: '/doctor'};
+                if (routes[e.key]) { window.location.href = routes[e.key]; e.preventDefault(); return; }
+            }
+
+            // Quick actions
+            if (e.key === '/' && !e.ctrlKey && !e.metaKey) {
+                // Focus search input if on library page
+                var searchInput = document.querySelector('input[placeholder*="Search"]');
+                if (searchInput) { searchInput.focus(); e.preventDefault(); }
+            }
+            if (e.key === 'Escape') {
+                // Blur any focused input
+                if (document.activeElement) document.activeElement.blur();
+            }
+        });
+        """
+    )
+
+
 def layout(content: rx.Component) -> rx.Component:
     return rx.cond(
         AppState.is_authenticated,
         rx.fragment(
             rx.toast.provider(),
+            _keyboard_shortcuts(),
             rx.box(
                 navbar(),
                 mobile_top_bar(),

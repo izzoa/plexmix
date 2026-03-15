@@ -9,8 +9,29 @@ from .claude_provider import ClaudeProvider
 from .cohere_provider import CohereProvider
 from .local_provider import LocalLLMProvider, LOCAL_LLM_MODELS, LOCAL_LLM_DEFAULT_MODEL
 from .custom_provider import CustomProvider
+from plexmix.services.registry import (
+    AI_PROVIDERS,
+    AI_PROVIDERS_REQUIRING_KEY,
+    get_default_ai_model,
+)
 
 logger = logging.getLogger(__name__)
+
+# Provider name → constructor (avoids long if/elif chain)
+_CLOUD_CONSTRUCTORS = {
+    "gemini": lambda api_key, model, temp: GeminiProvider(api_key, model, temp),
+    "openai": lambda api_key, model, temp: OpenAIProvider(api_key, model, temp),
+    "claude": lambda api_key, model, temp: ClaudeProvider(api_key, model, temp),
+    "cohere": lambda api_key, model, temp: CohereProvider(api_key, model, temp),
+}
+
+# Env var fallbacks for API keys (only checked when no key is passed in)
+_ENV_KEY_LOOKUP = {
+    "gemini": lambda: os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY"),
+    "openai": lambda: os.getenv("OPENAI_API_KEY"),
+    "claude": lambda: os.getenv("ANTHROPIC_API_KEY"),
+    "cohere": lambda: os.getenv("COHERE_API_KEY"),
+}
 
 
 def get_ai_provider(
@@ -25,37 +46,32 @@ def get_ai_provider(
     custom_endpoint: Optional[str] = None,
     custom_api_key: Optional[str] = None,
 ) -> AIProvider:
-    alias_map = {"anthropic": "claude"}
-    provider_name = alias_map.get(provider_name.lower(), provider_name.lower())
+    # Resolve aliases (e.g. "anthropic" → "claude")
+    for pid, p in AI_PROVIDERS.items():
+        if provider_name.lower() in p.aliases:
+            provider_name = pid
+            break
+    else:
+        provider_name = provider_name.lower()
 
+    # Env-var fallback for API key
     if api_key is None:
-        if provider_name == "gemini":
-            api_key = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
-        elif provider_name == "openai":
-            api_key = os.getenv("OPENAI_API_KEY")
-        elif provider_name == "claude":
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-        elif provider_name == "cohere":
-            api_key = os.getenv("COHERE_API_KEY")
+        env_getter = _ENV_KEY_LOOKUP.get(provider_name)
+        if env_getter:
+            api_key = env_getter()
 
-    requires_api_key = provider_name in {"gemini", "openai", "claude", "cohere"}
-
-    if requires_api_key and not api_key:
+    if provider_name in AI_PROVIDERS_REQUIRING_KEY and not api_key:
         raise ValueError(f"API key required for {provider_name} provider")
 
-    if provider_name == "gemini":
-        model = model or "gemini-2.5-flash"
-        return GeminiProvider(api_key, model, temperature)
-    elif provider_name == "openai":
-        model = model or "gpt-5-mini"
-        return OpenAIProvider(api_key, model, temperature)
-    elif provider_name == "claude":
-        model = model or "claude-sonnet-4-5-20250929"
-        return ClaudeProvider(api_key, model, temperature)
-    elif provider_name == "cohere":
-        model = model or "command-r7b-12-2024"
-        return CohereProvider(api_key, model, temperature)
-    elif provider_name == "local":
+    # Cloud providers
+    cloud_ctor = _CLOUD_CONSTRUCTORS.get(provider_name)
+    if cloud_ctor:
+        model = model or get_default_ai_model(provider_name)
+        assert api_key is not None  # guaranteed by the check above
+        return cloud_ctor(api_key, model, temperature)
+
+    # Local provider
+    if provider_name == "local":
         model = model or LOCAL_LLM_DEFAULT_MODEL
         return LocalLLMProvider(
             model=model,
@@ -65,7 +81,9 @@ def get_ai_provider(
             auth_token=local_auth_token,
             max_output_tokens=local_max_output_tokens or 800,
         )
-    elif provider_name == "custom":
+
+    # Custom (OpenAI-compatible) provider
+    if provider_name == "custom":
         if not custom_endpoint:
             raise ValueError("Endpoint URL required for custom provider")
         if not model:
@@ -76,11 +94,11 @@ def get_ai_provider(
             api_key=custom_api_key,
             temperature=temperature,
         )
-    else:
-        raise ValueError(
-            f"Unknown provider: {provider_name}. "
-            f"Choose from: gemini, openai, claude, cohere, local, custom"
-        )
+
+    raise ValueError(
+        f"Unknown provider: {provider_name}. "
+        f"Choose from: gemini, openai, claude, cohere, local, custom"
+    )
 
 
 __all__ = [
@@ -93,5 +111,5 @@ __all__ = [
     "CustomProvider",
     "LOCAL_LLM_MODELS",
     "LOCAL_LLM_DEFAULT_MODEL",
-    "get_ai_provider"
+    "get_ai_provider",
 ]

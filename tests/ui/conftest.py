@@ -7,24 +7,29 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "src"))
 
 # Mock Reflex before any imports
-sys.modules['reflex'] = MagicMock()
-rx_mock = sys.modules['reflex']
+sys.modules["reflex"] = MagicMock()
+rx_mock = sys.modules["reflex"]
+
 
 # Mock Reflex State class
 class MockState:
     """Mock Reflex State base class."""
+
     def __init__(self):
         pass
 
     def on_load(self):
         pass
 
+
 rx_mock.State = MockState
+
 
 # Mock Reflex decorators
 def mock_background(func):
     """Mock @rx.background decorator."""
     return func
+
 
 rx_mock.background = mock_background
 
@@ -45,8 +50,10 @@ rx_mock.event = mock_event
 
 def mock_var(cache=False):
     """Mock @rx.var decorator — turns the method into a property."""
+
     def decorator(func):
         return property(func)
+
     return decorator
 
 
@@ -116,12 +123,14 @@ rx_mock.breakpoints = Mock(return_value="responsive")
 # Mock theme
 rx_mock.theme = Mock
 
+
 # Mock App class
 class MockApp:
     def __init__(self, **kwargs):
-        self.theme = kwargs.get('theme')
+        self.theme = kwargs.get("theme")
 
     def add_page(self, component, route, on_load=None):
         pass
+
 
 rx_mock.App = MockApp

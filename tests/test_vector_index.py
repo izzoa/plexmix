@@ -1,7 +1,6 @@
 """Tests for database/vector_index.py."""
 import pytest
 import numpy as np
-import pickle
 from pathlib import Path
 
 from plexmix.database.vector_index import VectorIndex
@@ -30,6 +29,7 @@ def _random_embeddings(n, dim=DIM):
 # Construction
 # ---------------------------------------------------------------------------
 
+
 class TestInit:
     def test_creates_empty_index(self, vi):
         assert vi.index is not None
@@ -49,6 +49,7 @@ class TestInit:
 # Normalize
 # ---------------------------------------------------------------------------
 
+
 class TestNormalize:
     def test_unit_length(self, vi):
         vectors = np.array([[3.0, 4.0] + [0.0] * (DIM - 2)], dtype=np.float32)
@@ -66,6 +67,7 @@ class TestNormalize:
 # ---------------------------------------------------------------------------
 # build_index
 # ---------------------------------------------------------------------------
+
 
 class TestBuildIndex:
     def test_basic(self, vi):
@@ -93,6 +95,7 @@ class TestBuildIndex:
 # add_vectors
 # ---------------------------------------------------------------------------
 
+
 class TestAddVectors:
     def test_appends_to_existing(self, vi):
         vi.build_index(_random_embeddings(3), [1, 2, 3])
@@ -119,6 +122,7 @@ class TestAddVectors:
 # ---------------------------------------------------------------------------
 # search
 # ---------------------------------------------------------------------------
+
 
 class TestSearch:
     def test_returns_results(self, vi):
@@ -153,6 +157,7 @@ class TestSearch:
 # ---------------------------------------------------------------------------
 # save / load round-trip
 # ---------------------------------------------------------------------------
+
 
 class TestSaveLoad:
     def test_round_trip_preserves_data(self, tmp_path):

@@ -1,45 +1,11 @@
 import reflex as rx
 from plexmix.ui.components.navbar import layout
+from plexmix.ui.components.stat_tile import stat_tile as _stat_tile
 from plexmix.ui.states.doctor_state import DoctorState
 
 
-# ── Stat tile (dashboard-style) ──────────────────────────────────────
-
-def _stat_tile(
-    label: str,
-    value,
-    icon_name: str,
-    icon_color: str = "accent.9",
-    icon_bg: str = "accent.3",
-    stagger: str = "",
-) -> rx.Component:
-    """Single metric tile -- large mono number, muted label, tinted icon."""
-    return rx.hstack(
-        rx.box(
-            rx.icon(icon_name, size=20, color=icon_color),
-            padding="8px",
-            border_radius="var(--radius-md)",
-            background_color=icon_bg,
-            flex_shrink="0",
-        ),
-        rx.vstack(
-            rx.text(
-                value,
-                size="6",
-                weight="bold",
-                style={"fontFamily": "var(--font-mono)"},
-            ),
-            rx.text(label, size="1", color="gray.9", weight="medium"),
-            spacing="0",
-            align="start",
-        ),
-        spacing="3",
-        align="center",
-        class_name=f"animate-fade-in-up {stagger}".strip(),
-    )
-
-
 # ── Health status banner ─────────────────────────────────────────────
+
 
 def _health_banner() -> rx.Component:
     """Slim banner at the top: green if healthy, amber if issues found."""
@@ -113,6 +79,7 @@ def _health_banner() -> rx.Component:
 
 
 # ── Issue item card ──────────────────────────────────────────────────
+
 
 def _progress_section() -> rx.Component:
     """Shared inline progress bar used by embedding / tag / audio jobs."""
@@ -372,6 +339,7 @@ def _audio_analysis_item() -> rx.Component:
 #  Doctor Page
 # ══════════════════════════════════════════════════════════════════════
 
+
 def doctor() -> rx.Component:
     content = rx.vstack(
         # ── Page header ───────────────────────────────────────────
@@ -385,10 +353,8 @@ def doctor() -> rx.Component:
             spacing="1",
             align="start",
         ),
-
         # ── Health status banner ──────────────────────────────────
         _health_banner(),
-
         # ── Stats row ─────────────────────────────────────────────
         rx.grid(
             _stat_tile(
@@ -427,10 +393,8 @@ def doctor() -> rx.Component:
             spacing="6",
             width="100%",
         ),
-
         # ── Divider ──────────────────────────────────────────────
         rx.separator(size="4", color_scheme="gray"),
-
         # ── Issues & Maintenance ─────────────────────────────────
         rx.vstack(
             rx.text("Issues & Maintenance", size="4", weight="bold"),
@@ -442,8 +406,35 @@ def doctor() -> rx.Component:
             width="100%",
             class_name="animate-fade-in-up stagger-3",
         ),
-
         spacing="6",
         width="100%",
     )
-    return layout(content)
+    return layout(rx.fragment(content, _task_polling_trigger()))
+
+
+def _task_polling_trigger() -> rx.Component:
+    """Hidden button + JS interval for client-initiated TaskStore polling."""
+    return rx.fragment(
+        rx.el.button(
+            id="plexmix-poll-doc",
+            on_click=DoctorState.poll_task_progress,
+            display="none",
+        ),
+        rx.cond(
+            DoctorState.is_fixing,
+            rx.script(
+                "if (!window._pm_poll_doc) {"
+                "  window._pm_poll_doc = setInterval(function() {"
+                "    var b = document.getElementById('plexmix-poll-doc');"
+                "    if (b) b.click();"
+                "  }, 1500);"
+                "}"
+            ),
+            rx.script(
+                "if (window._pm_poll_doc) {"
+                "  clearInterval(window._pm_poll_doc);"
+                "  window._pm_poll_doc = null;"
+                "}"
+            ),
+        ),
+    )

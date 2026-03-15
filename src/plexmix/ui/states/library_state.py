@@ -1,86 +1,29 @@
 import reflex as rx
 import asyncio
 import logging
-import atexit
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Optional
-from threading import Event
+from plexmix.config.constants import EMBEDDING_BATCH_SIZE, LIBRARY_PAGE_SIZE
 from plexmix.ui.states.app_state import AppState
+from plexmix.ui.job_manager import jobs, task_store
 
 
-def _str_dict(d: dict) -> dict[str, str]:
-    """Convert a dict with mixed-type values to all-string values for Reflex."""
-    return {k: ("" if v is None else str(v)) for k, v in d.items()}
+from plexmix.ui.utils.helpers import str_dict as _str_dict, format_eta as _format_eta
 
 logger = logging.getLogger(__name__)
-
-
-def _format_eta(seconds: float) -> str:
-    """Format remaining seconds as a human-readable ETA string."""
-    seconds = max(0, int(seconds))
-    if seconds < 60:
-        return f"{seconds}s remaining"
-    minutes = seconds // 60
-    secs = seconds % 60
-    if minutes < 60:
-        return f"{minutes}m {secs}s remaining"
-    hours = minutes // 60
-    mins = minutes % 60
-    return f"{hours}h {mins}m remaining"
-
-
-# Per-client globals for background tasks
-_sync_cancel_events: Dict[str, Event] = {}
-_search_tasks: Dict[str, asyncio.Task] = {}
-_audio_cancel_events: Dict[str, Event] = {}
-_audio_pause_events: Dict[str, asyncio.Event] = {}
-
-
-def _cleanup_client_state(client_token: str) -> None:
-    """Clean up any state associated with a disconnected client."""
-    if client_token in _sync_cancel_events:
-        _sync_cancel_events[client_token].set()  # Signal cancellation
-        del _sync_cancel_events[client_token]
-    if client_token in _search_tasks:
-        task = _search_tasks[client_token]
-        if not task.done():
-            task.cancel()
-        del _search_tasks[client_token]
-    if client_token in _audio_cancel_events:
-        _audio_cancel_events[client_token].set()
-        del _audio_cancel_events[client_token]
-    _audio_pause_events.pop(client_token, None)
-
-
-def _cleanup_all_state() -> None:
-    """Clean up all global state on process exit."""
-    for token in list(_sync_cancel_events.keys()):
-        _sync_cancel_events[token].set()
-    _sync_cancel_events.clear()
-    for task in list(_search_tasks.values()):
-        if not task.done():
-            task.cancel()
-    _search_tasks.clear()
-    for token in list(_audio_cancel_events.keys()):
-        _audio_cancel_events[token].set()
-    _audio_cancel_events.clear()
-    _audio_pause_events.clear()
-
-
-# Register cleanup on process exit
-atexit.register(_cleanup_all_state)
 
 
 class LibraryState(AppState):
     tracks: list[dict[str, str]] = []
     total_filtered_tracks: int = 0
     current_page: int = 1
-    page_size: int = 50
+    page_size: int = LIBRARY_PAGE_SIZE
     search_query: str = ""
     genre_filter: str = ""
     year_min: str = ""
     year_max: str = ""
+    tag_filter: str = ""
+    has_audio: bool = False
 
     is_syncing: bool = False
     sync_progress: int = 0
@@ -102,6 +45,11 @@ class LibraryState(AppState):
     selected_tracks: list[str] = []
     sort_column: str = "title"
     sort_ascending: bool = True
+
+    # Bulk operations
+    show_bulk_tag_dialog: bool = False
+    bulk_tag_input: str = ""
+    show_delete_confirm: bool = False
     show_cancel_confirm: bool = False
 
     def set_sort(self, column: str):
@@ -130,7 +78,103 @@ class LibraryState(AppState):
             return
         super().on_load()
         self.load_tracks()
+        self.poll_task_progress()  # Recover in-progress tasks from TaskStore
         self.is_page_loading = False
+
+    def poll_task_progress(self):
+        """Client-initiated poll: read TaskStore -> update state vars.
+
+        Called by a hidden button clicked via JavaScript setInterval.
+        Because this is a regular (non-background) handler, the response
+        travels over the active WebSocket -- no risk of pushing to a dead connection.
+        """
+        # -- Sync --
+        sync_entry = task_store.get("sync")
+        if sync_entry:
+            if sync_entry.status == "running":
+                self.is_syncing = True
+                self.sync_progress = sync_entry.progress
+                self.sync_message = sync_entry.message
+            elif sync_entry.status == "completed":
+                self.is_syncing = False
+                self.sync_progress = 100
+                self.sync_message = ""
+                self.load_tracks()
+                self.check_configuration_status()
+                self.load_library_stats()
+                msg = sync_entry.message or "Sync completed!"
+                task_store.clear("sync")
+                return rx.toast.success(msg)
+            elif sync_entry.status == "failed":
+                self.is_syncing = False
+                self.sync_message = ""
+                msg = sync_entry.message or "Sync failed"
+                task_store.clear("sync")
+                return rx.toast.error(f"Sync failed: {msg}")
+            elif sync_entry.status == "cancelled":
+                self.is_syncing = False
+                self.sync_message = ""
+                task_store.clear("sync")
+                return rx.toast.warning("Sync cancelled")
+
+        # -- Embedding --
+        embed_entry = task_store.get("embedding")
+        if embed_entry:
+            if embed_entry.status == "running":
+                self.is_embedding = True
+                self.embedding_progress = embed_entry.progress
+                self.embedding_message = embed_entry.message
+            elif embed_entry.status == "completed":
+                self.is_embedding = False
+                self.embedding_progress = 100
+                self.embedding_message = ""
+                self.clear_selection()
+                self.load_tracks()
+                self.load_library_stats()
+                task_store.clear("embedding")
+                return rx.toast.success("Embeddings generated successfully!")
+            elif embed_entry.status == "failed":
+                self.is_embedding = False
+                self.embedding_message = ""
+                msg = embed_entry.message or "Embedding generation failed"
+                task_store.clear("embedding")
+                return rx.toast.error(msg)
+
+        # -- Audio analysis --
+        audio_entry = task_store.get("audio")
+        if audio_entry:
+            if audio_entry.status == "running":
+                self.is_analyzing_audio = True
+                self.audio_analysis_progress = audio_entry.progress
+                self.audio_analysis_message = audio_entry.message
+                self.audio_analysis_eta = audio_entry.extra.get("eta", "")
+                self.audio_analysis_paused = audio_entry.extra.get("paused", False)
+            elif audio_entry.status == "completed":
+                self.is_analyzing_audio = False
+                self.audio_analysis_progress = 100
+                self.audio_analysis_message = ""
+                self.audio_analysis_eta = ""
+                self.audio_analysis_paused = False
+                self.load_library_stats()
+                msg = audio_entry.extra.get("result_msg", "Audio analysis complete!")
+                task_store.clear("audio")
+                return rx.toast.success(msg)
+            elif audio_entry.status == "cancelled":
+                self.is_analyzing_audio = False
+                self.audio_analysis_message = ""
+                self.audio_analysis_eta = ""
+                self.audio_analysis_paused = False
+                msg = audio_entry.extra.get("result_msg", "Audio analysis stopped")
+                task_store.clear("audio")
+                return rx.toast.warning(msg)
+            elif audio_entry.status == "failed":
+                self.is_analyzing_audio = False
+                self.audio_analysis_message = ""
+                self.audio_analysis_eta = ""
+                self.audio_analysis_paused = False
+                msg = audio_entry.message or "Audio analysis failed"
+                task_store.clear("audio")
+                return rx.toast.error(msg)
 
     def load_tracks(self):
         try:
@@ -158,6 +202,8 @@ class LibraryState(AppState):
                     genre=self.genre_filter if self.genre_filter else None,
                     year_min=year_min_int,
                     year_max=year_max_int,
+                    tag=self.tag_filter if self.tag_filter else None,
+                    has_audio=self.has_audio,
                     sort_column=self.sort_column,
                     sort_ascending=self.sort_ascending,
                 )
@@ -168,6 +214,8 @@ class LibraryState(AppState):
                     genre=self.genre_filter if self.genre_filter else None,
                     year_min=year_min_int,
                     year_max=year_max_int,
+                    tag=self.tag_filter if self.tag_filter else None,
+                    has_audio=self.has_audio,
                 )
 
         except Exception as e:
@@ -179,8 +227,7 @@ class LibraryState(AppState):
     async def set_search_query(self, query: str):
         token = self.router.session.client_token
         async with self:
-            if token in _search_tasks and not _search_tasks[token].done():
-                _search_tasks[token].cancel()
+            jobs.cancel_task(token, "search")
             self.search_query = query
             self.current_page = 1
 
@@ -189,7 +236,8 @@ class LibraryState(AppState):
             async with self:
                 self.load_tracks()
 
-        _search_tasks[token] = asyncio.create_task(debounced_load())
+        task = asyncio.create_task(debounced_load())
+        jobs.register_task(token, "search", task)
 
     def set_genre_filter(self, genre: str):
         self.genre_filter = genre
@@ -212,11 +260,23 @@ class LibraryState(AppState):
         self.current_page = 1
         self.load_tracks()
 
+    def set_tag_filter(self, value: str):
+        self.tag_filter = value
+        self.current_page = 1
+        self.load_tracks()
+
+    def toggle_has_audio(self, checked: bool):
+        self.has_audio = checked
+        self.current_page = 1
+        self.load_tracks()
+
     def clear_filters(self):
         self.search_query = ""
         self.genre_filter = ""
         self.year_min = ""
         self.year_max = ""
+        self.tag_filter = ""
+        self.has_audio = False
         self.current_page = 1
         self.load_tracks()
 
@@ -245,12 +305,12 @@ class LibraryState(AppState):
         """Returns True when all current-page track IDs are in selected_tracks."""
         if not self.tracks:
             return False
-        page_ids = {track['id'] for track in self.tracks}
+        page_ids = {track["id"] for track in self.tracks}
         return page_ids.issubset(set(self.selected_tracks))
 
     def toggle_select_all(self, checked: bool):
         """Toggle selection of all tracks on the current page, preserving off-page selections."""
-        page_ids = {track['id'] for track in self.tracks}
+        page_ids = {track["id"] for track in self.tracks}
         if checked:
             existing = set(self.selected_tracks)
             existing.update(page_ids)
@@ -265,48 +325,128 @@ class LibraryState(AppState):
             self.selected_tracks.append(track_id)
 
     def select_all_tracks(self):
-        self.selected_tracks = [track['id'] for track in self.tracks]
+        self.selected_tracks = [track["id"] for track in self.tracks]
 
     def clear_selection(self):
         self.selected_tracks = []
 
+    # ── Bulk tag operations ──────────────────────────────────────────
+
+    def open_bulk_tag_dialog(self):
+        self.show_bulk_tag_dialog = True
+
+    def close_bulk_tag_dialog(self):
+        self.show_bulk_tag_dialog = False
+        self.bulk_tag_input = ""
+
+    def set_bulk_tag_dialog_open(self, is_open: bool):
+        if not is_open:
+            self.close_bulk_tag_dialog()
+
+    def set_bulk_tag_input(self, value: str):
+        self.bulk_tag_input = value
+
+    @rx.event(background=True)
+    async def apply_bulk_tags(self):
+        async with self:
+            tags_text = self.bulk_tag_input.strip()
+            track_ids = list(self.selected_tracks)
+            self.show_bulk_tag_dialog = False
+            self.bulk_tag_input = ""
+
+        if not tags_text or not track_ids:
+            return
+
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+
+            with SQLiteManager(str(db_path)) as db:
+                for tid_str in track_ids:
+                    db.update_track_tags(int(tid_str), tags=tags_text)
+
+            async with self:
+                self.selected_tracks = []
+            self.load_tracks()
+
+            yield rx.toast.success(f"Applied tags to {len(track_ids)} tracks")
+
+        except Exception as e:
+            yield rx.toast.error(f"Error applying tags: {e}")
+
+    # ── Bulk delete operations ───────────────────────────────────────
+
+    def open_delete_confirm(self):
+        self.show_delete_confirm = True
+
+    def close_delete_confirm(self):
+        self.show_delete_confirm = False
+
+    def set_delete_confirm_open(self, is_open: bool):
+        if not is_open:
+            self.show_delete_confirm = False
+
+    @rx.event(background=True)
+    async def delete_selected_tracks(self):
+        async with self:
+            track_ids = list(self.selected_tracks)
+            self.show_delete_confirm = False
+
+        if not track_ids:
+            return
+
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+
+            with SQLiteManager(str(db_path)) as db:
+                for tid_str in track_ids:
+                    db.delete_track(int(tid_str))
+
+            async with self:
+                self.selected_tracks = []
+            self.load_tracks()
+
+            yield rx.toast.success(f"Deleted {len(track_ids)} tracks")
+
+        except Exception as e:
+            yield rx.toast.error(f"Error deleting tracks: {e}")
+
     @rx.event(background=True)
     async def start_sync(self):
-        token = self.router.session.client_token
         async with self:
             self.is_syncing = True
             self.sync_progress = 0
             self.sync_message = "Starting sync..."
             self.show_regenerate_confirm = False
+            sync_mode = self.sync_mode
 
-        _sync_cancel_events[token] = Event()
+        cancel_event = task_store.start("sync", message="Starting sync...")
+        if cancel_event is None:
+            # Already running — polling will show existing task's progress
+            return
 
         try:
             from plexmix.config.settings import Settings
-            from plexmix.config.credentials import get_plex_token
-            from plexmix.plex.client import PlexClient
             from plexmix.database.sqlite_manager import SQLiteManager
+            from plexmix.services.sync_service import connect_plex, PlexConnectionError
 
             settings = Settings.load_from_file()
-            plex_token = get_plex_token()
 
-            if not settings.plex.url or not plex_token:
-                async with self:
-                    self.sync_message = "Plex not configured"
-                    self.is_syncing = False
+            try:
+                plex_client = connect_plex(settings)
+            except PlexConnectionError as e:
+                task_store.complete("sync", status="failed", message=str(e))
                 return
 
-            plex_client = PlexClient(settings.plex.url, plex_token)
-            if not plex_client.connect():
-                async with self:
-                    self.sync_message = "Failed to connect to Plex server"
-                    self.is_syncing = False
-                return
-
-            if not settings.plex.library_name or not plex_client.select_library(settings.plex.library_name):
-                async with self:
-                    self.sync_message = f"Music library not found: {settings.plex.library_name or '(not configured)'}"
-                    self.is_syncing = False
+            if not settings.plex.library_name:
+                task_store.complete("sync", status="failed", message="Music library not configured")
                 return
 
             db_path = settings.database.get_db_path()
@@ -314,84 +454,44 @@ class LibraryState(AppState):
             db.connect()
 
             from plexmix.plex.sync import SyncEngine
-            from plexmix.ai import get_ai_provider
-            from plexmix.config.credentials import (
-                get_google_api_key,
-                get_openai_api_key,
-                get_anthropic_api_key,
-                get_cohere_api_key,
-            )
+            from plexmix.services.providers import build_ai_provider
 
-            def progress_callback(progress: float, message: str):
-                async def update_state():
-                    async with self:
-                        self.sync_progress = int(progress * 100)
-                        self.sync_message = message
-                asyncio.create_task(update_state())
+            def progress_callback(progress: float, message: str) -> None:
+                if cancel_event.is_set():
+                    return
+                task_store.update("sync", progress=int(progress * 100), message=message)
 
-            ai_provider = None
-            provider_name = settings.ai.default_provider or "gemini"
-            provider_alias = "claude" if provider_name == "anthropic" else provider_name
-
-            api_key = None
-            if provider_alias == "gemini":
-                api_key = get_google_api_key()
-            elif provider_alias == "openai":
-                api_key = get_openai_api_key()
-            elif provider_alias == "claude":
-                api_key = get_anthropic_api_key()
-            elif provider_alias == "cohere":
-                api_key = get_cohere_api_key()
-            elif provider_alias == "custom":
-                from plexmix.config.credentials import get_custom_ai_api_key
-                api_key = settings.ai.custom_api_key or get_custom_ai_api_key()
-
-            try:
-                ai_provider = get_ai_provider(
-                    provider_name=provider_name,
-                    api_key=api_key,
-                    model=settings.ai.custom_model if provider_name == "custom" else settings.ai.model,
-                    temperature=settings.ai.temperature,
-                    local_mode=settings.ai.local_mode,
-                    local_endpoint=settings.ai.local_endpoint,
-                    local_auth_token=settings.ai.local_auth_token,
-                    local_max_output_tokens=settings.ai.local_max_output_tokens,
-                    custom_endpoint=settings.ai.custom_endpoint,
-                    custom_api_key=api_key if provider_name == "custom" else None,
+            ai_provider = build_ai_provider(settings, silent=True)
+            if ai_provider is None:
+                task_store.update(
+                    "sync", message="AI provider not configured — syncing without tagging..."
                 )
-            except ValueError as exc:
-                logger.warning(f"AI provider unavailable: {exc}")
-                ai_provider = None
-                async with self:
-                    self.sync_message = "AI provider not configured — syncing without tagging..."
             sync_engine = SyncEngine(plex_client, db, ai_provider=ai_provider)
-
-            sync_mode = None
-            async with self:
-                sync_mode = self.sync_mode
 
             if sync_mode == "regenerate":
                 sync_engine.regenerate_sync(
                     generate_embeddings=False,
                     progress_callback=progress_callback,
-                    cancel_event=_sync_cancel_events.get(token)
+                    cancel_event=cancel_event,
                 )
             else:
                 sync_engine.incremental_sync(
                     generate_embeddings=False,
                     progress_callback=progress_callback,
-                    cancel_event=_sync_cancel_events.get(token)
+                    cancel_event=cancel_event,
                 )
 
             # Run audio analysis if enabled
             run_audio = settings.audio.analyze_on_sync
-            if run_audio:
-                async with self:
-                    self.sync_message = "Running audio analysis..."
+            if run_audio and not cancel_event.is_set():
+                task_store.update("sync", message="Running audio analysis...")
                 try:
                     from plexmix.audio.analyzer import EssentiaAnalyzer
+
                     analyzer = EssentiaAnalyzer()
-                    pending_tracks = [t for t in db.get_tracks_without_audio_features() if t.file_path]
+                    pending_tracks = [
+                        t for t in db.get_tracks_without_audio_features() if t.file_path
+                    ]
                     if pending_tracks:
                         loop = asyncio.get_event_loop()
                         duration_limit = settings.audio.duration_limit
@@ -406,16 +506,20 @@ class LibraryState(AppState):
                             t = next(track_iter, None)
                             if t is None:
                                 return
+
                             def do_analyze(trk=t):
                                 resolved = settings.audio.resolve_path(trk.file_path)
-                                return trk, analyzer.analyze(resolved, duration_limit=duration_limit)
+                                return trk, analyzer.analyze(
+                                    resolved, duration_limit=duration_limit
+                                )
+
                             in_flight[loop.run_in_executor(executor, do_analyze)] = t
 
                         for _ in range(min(num_workers, total)):
                             _submit()
 
                         while in_flight:
-                            if _sync_cancel_events.get(token, Event()).is_set():
+                            if cancel_event.is_set():
                                 for fut in in_flight:
                                     fut.cancel()
                                 break
@@ -431,9 +535,12 @@ class LibraryState(AppState):
                                 except Exception as e:
                                     logger.warning(f"Audio analysis failed: {e}")
                                 _submit()
-                            async with self:
-                                self.sync_progress = int((analyzed / total) * 100) if total else 0
-                                self.sync_message = f"Audio analysis: {analyzed}/{total} tracks ({num_workers} workers)"
+                            if not cancel_event.is_set():
+                                task_store.update(
+                                    "sync",
+                                    progress=int((analyzed / total) * 100) if total else 0,
+                                    message=f"Audio analysis: {analyzed}/{total} tracks ({num_workers} workers)",
+                                )
 
                         executor.shutdown(wait=False)
                 except ImportError:
@@ -443,40 +550,17 @@ class LibraryState(AppState):
 
             db.close()
 
-            async with self:
-                self.is_syncing = False
-                self.sync_progress = 100
-                self.sync_message = ""
-                self.load_tracks()
-                self.check_configuration_status()
-                self.load_library_stats()
-
-            if ai_provider is None:
-                yield rx.toast.warning("Sync completed (tagging skipped — AI provider not configured)")
+            if cancel_event.is_set():
+                task_store.complete("sync", status="cancelled")
+            elif ai_provider is None:
+                task_store.complete(
+                    "sync", message="Sync completed (tagging skipped)"
+                )
             else:
-                yield rx.toast.success("Sync completed!")
-
-            if token in _sync_cancel_events:
-                del _sync_cancel_events[token]
-
-        except KeyboardInterrupt:
-            async with self:
-                self.is_syncing = False
-                self.sync_message = "Sync cancelled"
-                self.load_tracks()
-
-            if token in _sync_cancel_events:
-                del _sync_cancel_events[token]
+                task_store.complete("sync")
 
         except Exception as e:
-            async with self:
-                self.is_syncing = False
-                self.sync_message = ""
-
-            yield rx.toast.error(f"Sync failed: {str(e)}")
-
-            if token in _sync_cancel_events:
-                del _sync_cancel_events[token]
+            task_store.complete("sync", status="failed", message=str(e))
 
     def request_cancel_sync(self):
         self.show_cancel_confirm = True
@@ -487,9 +571,7 @@ class LibraryState(AppState):
 
     def cancel_sync(self):
         self.show_cancel_confirm = False
-        token = self.router.session.client_token
-        if token in _sync_cancel_events:
-            _sync_cancel_events[token].set()
+        task_store.cancel("sync")
 
     @rx.event(background=True)
     async def generate_embeddings(self):
@@ -500,132 +582,66 @@ class LibraryState(AppState):
             self.embedding_progress = 0
             self.embedding_message = "Starting embedding generation..."
 
+        cancel_event = task_store.start("embedding", message="Starting embedding generation...")
+        if cancel_event is None:
+            return
+
         try:
             from plexmix.config.settings import Settings
             from plexmix.database.sqlite_manager import SQLiteManager
-            from plexmix.utils.embeddings import EmbeddingGenerator, create_track_text
-            from plexmix.database.models import Embedding
-            from plexmix.config.credentials import (
-                get_google_api_key, get_openai_api_key, get_cohere_api_key,
-                get_custom_embedding_api_key,
-            )
+            from plexmix.services.providers import build_embedding_generator
+            from plexmix.services.tagging_service import generate_embeddings_for_tracks
 
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
 
             if not db_path.exists():
-                async with self:
-                    self.embedding_message = "Database not found"
-                    self.is_embedding = False
+                task_store.complete("embedding", status="failed", message="Database not found")
                 return
 
-            api_key = None
-            provider = settings.embedding.default_provider
-            embed_kwargs = {}
-            if provider == "gemini":
-                api_key = get_google_api_key()
-            elif provider == "openai":
-                api_key = get_openai_api_key()
-            elif provider == "cohere":
-                api_key = get_cohere_api_key()
-            elif provider == "custom":
-                embed_kwargs = {
-                    "custom_endpoint": settings.embedding.custom_endpoint,
-                    "custom_api_key": (
-                        settings.embedding.custom_api_key or get_custom_embedding_api_key()
-                    ),
-                    "custom_dimension": settings.embedding.custom_dimension,
-                }
-
-            embed_model = settings.embedding.model
-            if provider == "custom":
-                embed_model = settings.embedding.custom_model or embed_model
-
-            embedding_generator = EmbeddingGenerator(
-                provider=provider,
-                api_key=api_key,
-                model=embed_model,
-                **embed_kwargs,
-            )
+            embedding_generator = build_embedding_generator(settings)
+            if not embedding_generator:
+                task_store.complete(
+                    "embedding", status="failed", message="Embedding provider not configured"
+                )
+                return
 
             db = SQLiteManager(str(db_path))
             db.connect()
 
-            selected_ids = [int(tid) for tid in self.selected_tracks]
-            total_tracks = len(selected_ids)
-            embeddings_generated = 0
+            tracks = []
+            for tid_str in self.selected_tracks:
+                track = db.get_track_by_id(int(tid_str))
+                if track:
+                    tracks.append(track)
 
-            batch_size = 50
-            for i in range(0, len(selected_ids), batch_size):
-                batch_ids = selected_ids[i:i + batch_size]
-                batch_tracks = []
+            def on_progress(generated: int, total: int) -> None:
+                if cancel_event.is_set():
+                    return
+                task_store.update(
+                    "embedding",
+                    progress=int((generated / total) * 100) if total else 0,
+                    message=f"Generated {generated}/{total} embeddings",
+                )
 
-                for track_id in batch_ids:
-                    track = db.get_track_by_id(track_id)
-                    if track:
-                        artist = db.get_artist_by_id(track.artist_id)
-                        album = db.get_album_by_id(track.album_id)
-
-                        track_data = {
-                            'id': track.id,
-                            'title': track.title,
-                            'artist': artist.name if artist else 'Unknown',
-                            'album': album.title if album else 'Unknown',
-                            'genre': track.genre or '',
-                            'year': track.year or '',
-                            'tags': track.tags or '',
-                            'environments': track.environments or '',
-                            'instruments': track.instruments or ''
-                        }
-                        batch_tracks.append((track, track_data))
-
-                texts = [create_track_text(td[1]) for td in batch_tracks]
-                embeddings = embedding_generator.generate_batch_embeddings(texts, batch_size=50)
-
-                for (track, _), embedding_vector in zip(batch_tracks, embeddings):
-                    embedding = Embedding(
-                        track_id=track.id,
-                        embedding_model=embedding_generator.provider_name,
-                        embedding_dim=embedding_generator.get_dimension(),
-                        vector=embedding_vector
-                    )
-                    db.insert_embedding(embedding)
-                    embeddings_generated += 1
-
-                    async with self:
-                        self.embedding_progress = int((embeddings_generated / total_tracks) * 100)
-                        self.embedding_message = f"Generated {embeddings_generated}/{total_tracks} embeddings"
+            embeddings_generated = generate_embeddings_for_tracks(
+                db, embedding_generator, tracks, batch_size=EMBEDDING_BATCH_SIZE, progress_callback=on_progress
+            )
 
             db.close()
 
-            async with self:
-                self.is_embedding = False
-                self.embedding_progress = 100
-                self.embedding_message = ""
-                self.clear_selection()
-                self.load_tracks()
-                self.load_library_stats()
-
-            yield rx.toast.success("Embeddings generated successfully!")
+            task_store.complete("embedding")
 
         except Exception as e:
-            async with self:
-                self.is_embedding = False
-                self.embedding_message = ""
-
-            yield rx.toast.error(f"Embedding generation failed: {str(e)}")
+            task_store.complete("embedding", status="failed", message=str(e))
 
     def pause_audio_analysis(self):
-        token = self.router.session.client_token
-        if token in _audio_pause_events:
-            _audio_pause_events[token].clear()  # Block the loop
-            self.audio_analysis_paused = True
+        task_store.pause("audio")
+        self.audio_analysis_paused = True
 
     def resume_audio_analysis(self):
-        token = self.router.session.client_token
-        if token in _audio_pause_events:
-            _audio_pause_events[token].set()  # Unblock the loop
-            self.audio_analysis_paused = False
+        task_store.resume("audio")
+        self.audio_analysis_paused = False
 
     def request_cancel_audio(self):
         self.show_audio_cancel_confirm = True
@@ -636,29 +652,24 @@ class LibraryState(AppState):
 
     def cancel_audio_analysis(self):
         self.show_audio_cancel_confirm = False
-        token = self.router.session.client_token
-        if token in _audio_cancel_events:
-            _audio_cancel_events[token].set()
+        task_store.cancel("audio")
         # Unblock pause so the loop can exit
-        if token in _audio_pause_events:
-            _audio_pause_events[token].set()
+        task_store.resume("audio")
 
     @rx.event(background=True)
     async def analyze_audio(self):
-        token = self.router.session.client_token
-
-        # Set up cancel/pause events
-        _audio_cancel_events[token] = Event()
-        pause_event = asyncio.Event()
-        pause_event.set()  # Start unpaused
-        _audio_pause_events[token] = pause_event
-
         async with self:
             self.is_analyzing_audio = True
             self.audio_analysis_paused = False
             self.audio_analysis_progress = 0
             self.audio_analysis_message = "Starting audio analysis..."
             self.audio_analysis_eta = ""
+
+        cancel_event = task_store.start("audio", message="Starting audio analysis...")
+        if cancel_event is None:
+            return
+
+        pause_event = task_store.get_pause_event("audio")
 
         try:
             from plexmix.config.settings import Settings
@@ -667,11 +678,11 @@ class LibraryState(AppState):
             try:
                 from plexmix.audio.analyzer import EssentiaAnalyzer
             except ImportError:
-                async with self:
-                    self.audio_analysis_message = (
-                        "Essentia is not installed. Run: poetry install -E audio"
-                    )
-                    self.is_analyzing_audio = False
+                task_store.complete(
+                    "audio",
+                    status="failed",
+                    message="Essentia is not installed. Run: poetry install -E audio",
+                )
                 return
 
             settings = Settings.load_from_file()
@@ -680,9 +691,7 @@ class LibraryState(AppState):
             num_workers = max(1, settings.audio.workers)
 
             if not db_path.exists():
-                async with self:
-                    self.audio_analysis_message = "Database not found"
-                    self.is_analyzing_audio = False
+                task_store.complete("audio", status="failed", message="Database not found")
                 return
 
             loop = asyncio.get_running_loop()
@@ -693,9 +702,10 @@ class LibraryState(AppState):
                 pending_tracks = [t for t in db.get_tracks_without_audio_features() if t.file_path]
 
                 if not pending_tracks:
-                    async with self:
-                        self.audio_analysis_message = "All tracks already have audio features."
-                        self.is_analyzing_audio = False
+                    task_store.complete(
+                        "audio",
+                        message="All tracks already have audio features.",
+                    )
                     return
 
                 total = len(pending_tracks)
@@ -717,7 +727,10 @@ class LibraryState(AppState):
 
                     def do_analyze(t=track):
                         resolved = settings.audio.resolve_path(t.file_path)
-                        return t, analyzer.analyze(resolved, duration_limit=duration_limit).to_dict()
+                        return (
+                            t,
+                            analyzer.analyze(resolved, duration_limit=duration_limit).to_dict(),
+                        )
 
                     fut = loop.run_in_executor(executor, do_analyze)
                     in_flight[fut] = track
@@ -729,19 +742,21 @@ class LibraryState(AppState):
 
                 while in_flight:
                     # Check cancellation
-                    if _audio_cancel_events.get(token, Event()).is_set():
+                    if cancel_event.is_set():
                         cancelled = True
                         for fut in in_flight:
                             fut.cancel()
                         break
 
                     # Check pause — let in-flight work finish, then hold
-                    pe = _audio_pause_events.get(token)
-                    if pe and not pe.is_set():
-                        async with self:
-                            self.audio_analysis_message = f"Paused — {analyzed}/{total} tracks analyzed"
-                        await pe.wait()
-                        if _audio_cancel_events.get(token, Event()).is_set():
+                    if task_store.is_paused("audio"):
+                        task_store.update(
+                            "audio",
+                            message=f"Paused — {analyzed}/{total} tracks analyzed",
+                            extra={"paused": True},
+                        )
+                        await pause_event.wait()
+                        if cancel_event.is_set():
                             cancelled = True
                             for fut in in_flight:
                                 fut.cancel()
@@ -767,44 +782,37 @@ class LibraryState(AppState):
                         _submit_next()
 
                     # Update progress & ETA
-                    elapsed = time.monotonic() - eta_base_time
-                    since_baseline = analyzed - eta_base_count
-                    if since_baseline > 0 and elapsed > 0:
-                        rate = since_baseline / elapsed
-                        remaining = (total - analyzed) / rate
-                        eta_str = _format_eta(remaining)
-                    else:
-                        eta_str = "calculating..."
+                    if not cancel_event.is_set():
+                        elapsed = time.monotonic() - eta_base_time
+                        since_baseline = analyzed - eta_base_count
+                        if since_baseline > 0 and elapsed > 0:
+                            rate = since_baseline / elapsed
+                            remaining = (total - analyzed) / rate
+                            eta_str = _format_eta(remaining)
+                        else:
+                            eta_str = "calculating..."
 
-                    async with self:
-                        self.audio_analysis_progress = int((analyzed / total) * 100) if total else 0
-                        self.audio_analysis_message = f"Analyzed {analyzed}/{total} tracks ({num_workers} workers)"
-                        self.audio_analysis_eta = eta_str
+                        task_store.update(
+                            "audio",
+                            progress=int((analyzed / total) * 100) if total else 0,
+                            message=f"Analyzed {analyzed}/{total} tracks ({num_workers} workers)",
+                            extra={"eta": eta_str, "paused": False},
+                        )
 
                 executor.shutdown(wait=False)
 
-            async with self:
-                self.is_analyzing_audio = False
-                self.audio_analysis_paused = False
-                self.audio_analysis_progress = 100 if not cancelled else self.audio_analysis_progress
-                self.audio_analysis_message = ""
-                self.audio_analysis_eta = ""
-                self.load_library_stats()
-
             if cancelled:
-                yield rx.toast.warning(f"Audio analysis stopped — {analyzed}/{total} tracks analyzed")
+                task_store.update(
+                    "audio",
+                    extra={"result_msg": f"Audio analysis stopped — {analyzed}/{total} tracks analyzed"},
+                )
+                task_store.complete("audio", status="cancelled")
             else:
-                yield rx.toast.success(f"Audio analysis complete! Analyzed {analyzed} tracks.")
+                task_store.update(
+                    "audio",
+                    extra={"result_msg": f"Audio analysis complete! Analyzed {analyzed} tracks."},
+                )
+                task_store.complete("audio")
 
         except Exception as e:
-            async with self:
-                self.is_analyzing_audio = False
-                self.audio_analysis_paused = False
-                self.audio_analysis_message = ""
-                self.audio_analysis_eta = ""
-
-            yield rx.toast.error(f"Audio analysis failed: {str(e)}")
-
-        finally:
-            _audio_cancel_events.pop(token, None)
-            _audio_pause_events.pop(token, None)
+            task_store.complete("audio", status="failed", message=str(e))

@@ -1,7 +1,7 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 import os
 
 
@@ -23,14 +23,8 @@ class PlexSettings(BaseSettings):
 
 
 class DatabaseSettings(BaseSettings):
-    path: Optional[str] = Field(
-        default=None,
-        description="SQLite database path"
-    )
-    faiss_index_path: Optional[str] = Field(
-        default=None,
-        description="FAISS index file path"
-    )
+    path: Optional[str] = Field(default=None, description="SQLite database path")
+    faiss_index_path: Optional[str] = Field(default=None, description="FAISS index file path")
 
     class Config:
         env_prefix = "DATABASE_"
@@ -108,31 +102,22 @@ class EmbeddingSettings(BaseSettings):
         env_prefix = "EMBEDDING_"
 
     def get_dimension_for_provider(self, provider: str) -> int:
-        dimension_map = {
-            "gemini": 3072,
-            "openai": 1536,
-            "cohere": 1024,
-        }
+        from plexmix.services.registry import get_embedding_dimension
 
-        if provider == "custom":
-            return self.custom_dimension
-
-        if provider == "local":
-            local_dimensions = {
-                "all-MiniLM-L6-v2": 384,
-                "mixedbread-ai/mxbai-embed-large-v1": 1024,
-                "google/embeddinggemma-300m": 768,
-                "nomic-ai/nomic-embed-text-v1.5": 768,
-            }
-            return local_dimensions.get(self.model, self.dimension or 768)
-
-        return dimension_map.get(provider, self.dimension)
+        return get_embedding_dimension(
+            provider,
+            model=self.model,
+            custom_dimension=self.custom_dimension,
+            fallback_dimension=self.dimension if self.dimension else None,
+        )
 
 
 class AudioSettings(BaseSettings):
     enabled: bool = Field(default=False, description="Enable audio feature analysis")
     analyze_on_sync: bool = Field(default=False, description="Run analysis during sync")
-    duration_limit: int = Field(default=60, description="Seconds of audio to analyze (0 = full track)")
+    duration_limit: int = Field(
+        default=60, description="Seconds of audio to analyze (0 = full track)"
+    )
     workers: int = Field(default=4, description="Number of parallel audio analysis workers")
     path_prefix_from: Optional[str] = Field(
         default=None, description="Plex file path prefix to replace"
@@ -166,8 +151,12 @@ class UISettings(BaseSettings):
 
 class PlaylistSettings(BaseSettings):
     default_length: int = Field(default=50, description="Default playlist length")
-    candidate_pool_size: Optional[int] = Field(default=None, description="Explicit candidate pool size (overrides multiplier)")
-    candidate_pool_multiplier: int = Field(default=25, description="Multiplier for candidate pool size relative to playlist length")
+    candidate_pool_size: Optional[int] = Field(
+        default=None, description="Explicit candidate pool size (overrides multiplier)"
+    )
+    candidate_pool_multiplier: int = Field(
+        default=25, description="Multiplier for candidate pool size relative to playlist length"
+    )
 
     class Config:
         env_prefix = "PLAYLIST_"
@@ -177,8 +166,7 @@ class LoggingSettings(BaseSettings):
     level: str = Field(default="INFO", description="Logging level")
     file_path: Optional[str] = Field(default=None, description="Log file path")
     format: str = Field(
-        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        description="Log format"
+        default="%(asctime)s - %(name)s - %(levelname)s - %(message)s", description="Log format"
     )
 
     class Config:
@@ -201,10 +189,10 @@ class Settings(BaseSettings):
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
     model_config = {
-        'env_file': '.env',
-        'env_file_encoding': 'utf-8',
-        'case_sensitive': False,
-        'extra': 'ignore'
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "extra": "ignore",
     }
 
     @classmethod
@@ -216,13 +204,17 @@ class Settings(BaseSettings):
         env vars would be silently ignored.  This method merges env vars
         into the dict so they always win.
         """
-        _env_maps: list[tuple[str, str, type]] = [
+        _env_maps: list[tuple[str, str, Callable[[str], Any]]] = [
             # (env_var, dotted_yaml_key, cast)
             ("PLEX_URL", "plex.url", str),
             ("PLEX_TOKEN", "plex.token", str),
             ("PLEX_LIBRARY_NAME", "plex.library_name", str),
             ("AUDIO_ENABLED", "audio.enabled", lambda v: v.lower() in ("1", "true", "yes")),
-            ("AUDIO_ANALYZE_ON_SYNC", "audio.analyze_on_sync", lambda v: v.lower() in ("1", "true", "yes")),
+            (
+                "AUDIO_ANALYZE_ON_SYNC",
+                "audio.analyze_on_sync",
+                lambda v: v.lower() in ("1", "true", "yes"),
+            ),
             ("AUDIO_DURATION_LIMIT", "audio.duration_limit", int),
             ("AUDIO_WORKERS", "audio.workers", int),
             ("AUDIO_PATH_PREFIX_FROM", "audio.path_prefix_from", str),
@@ -246,8 +238,9 @@ class Settings(BaseSettings):
 
         config = Path(config_path)
         if config.exists():
-            import yaml
-            with open(config, 'r') as f:
+            import yaml  # type: ignore[import-untyped]
+
+            with open(config, "r") as f:
                 config_data = yaml.safe_load(f) or {}
             config_data = cls._apply_env_overrides(config_data)
             return cls(**config_data)
@@ -257,8 +250,9 @@ class Settings(BaseSettings):
         if using_default:
             legacy = Path("~/.plexmix/config.yaml").expanduser()
             if legacy.exists() and str(legacy) != str(config):
-                import yaml
-                with open(legacy, 'r') as f:
+                import yaml  # type: ignore[import-untyped]
+
+                with open(legacy, "r") as f:
                     config_data = yaml.safe_load(f) or {}
                 config_data = cls._apply_env_overrides(config_data)
                 return cls(**config_data)
@@ -272,7 +266,8 @@ class Settings(BaseSettings):
         Path(config_path).parent.mkdir(parents=True, exist_ok=True)
 
         import yaml
-        with open(config_path, 'w') as f:
+
+        with open(config_path, "w") as f:
             yaml.dump(self.model_dump(exclude_none=True), f, default_flow_style=False)
 
 

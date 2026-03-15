@@ -1,7 +1,5 @@
 import reflex as rx
-import asyncio
 import logging
-from typing import Optional
 from datetime import datetime
 from plexmix.ui.states.app_state import AppState
 
@@ -9,6 +7,7 @@ from plexmix.ui.states.app_state import AppState
 def _str_dict(d: dict) -> dict[str, str]:
     """Convert a dict with mixed-type values to all-string values for Reflex."""
     return {k: ("" if v is None else str(v)) for k, v in d.items()}
+
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +35,12 @@ class HistoryState(AppState):
     exporting: bool = False
     action_message: str = ""
     error_message: str = ""
+
+    # Import modal
+    is_import_modal_open: bool = False
+    import_playlist_name: str = ""
+    import_status: str = ""
+    importing: bool = False
 
     def on_load(self):
         if not self.check_auth():
@@ -66,10 +71,7 @@ class HistoryState(AppState):
                 playlists = [_str_dict(p.model_dump()) for p in playlist_objs]
 
                 # Sort by created date (newest first) by default
-                playlists.sort(
-                    key=lambda p: p.get('created_at', ''),
-                    reverse=True
-                )
+                playlists.sort(key=lambda p: p.get("created_at", ""), reverse=True)
 
                 db.close()
 
@@ -116,7 +118,7 @@ class HistoryState(AppState):
                     formatted_tracks = []
                     total_duration_ms = 0
                     for i, track in enumerate(tracks):
-                        duration_ms = track.get('duration_ms', 0) or 0
+                        duration_ms = track.get("duration_ms", 0) or 0
                         total_duration_ms += duration_ms
                         if duration_ms:
                             minutes = duration_ms // 60000
@@ -125,25 +127,29 @@ class HistoryState(AppState):
                         else:
                             duration_formatted = "0:00"
 
-                        formatted_tracks.append({
-                            'position': str(i + 1),
-                            'id': str(track.get('id', '')),
-                            'title': str(track.get('title', 'Unknown')),
-                            'artist': str(track.get('artist_name', 'Unknown')),
-                            'album': str(track.get('album_title', 'Unknown')),
-                            'duration_ms': str(duration_ms),
-                            'duration_formatted': duration_formatted,
-                            'genre': str(track.get('genre', '') or ''),
-                            'year': str(track.get('year', '') or ''),
-                        })
+                        formatted_tracks.append(
+                            {
+                                "position": str(i + 1),
+                                "id": str(track.get("id", "")),
+                                "title": str(track.get("title", "Unknown")),
+                                "artist": str(track.get("artist_name", "Unknown")),
+                                "album": str(track.get("album_title", "Unknown")),
+                                "duration_ms": str(duration_ms),
+                                "duration_formatted": duration_formatted,
+                                "genre": str(track.get("genre", "") or ""),
+                                "year": str(track.get("year", "") or ""),
+                            }
+                        )
 
                     self.selected_playlist_tracks = formatted_tracks
 
                     # Calculate and format total duration
                     total_minutes = total_duration_ms // 60000
                     total_seconds = (total_duration_ms // 1000) % 60
-                    playlist_dict['total_duration_ms'] = str(total_duration_ms)
-                    playlist_dict['total_duration_formatted'] = f"{total_minutes}:{total_seconds:02d}"
+                    playlist_dict["total_duration_ms"] = str(total_duration_ms)
+                    playlist_dict[
+                        "total_duration_formatted"
+                    ] = f"{total_minutes}:{total_seconds:02d}"
                     self.selected_playlist = playlist_dict
 
                     # Open modal
@@ -153,6 +159,79 @@ class HistoryState(AppState):
         except Exception as e:
             logger.error(f"Error selecting playlist: {e}")
             return rx.toast.error(f"Error loading playlist: {str(e)}")
+
+    def move_track_up(self, index: str):
+        """Move a track one position up in the playlist."""
+        idx = int(index)
+        if idx <= 0 or idx >= len(self.selected_playlist_tracks):
+            return
+        tracks = list(self.selected_playlist_tracks)
+        tracks[idx], tracks[idx - 1] = tracks[idx - 1], tracks[idx]
+        # Renumber positions
+        for i, t in enumerate(tracks):
+            t["position"] = str(i + 1)
+        self.selected_playlist_tracks = tracks
+
+    def move_track_down(self, index: str):
+        """Move a track one position down in the playlist."""
+        idx = int(index)
+        if idx < 0 or idx >= len(self.selected_playlist_tracks) - 1:
+            return
+        tracks = list(self.selected_playlist_tracks)
+        tracks[idx], tracks[idx + 1] = tracks[idx + 1], tracks[idx]
+        for i, t in enumerate(tracks):
+            t["position"] = str(i + 1)
+        self.selected_playlist_tracks = tracks
+
+    @rx.event(background=True)
+    async def save_track_order(self):
+        """Persist reordered track positions to the database."""
+        async with self:
+            playlist_id = self.selected_playlist.get("id", "")
+            tracks = list(self.selected_playlist_tracks)
+
+        if not playlist_id or not tracks:
+            return
+
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+
+            with SQLiteManager(str(db_path)) as db:
+                cursor = db.get_connection().cursor()
+                for t in tracks:
+                    cursor.execute(
+                        "UPDATE playlist_tracks SET position = ? "
+                        "WHERE playlist_id = ? AND track_id = ?",
+                        (int(t["position"]) - 1, int(playlist_id), int(t["id"])),
+                    )
+                db.get_connection().commit()
+
+            yield rx.toast.success("Track order saved")
+
+        except Exception as e:
+            yield rx.toast.error(f"Error saving order: {e}")
+
+    def rerun_playlist(self):
+        """Store the selected playlist's generation config and navigate to Generator."""
+        import json as _json
+
+        config_json = self.selected_playlist.get("generation_config", "")
+        mood_query = self.selected_playlist.get("mood_query", "")
+
+        if config_json:
+            self._rerun_generation_config = config_json
+        elif mood_query:
+            # Fallback: create a minimal config from just the mood query
+            self._rerun_generation_config = _json.dumps({"mood_query": mood_query})
+        else:
+            return rx.toast.error("No generation config available for this playlist")
+
+        self.is_detail_modal_open = False
+        return rx.redirect("/generator")
 
     def close_detail_modal(self):
         self.is_detail_modal_open = False
@@ -219,7 +298,7 @@ class HistoryState(AppState):
                 self.playlist_to_delete = ""
 
                 # Close detail modal if it was open for this playlist
-                if self.selected_playlist and self.selected_playlist.get('id') == playlist_id_str:
+                if self.selected_playlist and self.selected_playlist.get("id") == playlist_id_str:
                     self.is_detail_modal_open = False
                     self.selected_playlist = {}
                     self.selected_playlist_tracks = []
@@ -265,7 +344,7 @@ class HistoryState(AppState):
 
             # Get playlist tracks
             tracks = db.get_playlist_tracks(pid)
-            track_plex_keys = [t['plex_key'] for t in tracks]
+            track_plex_keys = [t["plex_key"] for t in tracks]
 
             db.close()
 
@@ -277,10 +356,14 @@ class HistoryState(AppState):
                 yield rx.toast.error("Failed to connect to Plex server")
                 return
 
-            if not settings.plex.library_name or not plex_client.select_library(settings.plex.library_name):
+            if not settings.plex.library_name or not plex_client.select_library(
+                settings.plex.library_name
+            ):
                 async with self:
                     self.exporting = False
-                yield rx.toast.error(f"Music library not found: {settings.plex.library_name or '(not configured)'}")
+                yield rx.toast.error(
+                    f"Music library not found: {settings.plex.library_name or '(not configured)'}"
+                )
                 return
 
             playlist_name = playlist.name or f"PlexMix Playlist {pid}"
@@ -329,11 +412,15 @@ class HistoryState(AppState):
             m3u_content += f"#PLAYLIST:{playlist.name or 'PlexMix Playlist'}\n"
 
             for track in tracks:
-                duration_sec = (track.get('duration_ms', 0) or 0) // 1000
-                artist = track.get('artist', 'Unknown')
-                title = track.get('title', 'Unknown')
+                duration_sec = (track.get("duration_ms", 0) or 0) // 1000
+                artist = track.get("artist_name", "Unknown")
+                title = track.get("title", "Unknown")
                 m3u_content += f"#EXTINF:{duration_sec},{artist} - {title}\n"
-                m3u_content += f"track_{track['id']}.mp3\n"
+                file_path = track.get("file_path")
+                if file_path:
+                    m3u_content += f"{file_path}\n"
+                else:
+                    m3u_content += f"{artist} - {title}.mp3\n"
 
             filename = f"{playlist.name or 'playlist'}_{pid}.m3u"
 
@@ -343,15 +430,246 @@ class HistoryState(AppState):
         except Exception as e:
             return rx.toast.error(f"Error exporting M3U: {str(e)}")
 
+    def export_to_json(self, playlist_id: str):
+        """Export playlist to JSON format and trigger download."""
+        try:
+            import json as _json
+
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+            pid = int(playlist_id)
+
+            db = SQLiteManager(str(db_path))
+            db.connect()
+
+            playlist = db.get_playlist_by_id(pid)
+            if not playlist:
+                db.close()
+                return rx.toast.error("Playlist not found")
+
+            tracks = db.get_playlist_tracks(pid)
+            db.close()
+
+            data = {
+                "plexmix_version": "1",
+                "playlist": {
+                    "name": playlist.name,
+                    "description": playlist.description,
+                    "mood_query": playlist.mood_query,
+                    "created_at": playlist.created_at.isoformat() if playlist.created_at else None,
+                    "created_by_ai": playlist.created_by_ai,
+                },
+                "tracks": [
+                    {
+                        "title": t.get("title", ""),
+                        "artist": t.get("artist_name", ""),
+                        "album": t.get("album_title", ""),
+                        "genre": t.get("genre", ""),
+                        "year": t.get("year"),
+                        "duration_ms": t.get("duration_ms"),
+                        "plex_key": t.get("plex_key", ""),
+                        "position": t.get("position", 0),
+                    }
+                    for t in tracks
+                ],
+            }
+
+            json_content = _json.dumps(data, indent=2, ensure_ascii=False)
+            filename = f"{playlist.name or 'playlist'}_{pid}.json"
+
+            return rx.download(data=json_content, filename=filename)
+
+        except Exception as e:
+            return rx.toast.error(f"Error exporting JSON: {str(e)}")
+
+    def open_import_modal(self):
+        self.is_import_modal_open = True
+        self.import_playlist_name = ""
+        self.import_status = ""
+
+    def close_import_modal(self):
+        self.is_import_modal_open = False
+        self.import_status = ""
+
+    def set_import_modal_open(self, is_open: bool):
+        self.is_import_modal_open = is_open
+        if not is_open:
+            self.import_status = ""
+
+    def set_import_playlist_name(self, value: str):
+        self.import_playlist_name = value
+
+    async def handle_import_upload(self, files: list[rx.UploadFile]):
+        """Handle uploaded playlist file (JSON or M3U)."""
+        if not files:
+            return
+
+        self.importing = True
+        self.import_status = "Processing file..."
+
+        try:
+            upload_file = files[0]
+            file_content = (await upload_file.read()).decode("utf-8")
+            filename = upload_file.filename or ""
+
+            # Detect format
+            ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+            if ext == "json" or file_content.strip().startswith("{"):
+                playlist_name, tracks_meta = self._parse_json_import(file_content)
+            elif ext in ("m3u", "m3u8") or file_content.strip().startswith("#EXTM3U"):
+                playlist_name, tracks_meta = self._parse_m3u_import(file_content)
+            else:
+                self.import_status = "Unsupported file format. Use JSON or M3U."
+                self.importing = False
+                return
+
+            # Use override name if provided
+            if self.import_playlist_name.strip():
+                playlist_name = self.import_playlist_name.strip()
+            elif not playlist_name:
+                playlist_name = filename.rsplit(".", 1)[0] if "." in filename else filename
+
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+            from plexmix.database.models import Playlist
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+
+            if not db_path.exists():
+                self.import_status = "Database not found. Sync your library first."
+                self.importing = False
+                return
+
+            db = SQLiteManager(str(db_path))
+            db.connect()
+
+            matched_ids = []
+            unmatched = []
+
+            for tm in tracks_meta:
+                track_id = self._find_track(db, tm)
+                if track_id:
+                    matched_ids.append(track_id)
+                else:
+                    label = tm.get("title", "") or tm.get("file_path", "unknown")
+                    artist = tm.get("artist", "")
+                    if artist:
+                        label = f"{artist} - {label}"
+                    unmatched.append(label)
+
+            if not matched_ids:
+                db.close()
+                self.import_status = "No tracks matched any entries in your library."
+                self.importing = False
+                return
+
+            pl = Playlist(name=playlist_name, created_by_ai=False)
+            pid = db.insert_playlist(pl)
+            db.add_tracks_to_playlist(pid, matched_ids)
+            db.close()
+
+            status_parts = [f"Imported '{playlist_name}' with {len(matched_ids)} tracks."]
+            if unmatched:
+                status_parts.append(f"{len(unmatched)} track(s) could not be matched.")
+            self.import_status = " ".join(status_parts)
+            self.importing = False
+            self.is_import_modal_open = False
+
+            yield rx.toast.success(f"Imported '{playlist_name}' with {len(matched_ids)} tracks")
+            yield HistoryState.load_playlists()
+
+        except Exception as e:
+            logger.error("Import failed: %s", e)
+            self.import_status = f"Import failed: {str(e)}"
+            self.importing = False
+
+    @staticmethod
+    def _parse_json_import(content: str) -> tuple:
+        import json as _json
+
+        data = _json.loads(content)
+        playlist_info = data.get("playlist", {})
+        playlist_name = playlist_info.get("name", "")
+        tracks = data.get("tracks", [])
+        return playlist_name, tracks
+
+    @staticmethod
+    def _parse_m3u_import(content: str) -> tuple:
+        lines = content.strip().splitlines()
+        playlist_name = ""
+        tracks: list[dict] = []
+        current_extinf = None
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("#PLAYLIST:"):
+                playlist_name = line[len("#PLAYLIST:") :]
+            elif line.startswith("#EXTINF:"):
+                current_extinf = line[len("#EXTINF:") :]
+            elif line.startswith("#"):
+                continue
+            else:
+                track_meta: dict = {"file_path": line}
+                if current_extinf:
+                    parts = current_extinf.split(",", 1)
+                    if len(parts) == 2:
+                        display = parts[1]
+                        if " - " in display:
+                            artist, title = display.split(" - ", 1)
+                            track_meta["artist"] = artist.strip()
+                            track_meta["title"] = title.strip()
+                        else:
+                            track_meta["title"] = display.strip()
+                current_extinf = None
+                tracks.append(track_meta)
+
+        return playlist_name, tracks
+
+    @staticmethod
+    def _find_track(db: object, meta: dict) -> "int | None":
+        # By plex_key
+        plex_key = meta.get("plex_key")
+        if plex_key:
+            track = db.get_track_by_plex_key(plex_key)
+            if track and track.id is not None:
+                return track.id
+
+        # By file_path
+        file_path = meta.get("file_path")
+        if file_path:
+            track = db.get_track_by_file_path(file_path)
+            if track and track.id is not None:
+                return track.id
+
+        # By title + artist FTS
+        title = meta.get("title", "")
+        artist = meta.get("artist", "")
+        if title:
+            query = f"{title} {artist}" if artist else title
+            try:
+                results = db.search_tracks_fts(query)
+                if results:
+                    return results[0].id
+            except Exception:
+                pass
+
+        return None
+
     @rx.var(cache=True)
     def filtered_playlists(self) -> list[dict[str, str]]:
         if not self.search_query:
             return self.playlists
         q = self.search_query.lower()
         return [
-            p for p in self.playlists
-            if q in (p.get("name") or "").lower()
-            or q in (p.get("mood_query") or "").lower()
+            p
+            for p in self.playlists
+            if q in (p.get("name") or "").lower() or q in (p.get("mood_query") or "").lower()
         ]
 
     def set_search_query(self, query: str):
@@ -377,19 +695,14 @@ class HistoryState(AppState):
 
         if sort_by == "name":
             self.playlists.sort(
-                key=lambda p: p.get('name', '').lower(),
-                reverse=self.sort_descending
+                key=lambda p: p.get("name", "").lower(), reverse=self.sort_descending
             )
         elif sort_by == "track_count":
             self.playlists.sort(
-                key=lambda p: int(p.get('track_count', '0') or '0'),
-                reverse=self.sort_descending
+                key=lambda p: int(p.get("track_count", "0") or "0"), reverse=self.sort_descending
             )
         else:  # created_date (default)
-            self.playlists.sort(
-                key=lambda p: p.get('created_at', ''),
-                reverse=self.sort_descending
-            )
+            self.playlists.sort(key=lambda p: p.get("created_at", ""), reverse=self.sort_descending)
 
     def toggle_sort_order(self):
         self.sort_descending = not self.sort_descending
@@ -398,7 +711,7 @@ class HistoryState(AppState):
     def format_date(self, date_str: str) -> str:
         try:
             # Parse the datetime string
-            dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+            dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
             # Format it nicely
             return dt.strftime("%B %d, %Y at %I:%M %p")
         except (ValueError, TypeError, AttributeError):

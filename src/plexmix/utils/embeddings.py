@@ -1,9 +1,10 @@
-from typing import List, Optional, Union, Dict
+from typing import Any, List, Optional, Union, Dict
 import logging
 import time
 import re
 import os
 import multiprocessing as mp
+import multiprocessing.connection as mp_connection
 import threading
 import atexit
 from abc import ABC, abstractmethod
@@ -23,15 +24,17 @@ LOCAL_EMBEDDING_DEVICE = os.getenv("PLEXMIX_LOCAL_EMBEDDING_DEVICE", "cpu")
 
 
 class EmbeddingProvider(ABC):
-    def __init__(self):
+    def __init__(self) -> None:
         self.provider_name = self.__class__.__name__.replace("EmbeddingProvider", "")
-    
+
     @abstractmethod
     def generate_embedding(self, text: str) -> List[float]:
         pass
 
     @abstractmethod
-    def generate_batch_embeddings(self, texts: List[str]) -> List[List[float]]:
+    def generate_batch_embeddings(
+        self, texts: List[str], batch_size: int = 100
+    ) -> List[List[float]]:
         pass
 
     @abstractmethod
@@ -63,25 +66,37 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
                     model=self.model_name,
                     contents=text,
                 )
-                return list(result.embeddings[0].values)
+                if result.embeddings is None:
+                    raise RuntimeError("Gemini returned no embeddings")
+                return list(result.embeddings[0].values)  # type: ignore[arg-type]
             except Exception as e:
                 error_str = str(e)
 
-                if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                if (
+                    "429" in error_str
+                    or "quota" in error_str.lower()
+                    or "rate" in error_str.lower()
+                ):
                     if attempt < max_retries - 1:
                         retry_after = self._extract_retry_delay(error_str)
 
                         if retry_after:
                             delay = retry_after * backoff_multiplier
-                            logger.warning(f"[{self.provider_name}] Rate limit hit. Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
+                            logger.warning(
+                                f"[{self.provider_name}] Rate limit hit. Server suggested {retry_after}s, using {delay:.1f}s with backoff..."
+                            )
                         else:
-                            delay = base_delay * (2 ** attempt)
-                            logger.warning(f"[{self.provider_name}] Rate limit hit. Retrying in {delay}s...")
+                            delay = base_delay * (2**attempt)
+                            logger.warning(
+                                f"[{self.provider_name}] Rate limit hit. Retrying in {delay}s..."
+                            )
 
                         time.sleep(delay)
                         continue
                     else:
-                        logger.error(f"[{self.provider_name}] Rate limit exceeded after {max_retries} attempts: {e}")
+                        logger.error(
+                            f"[{self.provider_name}] Rate limit exceeded after {max_retries} attempts: {e}"
+                        )
                         raise
                 else:
                     logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
@@ -90,17 +105,19 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         raise Exception("Max retries exceeded")
 
     def _extract_retry_delay(self, error_message: str) -> Optional[float]:
-        retry_match = re.search(r'retry_delay\s*\{\s*seconds:\s*(\d+)', error_message)
+        retry_match = re.search(r"retry_delay\s*\{\s*seconds:\s*(\d+)", error_message)
         if retry_match:
             return float(retry_match.group(1))
 
-        retry_after_match = re.search(r'Retry-After:\s*(\d+)', error_message, re.IGNORECASE)
+        retry_after_match = re.search(r"Retry-After:\s*(\d+)", error_message, re.IGNORECASE)
         if retry_after_match:
             return float(retry_after_match.group(1))
 
         return None
 
-    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+    def generate_batch_embeddings(
+        self, texts: List[str], batch_size: int = 100
+    ) -> List[List[float]]:
         embeddings = []
         total_batches = (len(texts) + batch_size - 1) // batch_size
         max_retries = 5
@@ -108,43 +125,61 @@ class GeminiEmbeddingProvider(EmbeddingProvider):
         backoff_multiplier = 1.5
 
         for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+            batch = texts[i : i + batch_size]
             batch_num = i // batch_size + 1
 
             for attempt in range(max_retries):
                 try:
-                    logger.debug(f"[{self.provider_name}] Generating embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
+                    logger.debug(
+                        f"[{self.provider_name}] Generating embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)"
+                    )
 
                     result = self.client.models.embed_content(
                         model=self.model_name,
-                        contents=batch,
+                        contents=batch,  # type: ignore[arg-type]
                     )
-                    batch_embeddings = [list(emb.values) for emb in result.embeddings]
+                    if result.embeddings is None:
+                        raise RuntimeError("Gemini returned no embeddings for batch")
+                    batch_embeddings = [list(emb.values) for emb in result.embeddings]  # type: ignore[arg-type]
                     embeddings.extend(batch_embeddings)
 
-                    logger.debug(f"[{self.provider_name}] Completed batch {batch_num}/{total_batches}")
+                    logger.debug(
+                        f"[{self.provider_name}] Completed batch {batch_num}/{total_batches}"
+                    )
                     break
                 except Exception as e:
                     error_str = str(e)
 
-                    if "429" in error_str or "quota" in error_str.lower() or "rate" in error_str.lower():
+                    if (
+                        "429" in error_str
+                        or "quota" in error_str.lower()
+                        or "rate" in error_str.lower()
+                    ):
                         if attempt < max_retries - 1:
                             retry_after = self._extract_retry_delay(error_str)
 
                             if retry_after:
                                 delay = retry_after * backoff_multiplier
-                                logger.warning(f"[{self.provider_name}] Rate limit hit on batch {batch_num}. Server suggested {retry_after}s, using {delay:.1f}s with backoff...")
+                                logger.warning(
+                                    f"[{self.provider_name}] Rate limit hit on batch {batch_num}. Server suggested {retry_after}s, using {delay:.1f}s with backoff..."
+                                )
                             else:
-                                delay = base_delay * (2 ** attempt)
-                                logger.warning(f"[{self.provider_name}] Rate limit hit on batch {batch_num} (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s...")
+                                delay = base_delay * (2**attempt)
+                                logger.warning(
+                                    f"[{self.provider_name}] Rate limit hit on batch {batch_num} (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s..."
+                                )
 
                             time.sleep(delay)
                             continue
                         else:
-                            logger.error(f"[{self.provider_name}] Rate limit exceeded for batch {batch_num} after {max_retries} attempts: {e}")
+                            logger.error(
+                                f"[{self.provider_name}] Rate limit exceeded for batch {batch_num} after {max_retries} attempts: {e}"
+                            )
                             raise
                     else:
-                        logger.error(f"[{self.provider_name}] Failed to generate batch embeddings (batch {batch_num}): {e}")
+                        logger.error(
+                            f"[{self.provider_name}] Failed to generate batch embeddings (batch {batch_num}): {e}"
+                        )
                         raise
 
         return embeddings
@@ -158,6 +193,7 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
         super().__init__()
         try:
             from openai import OpenAI
+
             self.client = OpenAI(api_key=api_key)
             self.model_name = model
             self.dimension = 1536
@@ -167,27 +203,25 @@ class OpenAIEmbeddingProvider(EmbeddingProvider):
 
     def generate_embedding(self, text: str) -> List[float]:
         try:
-            response = self.client.embeddings.create(
-                model=self.model_name,
-                input=text
-            )
+            response = self.client.embeddings.create(model=self.model_name, input=text)
             return response.data[0].embedding
         except Exception as e:
             logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
             raise
 
-    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+    def generate_batch_embeddings(
+        self, texts: List[str], batch_size: int = 100
+    ) -> List[List[float]]:
         embeddings = []
         for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+            batch = texts[i : i + batch_size]
             try:
-                response = self.client.embeddings.create(
-                    model=self.model_name,
-                    input=batch
-                )
+                response = self.client.embeddings.create(model=self.model_name, input=batch)
                 batch_embeddings = [item.embedding for item in response.data]
                 embeddings.extend(batch_embeddings)
-                logger.debug(f"[{self.provider_name}] Generated {len(batch)} embeddings (batch {i//batch_size + 1})")
+                logger.debug(
+                    f"[{self.provider_name}] Generated {len(batch)} embeddings (batch {i//batch_size + 1})"
+                )
             except Exception as e:
                 logger.error(f"[{self.provider_name}] Failed to generate batch embeddings: {e}")
                 raise
@@ -203,16 +237,19 @@ class CohereEmbeddingProvider(EmbeddingProvider):
         super().__init__()
         try:
             import cohere
+
             self.client = cohere.ClientV2(api_key=api_key)
             self.model_name = model
             self.dimension = output_dimension
-            logger.info(f"[{self.provider_name}] Initialized embedding provider with model {model} (dim: {output_dimension})")
+            logger.info(
+                f"[{self.provider_name}] Initialized embedding provider with model {model} (dim: {output_dimension})"
+            )
         except ImportError:
             raise ImportError("cohere not installed. Run: pip install cohere")
 
-    def _embed_kwargs(self, texts: List[str]) -> dict:
+    def _embed_kwargs(self, texts: List[str]) -> Dict[str, Any]:
         """Build kwargs for client.embed(), adding output_dimension only for v4+ models."""
-        kwargs = {
+        kwargs: Dict[str, Any] = {
             "model": self.model_name,
             "texts": texts,
             "input_type": "search_document",
@@ -225,26 +262,36 @@ class CohereEmbeddingProvider(EmbeddingProvider):
     def generate_embedding(self, text: str) -> List[float]:
         try:
             response = self.client.embed(**self._embed_kwargs([text]))
+            if response.embeddings.float_ is None:
+                raise RuntimeError("Cohere returned no float embeddings")
             return response.embeddings.float_[0]
         except Exception as e:
             logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
             raise
 
-    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 96) -> List[List[float]]:
-        embeddings = []
+    def generate_batch_embeddings(
+        self, texts: List[str], batch_size: int = 96
+    ) -> List[List[float]]:
+        embeddings: List[List[float]] = []
         total_batches = (len(texts) + batch_size - 1) // batch_size
 
         for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+            batch = texts[i : i + batch_size]
             batch_num = i // batch_size + 1
 
             try:
-                logger.debug(f"[{self.provider_name}] Generating embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)")
+                logger.debug(
+                    f"[{self.provider_name}] Generating embeddings batch {batch_num}/{total_batches} ({len(batch)} texts)"
+                )
                 response = self.client.embed(**self._embed_kwargs(batch))
+                if response.embeddings.float_ is None:
+                    raise RuntimeError("Cohere returned no float embeddings for batch")
                 embeddings.extend(response.embeddings.float_)
                 logger.debug(f"[{self.provider_name}] Completed batch {batch_num}/{total_batches}")
             except Exception as e:
-                logger.error(f"[{self.provider_name}] Failed to generate batch embeddings (batch {batch_num}): {e}")
+                logger.error(
+                    f"[{self.provider_name}] Failed to generate batch embeddings (batch {batch_num}): {e}"
+                )
                 raise
 
         return embeddings
@@ -254,14 +301,16 @@ class CohereEmbeddingProvider(EmbeddingProvider):
 
 
 class LocalEmbeddingProvider(EmbeddingProvider):
-    worker_cache: Dict[str, Dict[str, any]] = {}
+    worker_cache: Dict[str, Dict[str, Any]] = {}
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         super().__init__()
         try:
-            from sentence_transformers import SentenceTransformer  # noqa: F401
+            from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]  # noqa: F401
         except ImportError:
-            raise ImportError("sentence-transformers not installed. Run: pip install sentence-transformers")
+            raise ImportError(
+                "sentence-transformers not installed. Run: pip install sentence-transformers"
+            )
 
         model_config = LOCAL_EMBEDDING_MODELS.get(model_name, {})
         trust_remote_code = bool(model_config.get("trust_remote_code", False))
@@ -269,15 +318,19 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         cache_key = f"{model_name}-{trust_remote_code}-{device}"
 
         cached = self.worker_cache.get(cache_key)
-        if cached and cached["process"].is_alive():
-            logger.info(f"[{self.provider_name}] Reusing cached local worker for {model_name} on {device}")
-            self.worker_conn = cached["conn"]
-            self.worker_process = cached["process"]
-            self.dimension = cached["dimension"]
-            self.worker_lock = cached["lock"]
+        if cached and cached["process"].is_alive():  # type: ignore[union-attr]
+            logger.info(
+                f"[{self.provider_name}] Reusing cached local worker for {model_name} on {device}"
+            )
+            self.worker_conn: mp_connection.Connection = cached["conn"]
+            self.worker_process: mp.process.BaseProcess = cached["process"]
+            self.dimension: int = cached["dimension"]
+            self.worker_lock: threading.Lock = cached["lock"]
         else:
             if cached:
-                logger.warning(f"[{self.provider_name}] Cached worker for {model_name} is not alive. Restarting...")
+                logger.warning(
+                    f"[{self.provider_name}] Cached worker for {model_name} is not alive. Restarting..."
+                )
 
             ctx = mp.get_context("spawn")
             parent_conn, child_conn = ctx.Pipe()
@@ -302,7 +355,9 @@ class LocalEmbeddingProvider(EmbeddingProvider):
 
             self.worker_conn = parent_conn
             self.worker_process = worker
-            self.dimension = int(handshake.get("dimension", 0)) or int(model_config.get("dimension", 384))
+            self.dimension = int(handshake.get("dimension", 0)) or int(
+                model_config.get("dimension", 384)
+            )
             self.worker_lock = threading.Lock()
             self.worker_cache[cache_key] = {
                 "conn": self.worker_conn,
@@ -326,21 +381,25 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             if result.get("status") != "ok":
                 raise RuntimeError(result.get("error", "Unknown error generating embedding"))
             embedding = np.array(result["embeddings"][0], dtype=np.float32)
-            return self._truncate_vector(embedding).tolist()
+            truncated: List[float] = self._truncate_vector(embedding).tolist()
+            return truncated
         except Exception as e:
             logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
             raise
 
-    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 32) -> List[List[float]]:
+    def generate_batch_embeddings(
+        self, texts: List[str], batch_size: int = 32
+    ) -> List[List[float]]:
         try:
             with self.worker_lock:
                 self.worker_conn.send({"cmd": "embed", "texts": texts, "batch_size": batch_size})
                 result = self.worker_conn.recv()
             if result.get("status") != "ok":
                 raise RuntimeError(result.get("error", "Unknown error generating batch embeddings"))
-            embeddings = np.array(result["embeddings"], dtype=np.float32)
-            embeddings = self._truncate_batch(embeddings)
-            return embeddings.tolist()
+            np_embeddings = np.array(result["embeddings"], dtype=np.float32)
+            np_embeddings = self._truncate_batch(np_embeddings)
+            result_list: List[List[float]] = np_embeddings.tolist()
+            return result_list
         except Exception as e:
             logger.error(f"[{self.provider_name}] Failed to generate batch embeddings: {e}")
             raise
@@ -358,24 +417,27 @@ class LocalEmbeddingProvider(EmbeddingProvider):
             return embeddings[:, : self.dimension]
         return embeddings
 
-    def _shutdown_worker(self, cache_key: str):
+    def _shutdown_worker(self, cache_key: str) -> None:
         worker_info = self.worker_cache.get(cache_key)
         if not worker_info:
             return
-        conn = worker_info.get("conn")
-        process = worker_info.get("process")
+        conn: Optional[mp_connection.Connection] = worker_info.get("conn")
+        process: Optional[mp.process.BaseProcess] = worker_info.get("process")  # type: ignore[assignment]
         try:
-            conn.send({"cmd": "shutdown"})
+            if conn is not None:
+                conn.send({"cmd": "shutdown"})
         except Exception:
             pass
-        if process.is_alive():
+        if process is not None and process.is_alive():
             process.join(timeout=2)
         self.worker_cache.pop(cache_key, None)
 
 
-def _local_embedding_worker(model_name: str, trust_remote_code: bool, device: str, conn):
+def _local_embedding_worker(
+    model_name: str, trust_remote_code: bool, device: str, conn: mp_connection.Connection
+) -> None:
     try:
-        from sentence_transformers import SentenceTransformer
+        from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
 
         model = SentenceTransformer(model_name, trust_remote_code=trust_remote_code, device=device)
         dimension = model.get_sentence_embedding_dimension()
@@ -420,6 +482,7 @@ class CustomEmbeddingProvider(EmbeddingProvider):
         self.provider_name = "Custom"
         try:
             from openai import OpenAI
+
             self.client = OpenAI(base_url=base_url, api_key=api_key or "no-key-required")
             self.model_name = model
             self.dimension = dimension
@@ -441,10 +504,12 @@ class CustomEmbeddingProvider(EmbeddingProvider):
             logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
             raise
 
-    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+    def generate_batch_embeddings(
+        self, texts: List[str], batch_size: int = 100
+    ) -> List[List[float]]:
         embeddings = []
         for i in range(0, len(texts), batch_size):
-            batch = texts[i:i + batch_size]
+            batch = texts[i : i + batch_size]
             try:
                 response = self.client.embeddings.create(
                     model=self.model_name,
@@ -477,6 +542,7 @@ class EmbeddingGenerator:
     ):
         self.provider_name = provider.lower()
 
+        self.provider: EmbeddingProvider
         if self.provider_name == "gemini":
             if not api_key:
                 raise ValueError("API key required for Gemini provider")
@@ -512,22 +578,38 @@ class EmbeddingGenerator:
     def generate_embedding(self, text: str) -> List[float]:
         return self.provider.generate_embedding(text)
 
-    def generate_batch_embeddings(self, texts: List[str], batch_size: int = 100) -> List[List[float]]:
+    def generate_batch_embeddings(
+        self, texts: List[str], batch_size: int = 100
+    ) -> List[List[float]]:
         return self.provider.generate_batch_embeddings(texts, batch_size)
 
     def get_dimension(self) -> int:
         return self.provider.get_dimension()
 
+    def verify_dimension(self) -> tuple[bool, int]:
+        """Generate a test embedding and verify the actual dimension matches.
+
+        Returns ``(matches, actual_dimension)``.
+        """
+        try:
+            test_vector = self.generate_embedding("test")
+            actual = len(test_vector)
+            expected = self.get_dimension()
+            return actual == expected, actual
+        except Exception as e:
+            logger.warning("Dimension verification failed: %s", e)
+            return True, self.get_dimension()  # Assume correct if API unreachable
+
 
 def create_track_text(track_data: dict, audio_features: Optional[dict] = None) -> str:
-    title = track_data.get('title', 'Unknown')
-    artist = track_data.get('artist', 'Unknown Artist')
-    album = track_data.get('album', 'Unknown Album')
-    genres = track_data.get('genre', '')
-    year = track_data.get('year', '')
-    tags = track_data.get('tags', '')
-    environments = track_data.get('environments', '')
-    instruments = track_data.get('instruments', '')
+    title = track_data.get("title", "Unknown")
+    artist = track_data.get("artist", "Unknown Artist")
+    album = track_data.get("album", "Unknown Album")
+    genres = track_data.get("genre", "")
+    year = track_data.get("year", "")
+    tags = track_data.get("tags", "")
+    environments = track_data.get("environments", "")
+    instruments = track_data.get("instruments", "")
 
     text = f"{title} by {artist} from {album}"
     if genres:
@@ -543,16 +625,16 @@ def create_track_text(track_data: dict, audio_features: Optional[dict] = None) -
 
     if audio_features:
         audio_parts: List[str] = []
-        if audio_features.get('tempo'):
-            bpm = audio_features['tempo']
+        if audio_features.get("tempo"):
+            bpm = audio_features["tempo"]
             pace = "slow" if bpm < 90 else "medium" if bpm < 130 else "fast"
             audio_parts.append(f"{int(bpm)} bpm ({pace})")
-        if audio_features.get('key') and audio_features.get('scale'):
+        if audio_features.get("key") and audio_features.get("scale"):
             audio_parts.append(f"{audio_features['key']} {audio_features['scale']}")
-        if audio_features.get('energy_level'):
+        if audio_features.get("energy_level"):
             audio_parts.append(f"{audio_features['energy_level']} energy")
-        if audio_features.get('danceability') is not None:
-            d = audio_features['danceability']
+        if audio_features.get("danceability") is not None:
+            d = audio_features["danceability"]
             label = "very danceable" if d > 0.7 else "danceable" if d > 0.4 else "not danceable"
             audio_parts.append(label)
         if audio_parts:
@@ -580,6 +662,8 @@ def embed_all_tracks(
     for track in tracks:
         af = None
         if audio_features_map:
-            af = audio_features_map.get(track.get('id'))
+            track_id = track.get("id")
+            if track_id is not None:
+                af = audio_features_map.get(int(track_id))
         texts.append(create_track_text(track, af))
     return generator.generate_batch_embeddings(texts, batch_size)

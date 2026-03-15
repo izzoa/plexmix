@@ -1,4 +1,4 @@
-import faiss
+import faiss  # type: ignore[import-untyped]
 import numpy as np
 import pickle
 from pathlib import Path
@@ -12,7 +12,7 @@ class VectorIndex:
     def __init__(self, dimension: int, index_path: Optional[str] = None):
         self.dimension = dimension
         self.index_path = Path(index_path).expanduser() if index_path else None
-        self.index: Optional[faiss.IndexFlatIP] = None
+        self.index: Optional[faiss.IndexIDMap] = None
         self.track_ids: List[int] = []
         self.dimension_mismatch: bool = False
         self.loaded_dimension: Optional[int] = None
@@ -25,13 +25,14 @@ class VectorIndex:
             self.loaded_dimension = None
 
     def _create_index(self) -> None:
-        self.index = faiss.IndexFlatIP(self.dimension)
-        logger.info(f"Created new FAISS index with dimension {self.dimension}")
+        self.index = faiss.IndexIDMap(faiss.IndexFlatIP(self.dimension))
+        logger.info(f"Created new FAISS IndexIDMap with dimension {self.dimension}")
 
     def _normalize_vectors(self, vectors: np.ndarray) -> np.ndarray:
         norms = np.linalg.norm(vectors, axis=1, keepdims=True)
         norms[norms == 0] = 1
-        return vectors / norms
+        result: np.ndarray = vectors / norms
+        return result
 
     def build_index(self, embeddings: List[List[float]], track_ids: List[int]) -> None:
         if len(embeddings) != len(track_ids):
@@ -42,7 +43,7 @@ class VectorIndex:
             return
 
         self._create_index()
-        self.track_ids = track_ids
+        self.track_ids = list(track_ids)
 
         vectors = np.array(embeddings, dtype=np.float32)
 
@@ -52,9 +53,10 @@ class VectorIndex:
             )
 
         vectors_normalized = self._normalize_vectors(vectors)
+        ids = np.array(track_ids, dtype=np.int64)
 
         if self.index is not None:
-            self.index.add(vectors_normalized)
+            self.index.add_with_ids(vectors_normalized, ids)
             logger.info(f"Built FAISS index with {len(track_ids)} vectors")
 
     def add_vectors(self, embeddings: List[List[float]], track_ids: List[int]) -> None:
@@ -72,14 +74,36 @@ class VectorIndex:
             )
 
         vectors_normalized = self._normalize_vectors(vectors)
+        ids = np.array(track_ids, dtype=np.int64)
 
         if self.index is None:
             self._create_index()
 
         if self.index is not None:
-            self.index.add(vectors_normalized)
+            self.index.add_with_ids(vectors_normalized, ids)
             self.track_ids.extend(track_ids)
             logger.info(f"Added {len(track_ids)} vectors to index")
+
+    def update_vectors(self, embeddings: List[List[float]], track_ids: List[int]) -> None:
+        """Remove old vectors for *track_ids* and insert replacements.
+
+        This avoids a full index rebuild when only a subset of embeddings change.
+        """
+        if not embeddings or not track_ids:
+            return
+        self.remove_vectors(track_ids)
+        self.add_vectors(embeddings, track_ids)
+        logger.info(f"Updated {len(track_ids)} vectors in index")
+
+    def remove_vectors(self, track_ids: List[int]) -> None:
+        """Remove vectors for the given track IDs from the index."""
+        if not track_ids or self.index is None:
+            return
+        ids = np.array(track_ids, dtype=np.int64)
+        n_removed = self.index.remove_ids(ids)
+        removed_set = set(track_ids)
+        self.track_ids = [tid for tid in self.track_ids if tid not in removed_set]
+        logger.info(f"Removed {n_removed} vectors from index")
 
     def search(
         self, query_vector: List[float], k: int = 25, track_id_filter: Optional[List[int]] = None
@@ -101,21 +125,26 @@ class VectorIndex:
 
         filter_set = None
         if track_id_filter is not None:
-            filter_set = set(track_id_filter) if not isinstance(track_id_filter, set) else track_id_filter
+            filter_set = (
+                set(track_id_filter) if not isinstance(track_id_filter, set) else track_id_filter
+            )
             if not filter_set:
                 return []
             k_search = min(k_search * 3, self.index.ntotal)
 
         distances, indices = self.index.search(query_normalized, k_search)
 
+        # With IndexIDMap, indices already contain track IDs (not positions).
+        # A value of -1 means "no result at that rank".
         results = []
-        for idx, distance in zip(indices[0], distances[0]):
-            if idx < len(self.track_ids):
-                track_id = self.track_ids[idx]
-                if filter_set is None or track_id in filter_set:
-                    results.append((track_id, float(distance)))
-                    if len(results) >= k:
-                        break
+        for track_id_raw, distance in zip(indices[0], distances[0]):
+            track_id = int(track_id_raw)
+            if track_id < 0:
+                continue
+            if filter_set is None or track_id in filter_set:
+                results.append((track_id, float(distance)))
+                if len(results) >= k:
+                    break
 
         logger.debug(f"Found {len(results)} results for search")
         return results
@@ -130,12 +159,9 @@ class VectorIndex:
 
         faiss.write_index(self.index, str(save_path))
 
-        metadata_path = save_path.with_suffix('.metadata')
-        with open(metadata_path, 'wb') as f:
-            pickle.dump({
-                'track_ids': self.track_ids,
-                'dimension': self.dimension
-            }, f)
+        metadata_path = save_path.with_suffix(".metadata")
+        with open(metadata_path, "wb") as f:
+            pickle.dump({"track_ids": self.track_ids, "dimension": self.dimension}, f)
 
         logger.info(f"Saved FAISS index to {save_path}")
 
@@ -148,14 +174,14 @@ class VectorIndex:
             return
 
         try:
-            self.index = faiss.read_index(str(load_path))
+            raw_index = faiss.read_index(str(load_path))
 
-            metadata_path = load_path.with_suffix('.metadata')
+            metadata_path = load_path.with_suffix(".metadata")
             if metadata_path.exists():
-                with open(metadata_path, 'rb') as f:
+                with open(metadata_path, "rb") as f:
                     metadata = pickle.load(f)
-                    self.track_ids = metadata.get('track_ids', [])
-                    loaded_dimension = metadata.get('dimension', self.dimension)
+                    self.track_ids = metadata.get("track_ids", [])
+                    loaded_dimension = metadata.get("dimension", self.dimension)
 
                     if loaded_dimension != self.dimension:
                         logger.warning(
@@ -169,6 +195,21 @@ class VectorIndex:
                         self.dimension_mismatch = False
                         self.loaded_dimension = None
 
+            # Migrate legacy IndexFlatIP → IndexIDMap(IndexFlatIP)
+            if isinstance(raw_index, faiss.IndexFlatIP):
+                logger.info("Migrating legacy IndexFlatIP to IndexIDMap")
+                self._create_index()
+                n = raw_index.ntotal
+                if n > 0 and self.track_ids:
+                    vectors = faiss.rev_swig_ptr(raw_index.get_xb(), n * raw_index.d)
+                    vectors = np.reshape(vectors, (n, raw_index.d)).copy()
+                    ids = np.array(self.track_ids[:n], dtype=np.int64)
+                    self.index.add_with_ids(vectors, ids)  # type: ignore[union-attr]
+                    self.track_ids = self.track_ids[:n]
+                logger.info(f"Migrated {n} vectors to IndexIDMap")
+            else:
+                self.index = raw_index
+
             logger.info(f"Loaded FAISS index from {load_path} with {len(self.track_ids)} vectors")
         except Exception as e:
             logger.error(f"Failed to load corrupted index file: {e}")
@@ -177,7 +218,7 @@ class VectorIndex:
             if load_path.exists():
                 load_path.unlink()
 
-            metadata_path = load_path.with_suffix('.metadata')
+            metadata_path = load_path.with_suffix(".metadata")
             if metadata_path.exists():
                 metadata_path.unlink()
 

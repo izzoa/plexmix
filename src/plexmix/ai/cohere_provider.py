@@ -12,6 +12,7 @@ class CohereProvider(AIProvider):
         super().__init__(api_key, model, temperature)
         try:
             import cohere
+
             self.client = cohere.ClientV2(api_key=api_key)
             logger.info(f"Initialized Cohere provider with model {model}")
         except ImportError:
@@ -22,7 +23,7 @@ class CohereProvider(AIProvider):
         prompt: str,
         temperature: Optional[float] = None,
         max_tokens: int = 4096,
-        timeout: int = 30
+        timeout: int = 30,
     ) -> str:
         """Send a prompt to Cohere and return the text response."""
         temp = temperature if temperature is not None else self.temperature
@@ -35,27 +36,31 @@ class CohereProvider(AIProvider):
             try:
                 response = self.client.chat(
                     model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": prompt}],  # type: ignore[list-item]
                     temperature=temp,
                     max_tokens=max_tokens,
-                    request_options={"timeout_in_seconds": timeout}
+                    request_options={"timeout_in_seconds": timeout},
                 )
 
                 if not response.message or not response.message.content:
                     raise ValueError("Empty response from Cohere")
 
-                return response.message.content[0].text
+                first_item = response.message.content[0]
+                if not hasattr(first_item, "text"):
+                    raise ValueError("Unexpected response content type from Cohere")
+                return first_item.text
 
             except Exception as e:
                 error_str = str(e).lower()
                 is_retryable = any(x in error_str for x in ["timeout", "429", "rate", "too many"])
 
                 if is_retryable and attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
-                    logger.warning(f"[Cohere] Retryable error on attempt {attempt + 1}: {e}. Retrying in {delay}s...")
+                    delay = base_delay * (2**attempt)
+                    logger.warning(
+                        f"[Cohere] Retryable error on attempt {attempt + 1}: {e}. Retrying in {delay}s..."
+                    )
                     time.sleep(delay)
                     continue
                 raise
 
         raise RuntimeError("Failed to get response from Cohere after retries")
-

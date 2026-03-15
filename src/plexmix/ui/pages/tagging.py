@@ -3,6 +3,7 @@ from plexmix.ui.components.navbar import layout
 from plexmix.ui.components.track_table import tag_badges
 from plexmix.ui.components.error import empty_state
 from plexmix.ui.states.tagging_state import TaggingState
+from plexmix.ui.utils.form_utils import form_field, year_range_field
 
 
 # ── Filter accordion (expandable) ────────────────────────────────────
@@ -14,117 +15,111 @@ def _filter_section() -> rx.Component:
         rx.accordion.item(
             header="Or filter tracks",
             content=rx.vstack(
-                    # Row 1: genre + artist
-                    rx.grid(
-                        rx.vstack(
-                            rx.text("Genre", size="2", weight="medium", color="gray.11"),
-                            rx.input(
-                                placeholder="e.g., rock, jazz",
-                                value=TaggingState.genre_filter,
-                                on_change=TaggingState.set_genre_filter,
-                                width="100%",
-                            ),
-                            spacing="1",
-                            width="100%",
-                        ),
-                        rx.vstack(
-                            rx.text("Artist", size="2", weight="medium", color="gray.11"),
-                            rx.input(
-                                placeholder="Filter by artist",
-                                value=TaggingState.artist_filter,
-                                on_change=TaggingState.set_artist_filter,
-                                width="100%",
-                            ),
-                            spacing="1",
-                            width="100%",
-                        ),
-                        columns=rx.breakpoints(initial="1", sm="2"),
-                        spacing="4",
+                # Row 1: genre + artist
+                rx.grid(
+                    form_field("Genre", rx.input(
+                        placeholder="e.g., rock, jazz",
+                        value=TaggingState.genre_filter,
+                        on_change=TaggingState.set_genre_filter,
                         width="100%",
-                    ),
-                    # Row 2: year range + untagged switch
-                    rx.grid(
-                        rx.vstack(
-                            rx.text("Year Range", size="2", weight="medium", color="gray.11"),
-                            rx.hstack(
-                                rx.input(
-                                    placeholder="Min",
-                                    type="number",
-                                    value=TaggingState.year_min,
-                                    on_change=TaggingState.set_year_min,
-                                    width="100%",
-                                ),
-                                rx.text("-", size="3", color="gray.9"),
-                                rx.input(
-                                    placeholder="Max",
-                                    type="number",
-                                    value=TaggingState.year_max,
-                                    on_change=TaggingState.set_year_max,
-                                    width="100%",
-                                ),
-                                spacing="2",
-                                align="center",
-                                width="100%",
-                            ),
-                            spacing="1",
-                            width="100%",
-                        ),
-                        rx.vstack(
-                            rx.text("Options", size="2", weight="medium", color="gray.11"),
-                            rx.hstack(
-                                rx.checkbox(
-                                    checked=TaggingState.has_no_tags,
-                                    on_change=TaggingState.toggle_has_no_tags,
-                                ),
-                                rx.text("Untagged only", size="2"),
-                                spacing="2",
-                                align="center",
-                                padding_top="4px",
-                            ),
-                            spacing="1",
-                            width="100%",
-                        ),
-                        columns=rx.breakpoints(initial="1", sm="2"),
-                        spacing="4",
+                    )),
+                    form_field("Artist", rx.input(
+                        placeholder="Filter by artist",
+                        value=TaggingState.artist_filter,
+                        on_change=TaggingState.set_artist_filter,
                         width="100%",
-                    ),
-                    # Preview + Start
-                    rx.hstack(
-                        rx.button(
-                            "Preview Selection",
-                            on_click=TaggingState.preview_selection,
-                            variant="soft",
-                            size="2",
-                        ),
-                        rx.cond(
-                            TaggingState.preview_count > 0,
-                            rx.badge(
-                                f"{TaggingState.preview_count} tracks match",
-                                color_scheme="green",
-                                variant="soft",
-                                size="2",
-                            ),
-                            rx.fragment(),
-                        ),
-                        spacing="3",
-                        align="center",
-                    ),
-                    rx.cond(
-                        TaggingState.preview_count > 0,
-                        rx.button(
-                            "Start Tagging",
-                            on_click=TaggingState.start_tagging,
-                            disabled=TaggingState.is_tagging,
-                            loading=TaggingState.is_tagging,
-                            color_scheme="blue",
-                            size="3",
-                            width="100%",
-                        ),
-                        rx.fragment(),
-                    ),
+                    )),
+                    columns=rx.breakpoints(initial="1", sm="2"),
                     spacing="4",
                     width="100%",
                 ),
+                # Row 2: year range + untagged switch
+                rx.grid(
+                    year_range_field(
+                        "Year Range",
+                        min_value=TaggingState.year_min,
+                        on_min_change=TaggingState.set_year_min,
+                        max_value=TaggingState.year_max,
+                        on_max_change=TaggingState.set_year_max,
+                    ),
+                    rx.vstack(
+                        rx.text("Options", size="2", weight="medium", color="gray.11"),
+                        rx.hstack(
+                            rx.checkbox(
+                                checked=TaggingState.has_no_tags,
+                                on_change=TaggingState.toggle_has_no_tags,
+                            ),
+                            rx.text("Untagged only", size="2"),
+                            spacing="2",
+                            align="center",
+                        ),
+                        rx.hstack(
+                            rx.text("Retag stale", size="2"),
+                            rx.input(
+                                placeholder="days",
+                                type="number",
+                                value=TaggingState.stale_days,
+                                on_change=TaggingState.set_stale_days,
+                                width="70px",
+                                size="1",
+                            ),
+                            rx.cond(
+                                TaggingState.stale_track_count > 0,
+                                rx.badge(
+                                    TaggingState.stale_track_count.to(str) + " stale",
+                                    color_scheme="amber",
+                                    variant="soft",
+                                    size="1",
+                                ),
+                                rx.fragment(),
+                            ),
+                            spacing="2",
+                            align="center",
+                        ),
+                        spacing="2",
+                        width="100%",
+                    ),
+                    columns=rx.breakpoints(initial="1", sm="2"),
+                    spacing="4",
+                    width="100%",
+                ),
+                # Preview + Start
+                rx.hstack(
+                    rx.button(
+                        "Preview Selection",
+                        on_click=TaggingState.preview_selection,
+                        variant="soft",
+                        size="2",
+                    ),
+                    rx.cond(
+                        TaggingState.preview_count > 0,
+                        rx.badge(
+                            f"{TaggingState.preview_count} tracks match",
+                            color_scheme="green",
+                            variant="soft",
+                            size="2",
+                        ),
+                        rx.fragment(),
+                    ),
+                    spacing="3",
+                    align="center",
+                ),
+                rx.cond(
+                    TaggingState.preview_count > 0,
+                    rx.button(
+                        "Start Tagging",
+                        on_click=TaggingState.start_tagging,
+                        disabled=TaggingState.is_tagging,
+                        loading=TaggingState.is_tagging,
+                        color_scheme="blue",
+                        size="3",
+                        width="100%",
+                    ),
+                    rx.fragment(),
+                ),
+                spacing="4",
+                width="100%",
+            ),
             value="filters",
         ),
         width="100%",
@@ -473,4 +468,32 @@ def tagging() -> rx.Component:
         width="100%",
     )
 
-    return layout(rx.fragment(content, tag_all_confirm_dialog()))
+    return layout(rx.fragment(content, tag_all_confirm_dialog(), _task_polling_trigger()))
+
+
+def _task_polling_trigger() -> rx.Component:
+    """Hidden button + JS interval for client-initiated TaskStore polling."""
+    return rx.fragment(
+        rx.el.button(
+            id="plexmix-poll-tag",
+            on_click=TaggingState.poll_task_progress,
+            display="none",
+        ),
+        rx.cond(
+            TaggingState.is_tagging,
+            rx.script(
+                "if (!window._pm_poll_tag) {"
+                "  window._pm_poll_tag = setInterval(function() {"
+                "    var b = document.getElementById('plexmix-poll-tag');"
+                "    if (b) b.click();"
+                "  }, 1500);"
+                "}"
+            ),
+            rx.script(
+                "if (window._pm_poll_tag) {"
+                "  clearInterval(window._pm_poll_tag);"
+                "  window._pm_poll_tag = null;"
+                "}"
+            ),
+        ),
+    )

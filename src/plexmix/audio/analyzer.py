@@ -36,8 +36,7 @@ class EssentiaAnalyzer:
             self.es = es
         except ImportError:
             raise ImportError(
-                "essentia not installed. Run: pip install essentia "
-                "or: poetry install -E audio"
+                "essentia not installed. Run: pip install essentia " "or: poetry install -E audio"
             )
 
     def analyze(self, file_path: str, duration_limit: int = 0) -> AudioFeatures:

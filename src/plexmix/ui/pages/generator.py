@@ -1,11 +1,11 @@
 import reflex as rx
 from plexmix.ui.components.navbar import layout
-from plexmix.ui.components.progress_modal import progress_modal
 from plexmix.ui.components.error import empty_state as shared_empty_state
 from plexmix.ui.states.generator_state import GeneratorState
 
 
 # ── Example mood pills ────────────────────────────────────────────────
+
 
 def _example_pills() -> rx.Component:
     """Clickable pill badges showing example mood queries."""
@@ -33,7 +33,144 @@ def _example_pills() -> rx.Component:
     )
 
 
+# ── Template gallery ──────────────────────────────────────────────────
+
+
+def _template_card(template: dict) -> rx.Component:
+    """A single template card in the gallery."""
+    return rx.box(
+        rx.vstack(
+            rx.hstack(
+                rx.cond(
+                    template["is_preset"] == "1",
+                    rx.icon("bookmark", size=14, color="orange.9"),
+                    rx.icon("file-text", size=14, color="gray.9"),
+                ),
+                rx.text(template["name"], size="2", weight="bold", no_of_lines=1),
+                rx.spacer(),
+                rx.cond(
+                    template["is_preset"] != "1",
+                    rx.icon_button(
+                        rx.icon("x", size=12),
+                        on_click=lambda t=template: GeneratorState.delete_template(t["id"]),
+                        variant="ghost",
+                        color_scheme="red",
+                        size="1",
+                    ),
+                    rx.fragment(),
+                ),
+                align="center",
+                width="100%",
+                spacing="2",
+            ),
+            rx.text(
+                template["mood_query"],
+                size="1",
+                color="gray.9",
+                no_of_lines=2,
+                style={"fontStyle": "italic"},
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        on_click=lambda t=template: GeneratorState.apply_template(t["id"]),
+        cursor="pointer",
+        padding="12px",
+        border_radius="var(--radius-lg)",
+        background_color="gray.2",
+        border="1px solid var(--gray-4)",
+        width="200px",
+        min_height="80px",
+        _hover={"background_color": "accent.3", "border_color": "accent.7"},
+        style={"transition": "all var(--duration-fast) var(--ease-default)"},
+    )
+
+
+def _template_gallery() -> rx.Component:
+    """Horizontally scrollable template gallery."""
+    return rx.cond(
+        GeneratorState.templates.length() > 0,
+        rx.vstack(
+            rx.hstack(
+                rx.text("Templates", size="2", weight="medium", color="gray.11"),
+                rx.spacer(),
+                rx.button(
+                    rx.icon("plus", size=14),
+                    "Save Current",
+                    on_click=GeneratorState.open_save_template_dialog,
+                    variant="ghost",
+                    size="1",
+                    color_scheme="gray",
+                ),
+                align="center",
+                width="100%",
+            ),
+            rx.box(
+                rx.hstack(
+                    rx.foreach(
+                        GeneratorState.templates,
+                        _template_card,
+                    ),
+                    spacing="3",
+                ),
+                style={
+                    "overflowX": "auto",
+                    "width": "100%",
+                    "paddingBottom": "4px",
+                },
+            ),
+            spacing="2",
+            width="100%",
+        ),
+        rx.fragment(),
+    )
+
+
+def _save_template_dialog() -> rx.Component:
+    """Dialog for saving current config as a template."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Save as Template"),
+            rx.dialog.description(
+                "Save the current generator settings as a reusable template.",
+                size="2",
+            ),
+            rx.input(
+                placeholder="Template name...",
+                value=GeneratorState.template_name_input,
+                on_change=GeneratorState.set_template_name_input,
+                width="100%",
+            ),
+            rx.hstack(
+                rx.dialog.close(
+                    rx.button(
+                        "Cancel",
+                        variant="soft",
+                        color_scheme="gray",
+                        on_click=GeneratorState.close_save_template_dialog,
+                    ),
+                ),
+                rx.dialog.close(
+                    rx.button(
+                        "Save",
+                        on_click=GeneratorState.save_current_as_template,
+                        disabled=GeneratorState.template_name_input == "",
+                        color_scheme="orange",
+                    ),
+                ),
+                spacing="3",
+                justify="end",
+                width="100%",
+                margin_top="16px",
+            ),
+            max_width="400px",
+        ),
+        open=GeneratorState.show_save_template_dialog,
+    )
+
+
 # ── Advanced options accordion ────────────────────────────────────────
+
 
 def _advanced_options() -> rx.Component:
     """Collapsible advanced filters (general + audio)."""
@@ -46,174 +183,215 @@ def _advanced_options() -> rx.Component:
                 align="center",
             ),
             content=rx.vstack(
-                    # ── General filters ──
-                    rx.text("General Filters", size="3", weight="bold"),
-                    rx.hstack(
-                        rx.text("Max Tracks:", size="3"),
-                        rx.slider(
-                            default_value=[GeneratorState.max_tracks],
-                            on_change=lambda val: GeneratorState.set_max_tracks(val[0]),
-                            min=10,
-                            max=100,
-                            step=5,
-                            width="200px",
-                        ),
-                        rx.text(
-                            GeneratorState.max_tracks,
-                            size="3",
-                            weight="bold",
-                            style={"fontFamily": "var(--font-mono)"},
-                        ),
-                        spacing="3",
-                        align="center",
+                # ── General filters ──
+                rx.text("General Filters", size="3", weight="bold"),
+                rx.hstack(
+                    rx.text("Max Tracks:", size="3", white_space="nowrap"),
+                    rx.slider(
+                        default_value=[GeneratorState.max_tracks],
+                        on_change=lambda val: GeneratorState.set_max_tracks(val[0]),
+                        min=10,
+                        max=100,
+                        step=5,
+                        style={"flex": "1", "minWidth": "120px"},
                     ),
-                    rx.hstack(
-                        rx.text("Candidate Pool Multiplier:", size="3"),
-                        rx.slider(
-                            default_value=[GeneratorState.candidate_pool_multiplier],
-                            on_change=lambda val: GeneratorState.set_candidate_pool_multiplier(
-                                val[0]
-                            ),
-                            min=5,
-                            max=100,
-                            step=5,
-                            width="200px",
-                        ),
-                        rx.text(
-                            f"{GeneratorState.candidate_pool_multiplier}x",
-                            size="3",
-                            weight="bold",
-                            style={"fontFamily": "var(--font-mono)"},
-                        ),
-                        rx.tooltip(
-                            rx.icon("info", size=16, color="gray.9"),
-                            content="Multiplier for the candidate pool size. Higher values search more tracks for better matches.",
-                        ),
-                        spacing="3",
-                        align="center",
+                    rx.text(
+                        GeneratorState.max_tracks,
+                        size="3",
+                        weight="bold",
+                        style={"fontFamily": "var(--font-mono)"},
                     ),
-                    rx.input(
-                        placeholder="Genre filter (e.g., rock, jazz)",
-                        value=GeneratorState.genre_filter,
-                        on_change=GeneratorState.set_genre_filter,
-                        width="100%",
+                    spacing="3",
+                    align="center",
+                    wrap="wrap",
+                ),
+                rx.hstack(
+                    rx.text("Pool Multiplier:", size="3", white_space="nowrap"),
+                    rx.slider(
+                        default_value=[GeneratorState.candidate_pool_multiplier],
+                        on_change=lambda val: GeneratorState.set_candidate_pool_multiplier(val[0]),
+                        min=5,
+                        max=100,
+                        step=5,
+                        style={"flex": "1", "minWidth": "120px"},
                     ),
-                    rx.hstack(
-                        rx.text("Year Range:", size="3"),
-                        rx.input(
-                            placeholder="Min",
-                            type="number",
-                            value=GeneratorState.year_min,
-                            on_change=GeneratorState.set_year_min,
-                            width="100px",
-                        ),
-                        rx.text("-", size="3", color="gray.9"),
-                        rx.input(
-                            placeholder="Max",
-                            type="number",
-                            value=GeneratorState.year_max,
-                            on_change=GeneratorState.set_year_max,
-                            width="100px",
-                        ),
-                        spacing="2",
-                        align="center",
+                    rx.text(
+                        f"{GeneratorState.candidate_pool_multiplier}x",
+                        size="3",
+                        weight="bold",
+                        style={"fontFamily": "var(--font-mono)"},
                     ),
-
-                    rx.separator(size="4", color_scheme="gray"),
-
-                    # ── Audio filters ──
-                    rx.text("Audio Filters", size="3", weight="bold"),
-                    rx.cond(
-                        GeneratorState.audio_analyzed_count > 0,
-                        rx.vstack(
-                            rx.text(
-                                GeneratorState.audio_analyzed_count.to(str)
-                                + " tracks with audio analysis",
-                                size="1",
-                                color="gray.9",
-                            ),
-                            rx.hstack(
-                                rx.text("Tempo (BPM):", size="3"),
-                                rx.input(
-                                    placeholder="Min",
-                                    type="number",
-                                    value=GeneratorState.tempo_min,
-                                    on_change=GeneratorState.set_tempo_min,
-                                    width="100px",
-                                ),
-                                rx.text("-", size="3", color="gray.9"),
-                                rx.input(
-                                    placeholder="Max",
-                                    type="number",
-                                    value=GeneratorState.tempo_max,
-                                    on_change=GeneratorState.set_tempo_max,
-                                    width="100px",
-                                ),
-                                spacing="2",
-                                align="center",
-                            ),
-                            rx.hstack(
-                                rx.text("Energy Level:", size="3"),
-                                rx.select(
-                                    ["Any", "low", "medium", "high"],
-                                    value=rx.cond(
-                                        GeneratorState.energy_level,
-                                        GeneratorState.energy_level,
-                                        "Any",
-                                    ),
-                                    on_change=GeneratorState.set_energy_level,
-                                    width="150px",
-                                ),
-                                spacing="2",
-                                align="center",
-                            ),
-                            rx.hstack(
-                                rx.text("Musical Key:", size="3"),
-                                rx.select(
-                                    [
-                                        "Any", "C", "C#", "D", "D#", "E", "F",
-                                        "F#", "G", "G#", "A", "A#", "B",
-                                    ],
-                                    value=rx.cond(
-                                        GeneratorState.key_filter,
-                                        GeneratorState.key_filter,
-                                        "Any",
-                                    ),
-                                    on_change=GeneratorState.set_key_filter,
-                                    width="150px",
-                                ),
-                                spacing="2",
-                                align="center",
-                            ),
-                            rx.hstack(
-                                rx.text("Min Danceability:", size="3"),
-                                rx.input(
-                                    placeholder="0.0-1.0",
-                                    type="number",
-                                    value=GeneratorState.danceability_min,
-                                    on_change=GeneratorState.set_danceability_min,
-                                    width="100px",
-                                ),
-                                rx.tooltip(
-                                    rx.icon("info", size=16, color="gray.9"),
-                                    content="Minimum danceability score from 0.0 to 1.0",
-                                ),
-                                spacing="2",
-                                align="center",
-                            ),
-                            spacing="4",
-                            width="100%",
-                        ),
-                        rx.callout(
-                            "No tracks have been analyzed yet. Run audio analysis from the Library or Doctor page to enable tempo, energy, key, and danceability filters.",
-                            icon="info",
-                            color_scheme="gray",
-                            size="2",
-                        ),
+                    rx.tooltip(
+                        rx.icon("info", size=16, color="gray.9"),
+                        content="Multiplier for the candidate pool size. Higher values search more tracks for better matches.",
                     ),
-                    spacing="4",
+                    spacing="3",
+                    align="center",
+                    wrap="wrap",
+                ),
+                rx.input(
+                    placeholder="Genre filter (e.g., rock, jazz)",
+                    value=GeneratorState.genre_filter,
+                    on_change=GeneratorState.set_genre_filter,
                     width="100%",
                 ),
+                rx.hstack(
+                    rx.text("Year Range:", size="3"),
+                    rx.input(
+                        placeholder="Min",
+                        type="number",
+                        value=GeneratorState.year_min,
+                        on_change=GeneratorState.set_year_min,
+                        width="100px",
+                    ),
+                    rx.text("-", size="3", color="gray.9"),
+                    rx.input(
+                        placeholder="Max",
+                        type="number",
+                        value=GeneratorState.year_max,
+                        on_change=GeneratorState.set_year_max,
+                        width="100px",
+                    ),
+                    spacing="2",
+                    align="center",
+                ),
+                rx.hstack(
+                    rx.text("Track Ordering:", size="3"),
+                    rx.select(
+                        ["similarity", "random", "alternating_artists", "energy_curve"],
+                        value=GeneratorState.shuffle_mode,
+                        on_change=GeneratorState.set_shuffle_mode,
+                        width="200px",
+                    ),
+                    rx.tooltip(
+                        rx.icon("info", size=16, color="gray.9"),
+                        content="How tracks are ordered: similarity (closest match first), random, alternating artists (maximize diversity), or energy curve (arc shape).",
+                    ),
+                    spacing="2",
+                    align="center",
+                ),
+                rx.hstack(
+                    rx.text("Avoid Recent:", size="3"),
+                    rx.input(
+                        placeholder="0",
+                        type="number",
+                        value=GeneratorState.avoid_recent.to(str),
+                        on_change=GeneratorState.set_avoid_recent,
+                        width="70px",
+                    ),
+                    rx.text("playlists", size="2", color="gray.9"),
+                    rx.tooltip(
+                        rx.icon("info", size=16, color="gray.9"),
+                        content="Exclude tracks used in the N most recent playlists to keep things fresh. 0 = no exclusion.",
+                    ),
+                    spacing="2",
+                    align="center",
+                ),
+                rx.separator(size="4", color_scheme="gray"),
+                # ── Audio filters ──
+                rx.text("Audio Filters", size="3", weight="bold"),
+                rx.cond(
+                    GeneratorState.audio_analyzed_count > 0,
+                    rx.vstack(
+                        rx.text(
+                            GeneratorState.audio_analyzed_count.to(str)
+                            + " tracks with audio analysis",
+                            size="1",
+                            color="gray.9",
+                        ),
+                        rx.hstack(
+                            rx.text("Tempo (BPM):", size="3"),
+                            rx.input(
+                                placeholder="Min",
+                                type="number",
+                                value=GeneratorState.tempo_min,
+                                on_change=GeneratorState.set_tempo_min,
+                                width="100px",
+                            ),
+                            rx.text("-", size="3", color="gray.9"),
+                            rx.input(
+                                placeholder="Max",
+                                type="number",
+                                value=GeneratorState.tempo_max,
+                                on_change=GeneratorState.set_tempo_max,
+                                width="100px",
+                            ),
+                            spacing="2",
+                            align="center",
+                        ),
+                        rx.hstack(
+                            rx.text("Energy Level:", size="3"),
+                            rx.select(
+                                ["Any", "low", "medium", "high"],
+                                value=rx.cond(
+                                    GeneratorState.energy_level,
+                                    GeneratorState.energy_level,
+                                    "Any",
+                                ),
+                                on_change=GeneratorState.set_energy_level,
+                                width="150px",
+                            ),
+                            spacing="2",
+                            align="center",
+                        ),
+                        rx.hstack(
+                            rx.text("Musical Key:", size="3"),
+                            rx.select(
+                                [
+                                    "Any",
+                                    "C",
+                                    "C#",
+                                    "D",
+                                    "D#",
+                                    "E",
+                                    "F",
+                                    "F#",
+                                    "G",
+                                    "G#",
+                                    "A",
+                                    "A#",
+                                    "B",
+                                ],
+                                value=rx.cond(
+                                    GeneratorState.key_filter,
+                                    GeneratorState.key_filter,
+                                    "Any",
+                                ),
+                                on_change=GeneratorState.set_key_filter,
+                                width="150px",
+                            ),
+                            spacing="2",
+                            align="center",
+                        ),
+                        rx.hstack(
+                            rx.text("Min Danceability:", size="3"),
+                            rx.input(
+                                placeholder="0.0-1.0",
+                                type="number",
+                                value=GeneratorState.danceability_min,
+                                on_change=GeneratorState.set_danceability_min,
+                                width="100px",
+                            ),
+                            rx.tooltip(
+                                rx.icon("info", size=16, color="gray.9"),
+                                content="Minimum danceability score from 0.0 to 1.0",
+                            ),
+                            spacing="2",
+                            align="center",
+                        ),
+                        spacing="4",
+                        width="100%",
+                    ),
+                    rx.callout(
+                        "No tracks have been analyzed yet. Run audio analysis from the Library or Doctor page to enable tempo, energy, key, and danceability filters.",
+                        icon="info",
+                        color_scheme="gray",
+                        size="2",
+                    ),
+                ),
+                spacing="4",
+                width="100%",
+            ),
             value="advanced",
         ),
         width="100%",
@@ -223,6 +401,7 @@ def _advanced_options() -> rx.Component:
 
 
 # ── Generation progress (inline) ─────────────────────────────────────
+
 
 def _generation_progress() -> rx.Component:
     """Inline progress card with bar, percentage, status, and scrollable log."""
@@ -297,6 +476,7 @@ def _generation_progress() -> rx.Component:
 
 # ── Hero input section (centered, single column) ─────────────────────
 
+
 def _hero_input() -> rx.Component:
     """The main mood input section -- hero element of the page."""
     return rx.vstack(
@@ -307,7 +487,6 @@ def _hero_input() -> rx.Component:
             spacing="1",
             align="center",
         ),
-
         # Hero text area
         rx.text_area(
             placeholder="What's the vibe?",
@@ -322,7 +501,6 @@ def _hero_input() -> rx.Component:
                 "borderRadius": "var(--radius-lg)",
             },
         ),
-
         # Example mood pills
         rx.vstack(
             rx.text("Try:", size="1", color="gray.9", weight="medium"),
@@ -330,10 +508,10 @@ def _hero_input() -> rx.Component:
             spacing="2",
             width="100%",
         ),
-
+        # Template gallery
+        _template_gallery(),
         # Advanced options
         _advanced_options(),
-
         # Generate button
         rx.button(
             rx.icon("sparkles", size=18),
@@ -344,15 +522,11 @@ def _hero_input() -> rx.Component:
             color_scheme="orange",
             size="4",
             width="100%",
-            title=rx.cond(
-                GeneratorState.mood_query == "", "Enter a mood description", ""
-            ),
+            title=rx.cond(GeneratorState.mood_query == "", "Enter a mood description", ""),
             class_name="pm-button pm-glow",
         ),
-
         # Generation progress (inline)
         _generation_progress(),
-
         spacing="5",
         width="100%",
         max_width="680px",
@@ -362,6 +536,7 @@ def _hero_input() -> rx.Component:
 
 
 # ── Compact mood summary (shown after generation) ────────────────────
+
 
 def _compact_mood_summary() -> rx.Component:
     """Collapsed summary of the mood input, shown above results."""
@@ -418,6 +593,7 @@ def _compact_mood_summary() -> rx.Component:
 
 # ── Playlist metadata heading ────────────────────────────────────────
 
+
 def _playlist_metadata() -> rx.Component:
     total_minutes = GeneratorState.total_duration_ms // 60000
     return rx.vstack(
@@ -452,6 +628,7 @@ def _playlist_metadata() -> rx.Component:
 
 
 # ── Playlist track table ─────────────────────────────────────────────
+
 
 def _playlist_table() -> rx.Component:
     return rx.table.root(
@@ -518,6 +695,7 @@ def _playlist_table() -> rx.Component:
 
 # ── Playlist action bar ──────────────────────────────────────────────
 
+
 def _playlist_actions() -> rx.Component:
     return rx.vstack(
         # Primary row: name input + save buttons
@@ -526,30 +704,26 @@ def _playlist_actions() -> rx.Component:
                 placeholder="Enter playlist name...",
                 value=GeneratorState.playlist_name,
                 on_change=GeneratorState.set_playlist_name,
-                flex="1",
+                style={"flex": "1", "minWidth": "140px"},
             ),
             rx.button(
                 rx.icon("server", size=16),
-                "Save to Plex",
+                rx.text("Save to Plex", class_name="hide-mobile"),
                 on_click=GeneratorState.save_to_plex,
                 disabled=GeneratorState.playlist_name == "",
                 color_scheme="blue",
                 size="3",
-                title=rx.cond(
-                    GeneratorState.playlist_name == "", "Enter a playlist name", ""
-                ),
+                title="Save to Plex",
                 class_name="pm-button",
             ),
             rx.button(
                 rx.icon("hard-drive", size=16),
-                "Save Locally",
+                rx.text("Save Locally", class_name="hide-mobile"),
                 on_click=GeneratorState.save_locally,
                 disabled=GeneratorState.playlist_name == "",
                 color_scheme="green",
                 size="3",
-                title=rx.cond(
-                    GeneratorState.playlist_name == "", "Enter a playlist name", ""
-                ),
+                title="Save Locally",
                 class_name="pm-button",
             ),
             spacing="3",
@@ -582,6 +756,7 @@ def _playlist_actions() -> rx.Component:
 
 # ── Results section (full width) ─────────────────────────────────────
 
+
 def _results_section() -> rx.Component:
     """Full-width results with compact summary, table, and actions."""
     return rx.vstack(
@@ -599,6 +774,7 @@ def _results_section() -> rx.Component:
 
 # ── Empty state ──────────────────────────────────────────────────────
 
+
 def _empty_state() -> rx.Component:
     return shared_empty_state(
         icon="sparkles",
@@ -611,6 +787,7 @@ def _empty_state() -> rx.Component:
 #  Generator Page
 # ══════════════════════════════════════════════════════════════════════
 
+
 def generator() -> rx.Component:
     content = rx.vstack(
         rx.cond(
@@ -620,6 +797,7 @@ def generator() -> rx.Component:
             # No playlist yet (fresh, generating, or error) -> centered hero input
             _hero_input(),
         ),
+        _save_template_dialog(),
         spacing="6",
         width="100%",
         class_name="animate-fade-in-up",

@@ -61,14 +61,10 @@ class TestEssentiaAnalyzer:
         mock_es.MonoLoader.return_value = MagicMock(return_value=mock_audio)
 
         # Mock RhythmExtractor2013
-        mock_es.RhythmExtractor2013.return_value = MagicMock(
-            return_value=(120.0, [], 0.9, [], [])
-        )
+        mock_es.RhythmExtractor2013.return_value = MagicMock(return_value=(120.0, [], 0.9, [], []))
 
         # Mock KeyExtractor
-        mock_es.KeyExtractor.return_value = MagicMock(
-            return_value=("C", "major", 0.85)
-        )
+        mock_es.KeyExtractor.return_value = MagicMock(return_value=("C", "major", 0.85))
 
         # Mock Loudness
         mock_es.Loudness.return_value = MagicMock(return_value=-10.0)
@@ -88,9 +84,7 @@ class TestEssentiaAnalyzer:
         # Mock MFCC-related: Windowing, Spectrum, MFCC, FrameGenerator
         mock_es.Windowing.return_value = MagicMock(return_value=np.zeros(2048))
         mock_es.Spectrum.return_value = MagicMock(return_value=np.zeros(1025))
-        mock_es.MFCC.return_value = MagicMock(
-            return_value=(np.zeros(40), np.zeros(13))
-        )
+        mock_es.MFCC.return_value = MagicMock(return_value=(np.zeros(40), np.zeros(13)))
         mock_es.FrameGenerator.return_value = [np.zeros(2048)]
 
         with patch("plexmix.audio.analyzer.EssentiaAnalyzer.__init__", return_value=None):

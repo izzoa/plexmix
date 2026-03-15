@@ -1,45 +1,11 @@
 import reflex as rx
 from plexmix.ui.components.navbar import layout
+from plexmix.ui.components.stat_tile import stat_tile as _stat_tile
 from plexmix.ui.states.dashboard_state import DashboardState
 
 
-# ── Stat tile ─────────────────────────────────────────────────────────
-
-def _stat_tile(
-    label: str,
-    value,
-    icon_name: str,
-    icon_color: str = "accent.9",
-    icon_bg: str = "accent.3",
-    stagger: str = "",
-) -> rx.Component:
-    """Single metric tile — large number, muted label, tinted icon."""
-    return rx.hstack(
-        rx.box(
-            rx.icon(icon_name, size=20, color=icon_color),
-            padding="8px",
-            border_radius="var(--radius-md)",
-            background_color=icon_bg,
-            flex_shrink="0",
-        ),
-        rx.vstack(
-            rx.text(
-                value,
-                size="6",
-                weight="bold",
-                style={"fontFamily": "var(--font-mono)"},
-            ),
-            rx.text(label, size="1", color="gray.9", weight="medium"),
-            spacing="0",
-            align="start",
-        ),
-        spacing="3",
-        align="center",
-        class_name=f"animate-fade-in-up {stagger}".strip(),
-    )
-
-
 # ── Config status bar ────────────────────────────────────────────────
+
 
 def _status_item(label: str, configured, detail, icon_name: str) -> rx.Component:
     """Inline config status: dot + icon + label + detail or 'Not configured' link."""
@@ -109,6 +75,7 @@ def _config_status_bar() -> rx.Component:
 
 # ── Dimension warning banner ─────────────────────────────────────────
 
+
 def _dimension_warning() -> rx.Component:
     return rx.cond(
         DashboardState.embedding_dimension_warning != "",
@@ -132,6 +99,7 @@ def _dimension_warning() -> rx.Component:
 
 
 # ── Quick action card ────────────────────────────────────────────────
+
 
 def _action_card(
     title: str,
@@ -188,6 +156,7 @@ def _action_card(
 
 
 # ── Recent playlists ─────────────────────────────────────────────────
+
 
 def _recent_playlist_row(playlist: dict) -> rx.Component:
     return rx.hstack(
@@ -251,6 +220,7 @@ def _recent_playlists_section() -> rx.Component:
 #  Dashboard Page
 # ══════════════════════════════════════════════════════════════════════
 
+
 def dashboard() -> rx.Component:
     content = rx.vstack(
         # ── Page header ───────────────────────────────────────────
@@ -260,7 +230,6 @@ def dashboard() -> rx.Component:
             spacing="1",
             align="start",
         ),
-
         # ── Stats row ─────────────────────────────────────────────
         rx.grid(
             _stat_tile(
@@ -299,16 +268,12 @@ def dashboard() -> rx.Component:
             spacing="6",
             width="100%",
         ),
-
         # ── Divider ──────────────────────────────────────────────
         rx.separator(size="4", color_scheme="gray"),
-
         # ── Config status bar ────────────────────────────────────
         _config_status_bar(),
-
         # ── Dimension warning ────────────────────────────────────
         _dimension_warning(),
-
         # ── Quick actions ────────────────────────────────────────
         rx.text("Quick Actions", size="4", weight="bold"),
         rx.grid(
@@ -317,10 +282,7 @@ def dashboard() -> rx.Component:
                 "Create an AI-powered playlist from a mood",
                 "sparkles",
                 "/generator",
-                disabled=~(
-                    DashboardState.plex_configured
-                    & DashboardState.ai_provider_configured
-                ),
+                disabled=~(DashboardState.plex_configured & DashboardState.ai_provider_configured),
                 disabled_tooltip="Configure Plex and AI provider first",
                 accent=True,
             ),
@@ -338,10 +300,8 @@ def dashboard() -> rx.Component:
             width="100%",
             class_name="animate-fade-in-up stagger-3",
         ),
-
         # ── Recent playlists ─────────────────────────────────────
         _recent_playlists_section(),
-
         spacing="6",
         width="100%",
     )

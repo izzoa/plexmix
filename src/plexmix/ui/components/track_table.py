@@ -145,9 +145,7 @@ def track_table_header(
     )
 
 
-def track_table_row(
-    track: dict[str, str], is_selected: bool, on_toggle: Callable
-) -> rx.Component:
+def track_table_row(track: dict[str, str], is_selected: bool, on_toggle: Callable) -> rx.Component:
     return rx.table.row(
         rx.table.cell(
             rx.checkbox(

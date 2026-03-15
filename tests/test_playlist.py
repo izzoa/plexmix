@@ -1,8 +1,6 @@
 import pytest
 import tempfile
 from pathlib import Path
-from unittest.mock import Mock, MagicMock
-import numpy as np
 
 from plexmix.database.sqlite_manager import SQLiteManager
 from plexmix.database.vector_index import VectorIndex
@@ -27,7 +25,7 @@ class MockEmbeddingGenerator:
 def db_manager():
     import sqlite3
 
-    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
 
     manager = SQLiteManager(db_path)
@@ -61,7 +59,9 @@ def sample_tracks(db_manager, vector_index):
     artist = Artist(plex_key="/library/metadata/1", name="Miles Davis")
     artist_id = db_manager.insert_artist(artist)
 
-    album = Album(plex_key="/library/metadata/2", title="Kind of Blue", artist_id=artist_id, year=1959)
+    album = Album(
+        plex_key="/library/metadata/2", title="Kind of Blue", artist_id=artist_id, year=1959
+    )
     album_id = db_manager.insert_album(album)
 
     tracks = []
@@ -79,7 +79,7 @@ def sample_tracks(db_manager, vector_index):
             rating=4.5,
             tags="mellow, smooth, sophisticated",
             environments="relax, study",
-            instruments="piano, bass, drums"
+            instruments="piano, bass, drums",
         )
         track_id = db_manager.insert_track(track)
         track_ids.append(track_id)
@@ -89,10 +89,7 @@ def sample_tracks(db_manager, vector_index):
         vectors.append(vector)
 
         embedding = Embedding(
-            track_id=track_id,
-            embedding_model="test",
-            embedding_dim=384,
-            vector=vector
+            track_id=track_id, embedding_model="test", embedding_dim=384, vector=vector
         )
         db_manager.insert_embedding(embedding)
 
@@ -111,45 +108,37 @@ def test_generate_playlist_basic(playlist_generator, sample_tracks):
     tracks, track_ids = sample_tracks
 
     result = playlist_generator.generate(
-        mood_query="relaxing jazz",
-        max_tracks=3,
-        candidate_pool_size=5
+        mood_query="relaxing jazz", max_tracks=3, candidate_pool_size=5
     )
 
     assert len(result) <= 3
-    assert all('title' in track for track in result)
-    assert all('artist' in track for track in result)
+    assert all("title" in track for track in result)
+    assert all("artist" in track for track in result)
 
 
 def test_generate_playlist_with_genre_filter(playlist_generator, sample_tracks):
     tracks, track_ids = sample_tracks
 
     result = playlist_generator.generate(
-        mood_query="energetic music",
-        max_tracks=3,
-        filters={'genre': 'Jazz'}
+        mood_query="energetic music", max_tracks=3, filters={"genre": "Jazz"}
     )
 
-    assert all(track['genre'] == 'Jazz' for track in result if 'genre' in track)
+    assert all(track["genre"] == "Jazz" for track in result if "genre" in track)
 
 
 def test_generate_playlist_with_year_filter(playlist_generator, sample_tracks):
     tracks, track_ids = sample_tracks
 
     result = playlist_generator.generate(
-        mood_query="vintage music",
-        max_tracks=3,
-        filters={'year_min': 1950, 'year_max': 1960}
+        mood_query="vintage music", max_tracks=3, filters={"year_min": 1950, "year_max": 1960}
     )
 
-    assert all(1950 <= track['year'] <= 1960 for track in result if 'year' in track)
+    assert all(1950 <= track["year"] <= 1960 for track in result if "year" in track)
 
 
 def test_generate_playlist_no_candidates_returns_empty(playlist_generator, db_manager):
     result = playlist_generator.generate(
-        mood_query="impossible query",
-        max_tracks=10,
-        filters={'genre': 'NonExistentGenre'}
+        mood_query="impossible query", max_tracks=10, filters={"genre": "NonExistentGenre"}
     )
 
     assert len(result) == 0
@@ -158,7 +147,7 @@ def test_generate_playlist_no_candidates_returns_empty(playlist_generator, db_ma
 def test_apply_filters_genre(playlist_generator, sample_tracks):
     tracks, track_ids = sample_tracks
 
-    filtered_ids = playlist_generator._apply_filters({'genre': 'Jazz'})
+    filtered_ids = playlist_generator._apply_filters({"genre": "Jazz"})
 
     assert len(filtered_ids) > 0
     assert all(tid in track_ids for tid in filtered_ids)
@@ -167,7 +156,7 @@ def test_apply_filters_genre(playlist_generator, sample_tracks):
 def test_apply_filters_year_range(playlist_generator, sample_tracks):
     tracks, track_ids = sample_tracks
 
-    filtered_ids = playlist_generator._apply_filters({'year_min': 1950, 'year_max': 1960})
+    filtered_ids = playlist_generator._apply_filters({"year_min": 1950, "year_max": 1960})
 
     assert len(filtered_ids) > 0
     assert all(tid in track_ids for tid in filtered_ids)
@@ -176,7 +165,7 @@ def test_apply_filters_year_range(playlist_generator, sample_tracks):
 def test_apply_filters_environment(playlist_generator, sample_tracks):
     tracks, track_ids = sample_tracks
 
-    filtered_ids = playlist_generator._apply_filters({'environment': 'relax'})
+    filtered_ids = playlist_generator._apply_filters({"environment": "relax"})
 
     assert len(filtered_ids) > 0
 
@@ -184,7 +173,7 @@ def test_apply_filters_environment(playlist_generator, sample_tracks):
 def test_apply_filters_instrument(playlist_generator, sample_tracks):
     tracks, track_ids = sample_tracks
 
-    filtered_ids = playlist_generator._apply_filters({'instrument': 'piano'})
+    filtered_ids = playlist_generator._apply_filters({"instrument": "piano"})
 
     assert len(filtered_ids) > 0
 
@@ -192,7 +181,7 @@ def test_apply_filters_instrument(playlist_generator, sample_tracks):
 def test_apply_filters_rating(playlist_generator, sample_tracks):
     tracks, track_ids = sample_tracks
 
-    filtered_ids = playlist_generator._apply_filters({'rating_min': 4.0})
+    filtered_ids = playlist_generator._apply_filters({"rating_min": 4.0})
 
     assert len(filtered_ids) > 0
 
@@ -200,16 +189,13 @@ def test_apply_filters_rating(playlist_generator, sample_tracks):
 def test_get_candidates(playlist_generator, sample_tracks):
     tracks, track_ids = sample_tracks
 
-    candidates = playlist_generator._get_candidates(
-        mood_query="smooth jazz",
-        pool_size=3
-    )
+    candidates = playlist_generator._get_candidates(mood_query="smooth jazz", pool_size=3)
 
     assert len(candidates) <= 3
-    assert all('id' in c for c in candidates)
-    assert all('title' in c for c in candidates)
-    assert all('artist' in c for c in candidates)
-    assert all('similarity' in c for c in candidates)
+    assert all("id" in c for c in candidates)
+    assert all("title" in c for c in candidates)
+    assert all("artist" in c for c in candidates)
+    assert all("similarity" in c for c in candidates)
 
 
 def test_get_candidates_with_filter(playlist_generator, sample_tracks):
@@ -218,13 +204,11 @@ def test_get_candidates_with_filter(playlist_generator, sample_tracks):
     filtered_ids = [track_ids[0], track_ids[1]]
 
     candidates = playlist_generator._get_candidates(
-        mood_query="smooth jazz",
-        pool_size=5,
-        filtered_track_ids=filtered_ids
+        mood_query="smooth jazz", pool_size=5, filtered_track_ids=filtered_ids
     )
 
     assert len(candidates) <= 2
-    assert all(c['id'] in filtered_ids for c in candidates)
+    assert all(c["id"] in filtered_ids for c in candidates)
 
 
 def test_save_playlist(playlist_generator, sample_tracks, db_manager):
@@ -234,7 +218,7 @@ def test_save_playlist(playlist_generator, sample_tracks, db_manager):
         name="Test Playlist",
         track_ids=track_ids[:3],
         mood_query="relaxing jazz",
-        description="A test playlist"
+        description="A test playlist",
     )
 
     assert playlist_id > 0
@@ -244,11 +228,13 @@ def test_save_playlist(playlist_generator, sample_tracks, db_manager):
     playlist = cursor.fetchone()
 
     assert playlist is not None
-    assert playlist['name'] == "Test Playlist"
-    assert playlist['mood_query'] == "relaxing jazz"
+    assert playlist["name"] == "Test Playlist"
+    assert playlist["mood_query"] == "relaxing jazz"
 
-    cursor.execute("SELECT COUNT(*) as count FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
-    count = cursor.fetchone()['count']
+    cursor.execute(
+        "SELECT COUNT(*) as count FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,)
+    )
+    count = cursor.fetchone()["count"]
 
     assert count == 3
 
@@ -267,20 +253,19 @@ def test_generate_removes_duplicates(playlist_generator, sample_tracks, db_manag
         title="Track 1",
         artist_id=artist_id,
         album_id=album_id,
-        genre="Jazz"
+        genre="Jazz",
     )
     dup_track_id = db_manager.insert_track(duplicate_track)
 
     vector = [0.1] * 384
-    embedding = Embedding(track_id=dup_track_id, embedding_model="test", embedding_dim=384, vector=vector)
+    embedding = Embedding(
+        track_id=dup_track_id, embedding_model="test", embedding_dim=384, vector=vector
+    )
     db_manager.insert_embedding(embedding)
 
-    result = playlist_generator.generate(
-        mood_query="jazz",
-        max_tracks=10
-    )
+    result = playlist_generator.generate(mood_query="jazz", max_tracks=10)
 
-    titles_and_artists = [(track['title'], track['artist']) for track in result]
+    titles_and_artists = [(track["title"], track["artist"]) for track in result]
     assert len(titles_and_artists) == len(set(titles_and_artists))
 
 
@@ -294,10 +279,12 @@ def test_apply_filters_audio_tempo(playlist_generator, sample_tracks, db_manager
     db_manager.insert_audio_features(track_ids[2], {"tempo": 150.0, "energy_level": "high"})
 
     # Filter for medium tempo range
-    filtered_ids = playlist_generator._apply_filters({
-        'tempo_min': 100,
-        'tempo_max': 140,
-    })
+    filtered_ids = playlist_generator._apply_filters(
+        {
+            "tempo_min": 100,
+            "tempo_max": 140,
+        }
+    )
 
     assert track_ids[1] in filtered_ids
     assert track_ids[0] not in filtered_ids
@@ -310,7 +297,7 @@ def test_apply_filters_audio_energy_level(playlist_generator, sample_tracks, db_
     db_manager.insert_audio_features(track_ids[0], {"energy_level": "low"})
     db_manager.insert_audio_features(track_ids[1], {"energy_level": "high"})
 
-    filtered_ids = playlist_generator._apply_filters({'energy_level': 'high'})
+    filtered_ids = playlist_generator._apply_filters({"energy_level": "high"})
     assert track_ids[1] in filtered_ids
     assert track_ids[0] not in filtered_ids
 
@@ -321,7 +308,7 @@ def test_apply_filters_audio_key(playlist_generator, sample_tracks, db_manager):
     db_manager.insert_audio_features(track_ids[0], {"key": "C"})
     db_manager.insert_audio_features(track_ids[1], {"key": "G"})
 
-    filtered_ids = playlist_generator._apply_filters({'key': 'C'})
+    filtered_ids = playlist_generator._apply_filters({"key": "C"})
     assert track_ids[0] in filtered_ids
     assert track_ids[1] not in filtered_ids
 
@@ -332,7 +319,7 @@ def test_apply_filters_audio_danceability(playlist_generator, sample_tracks, db_
     db_manager.insert_audio_features(track_ids[0], {"danceability": 0.3})
     db_manager.insert_audio_features(track_ids[1], {"danceability": 0.8})
 
-    filtered_ids = playlist_generator._apply_filters({'danceability_min': 0.5})
+    filtered_ids = playlist_generator._apply_filters({"danceability_min": 0.5})
     assert track_ids[1] in filtered_ids
     assert track_ids[0] not in filtered_ids
 
@@ -340,6 +327,7 @@ def test_apply_filters_audio_danceability(playlist_generator, sample_tracks, db_
 # ---------------------------------------------------------------------------
 # _select_diverse_tracks
 # ---------------------------------------------------------------------------
+
 
 def test_select_diverse_caps_artist_at_3(playlist_generator):
     """Artist cap: max 3 tracks per artist."""
@@ -391,6 +379,7 @@ def test_select_diverse_empty_candidates(playlist_generator):
 # _apply_filters edge cases
 # ---------------------------------------------------------------------------
 
+
 def test_apply_filters_empty_dict_returns_all(playlist_generator, sample_tracks):
     """Empty filter dict should return all track IDs."""
     tracks, track_ids = sample_tracks
@@ -404,10 +393,12 @@ def test_apply_filters_combined_audio_and_genre(playlist_generator, sample_track
     db_manager.insert_audio_features(track_ids[0], {"tempo": 120.0})
     db_manager.insert_audio_features(track_ids[1], {"tempo": 80.0})
 
-    filtered_ids = playlist_generator._apply_filters({
-        'genre': 'Jazz',
-        'tempo_min': 100,
-    })
+    filtered_ids = playlist_generator._apply_filters(
+        {
+            "genre": "Jazz",
+            "tempo_min": 100,
+        }
+    )
     assert track_ids[0] in filtered_ids
     assert track_ids[1] not in filtered_ids
 
@@ -415,6 +406,7 @@ def test_apply_filters_combined_audio_and_genre(playlist_generator, sample_track
 # ---------------------------------------------------------------------------
 # generate with progress_callback
 # ---------------------------------------------------------------------------
+
 
 def test_generate_with_progress_callback(playlist_generator, sample_tracks):
     tracks, track_ids = sample_tracks

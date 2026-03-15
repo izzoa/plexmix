@@ -1,18 +1,16 @@
 import pytest
 import tempfile
-import json
 from pathlib import Path
-from datetime import datetime
 
 from plexmix.database.sqlite_manager import SQLiteManager
-from plexmix.database.models import Artist, Album, Track, Genre, Embedding, SyncHistory, Playlist
+from plexmix.database.models import Artist, Album, Track, Embedding, SyncHistory, Playlist
 
 
 @pytest.fixture
 def db_manager():
     import sqlite3
 
-    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
 
     manager = SQLiteManager(db_path)
@@ -32,12 +30,12 @@ def test_create_tables(db_manager):
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
     tables = {row[0] for row in cursor.fetchall()}
 
-    assert 'artists' in tables
-    assert 'albums' in tables
-    assert 'tracks' in tables
-    assert 'embeddings' in tables
-    assert 'playlists' in tables
-    assert 'sync_history' in tables
+    assert "artists" in tables
+    assert "albums" in tables
+    assert "tracks" in tables
+    assert "embeddings" in tables
+    assert "playlists" in tables
+    assert "sync_history" in tables
 
 
 def test_insert_and_get_artist(db_manager):
@@ -45,7 +43,7 @@ def test_insert_and_get_artist(db_manager):
         plex_key="/library/metadata/12345",
         name="Miles Davis",
         genre="Jazz",
-        bio="Legendary jazz musician"
+        bio="Legendary jazz musician",
     )
 
     artist_id = db_manager.insert_artist(artist)
@@ -70,7 +68,7 @@ def test_insert_and_get_album(db_manager):
         title="A Love Supreme",
         artist_id=artist_id,
         year=1965,
-        genre="Jazz"
+        genre="Jazz",
     )
 
     album_id = db_manager.insert_album(album)
@@ -86,7 +84,9 @@ def test_insert_and_get_track(db_manager):
     artist = Artist(plex_key="/library/metadata/1", name="Bill Evans")
     artist_id = db_manager.insert_artist(artist)
 
-    album = Album(plex_key="/library/metadata/2", title="Sunday at the Village Vanguard", artist_id=artist_id)
+    album = Album(
+        plex_key="/library/metadata/2", title="Sunday at the Village Vanguard", artist_id=artist_id
+    )
     album_id = db_manager.insert_album(album)
 
     track = Track(
@@ -100,7 +100,7 @@ def test_insert_and_get_track(db_manager):
         rating=4.5,
         tags="contemplative, melodic, sophisticated",
         environments="study, relax, focus",
-        instruments="piano, bass, drums"
+        instruments="piano, bass, drums",
     )
 
     track_id = db_manager.insert_track(track)
@@ -122,14 +122,16 @@ def test_insert_and_get_embedding(db_manager):
     album = Album(plex_key="/library/metadata/2", title="Album", artist_id=artist_id)
     album_id = db_manager.insert_album(album)
 
-    track = Track(plex_key="/library/metadata/3", title="Track", artist_id=artist_id, album_id=album_id)
+    track = Track(
+        plex_key="/library/metadata/3", title="Track", artist_id=artist_id, album_id=album_id
+    )
     track_id = db_manager.insert_track(track)
 
     embedding = Embedding(
         track_id=track_id,
         embedding_model="gemini-embedding-001",
         embedding_dim=3072,
-        vector=[0.1] * 3072
+        vector=[0.1] * 3072,
     )
 
     embedding_id = db_manager.insert_embedding(embedding)
@@ -149,14 +151,22 @@ def test_get_all_embeddings(db_manager):
     album = Album(plex_key="/library/metadata/2", title="Album", artist_id=artist_id)
     album_id = db_manager.insert_album(album)
 
-    track1 = Track(plex_key="/library/metadata/3", title="Track 1", artist_id=artist_id, album_id=album_id)
+    track1 = Track(
+        plex_key="/library/metadata/3", title="Track 1", artist_id=artist_id, album_id=album_id
+    )
     track1_id = db_manager.insert_track(track1)
 
-    track2 = Track(plex_key="/library/metadata/4", title="Track 2", artist_id=artist_id, album_id=album_id)
+    track2 = Track(
+        plex_key="/library/metadata/4", title="Track 2", artist_id=artist_id, album_id=album_id
+    )
     track2_id = db_manager.insert_track(track2)
 
-    embedding1 = Embedding(track_id=track1_id, embedding_model="test", embedding_dim=384, vector=[0.1] * 384)
-    embedding2 = Embedding(track_id=track2_id, embedding_model="test", embedding_dim=384, vector=[0.2] * 384)
+    embedding1 = Embedding(
+        track_id=track1_id, embedding_model="test", embedding_dim=384, vector=[0.1] * 384
+    )
+    embedding2 = Embedding(
+        track_id=track2_id, embedding_model="test", embedding_dim=384, vector=[0.2] * 384
+    )
 
     db_manager.insert_embedding(embedding1)
     db_manager.insert_embedding(embedding2)
@@ -168,12 +178,7 @@ def test_get_all_embeddings(db_manager):
 
 
 def test_insert_sync_record(db_manager):
-    sync = SyncHistory(
-        tracks_added=100,
-        tracks_updated=50,
-        tracks_removed=10,
-        status='success'
-    )
+    sync = SyncHistory(tracks_added=100, tracks_updated=50, tracks_removed=10, status="success")
 
     sync_id = db_manager.insert_sync_record(sync)
     assert sync_id > 0
@@ -181,7 +186,7 @@ def test_insert_sync_record(db_manager):
     latest = db_manager.get_latest_sync()
     assert latest is not None
     assert latest.tracks_added == 100
-    assert latest.status == 'success'
+    assert latest.status == "success"
 
 
 def test_insert_playlist(db_manager):
@@ -190,7 +195,7 @@ def test_insert_playlist(db_manager):
         name="Chill Vibes",
         description="Relaxing music",
         created_by_ai=True,
-        mood_query="relaxing evening vibes"
+        mood_query="relaxing evening vibes",
     )
 
     playlist_id = db_manager.insert_playlist(playlist)
@@ -204,7 +209,9 @@ def test_add_track_to_playlist(db_manager):
     album = Album(plex_key="/library/metadata/2", title="Album", artist_id=artist_id)
     album_id = db_manager.insert_album(album)
 
-    track = Track(plex_key="/library/metadata/3", title="Track", artist_id=artist_id, album_id=album_id)
+    track = Track(
+        plex_key="/library/metadata/3", title="Track", artist_id=artist_id, album_id=album_id
+    )
     track_id = db_manager.insert_track(track)
 
     playlist = Playlist(name="Test Playlist", created_by_ai=False)
@@ -213,11 +220,14 @@ def test_add_track_to_playlist(db_manager):
     db_manager.add_track_to_playlist(playlist_id, track_id, 0)
 
     cursor = db_manager.get_connection().cursor()
-    cursor.execute("SELECT * FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?", (playlist_id, track_id))
+    cursor.execute(
+        "SELECT * FROM playlist_tracks WHERE playlist_id = ? AND track_id = ?",
+        (playlist_id, track_id),
+    )
     result = cursor.fetchone()
 
     assert result is not None
-    assert result['position'] == 0
+    assert result["position"] == 0
 
 
 def test_delete_track(db_manager):
@@ -227,7 +237,9 @@ def test_delete_track(db_manager):
     album = Album(plex_key="/library/metadata/2", title="Album", artist_id=artist_id)
     album_id = db_manager.insert_album(album)
 
-    track = Track(plex_key="/library/metadata/3", title="Track", artist_id=artist_id, album_id=album_id)
+    track = Track(
+        plex_key="/library/metadata/3", title="Track", artist_id=artist_id, album_id=album_id
+    )
     track_id = db_manager.insert_track(track)
 
     db_manager.delete_track(track_id)
@@ -241,13 +253,14 @@ def test_migration_adds_environments_column(db_manager):
     cursor.execute("PRAGMA table_info(tracks)")
     columns = {col[1] for col in cursor.fetchall()}
 
-    assert 'environments' in columns
-    assert 'instruments' in columns
+    assert "environments" in columns
+    assert "instruments" in columns
 
 
 # ============================================================================
 # Phase G: Regression Tests for Data Integrity
 # ============================================================================
+
 
 def test_upsert_keeps_stable_id(db_manager):
     """Test that upserting a track with the same plex_key keeps the same ID."""
@@ -263,7 +276,7 @@ def test_upsert_keeps_stable_id(db_manager):
         title="Original Title",
         artist_id=artist_id,
         album_id=album_id,
-        duration_ms=180000
+        duration_ms=180000,
     )
     first_id = db_manager.insert_track(track)
 
@@ -273,7 +286,7 @@ def test_upsert_keeps_stable_id(db_manager):
         title="Updated Title",
         artist_id=artist_id,
         album_id=album_id,
-        duration_ms=190000
+        duration_ms=190000,
     )
     second_id = db_manager.insert_track(track_updated)
 
@@ -301,7 +314,7 @@ def test_foreign_keys_enforced(db_manager):
         title="Orphan Track",
         artist_id=artist_id,
         album_id=99999,  # Non-existent album
-        duration_ms=180000
+        duration_ms=180000,
     )
 
     # This should raise an error due to foreign key constraint
@@ -313,20 +326,12 @@ def test_get_last_sync_time_returns_success_status(db_manager):
     """Test that get_last_sync_time correctly queries for 'success' status."""
     # Insert a sync record with 'success' status
     sync_success = SyncHistory(
-        tracks_added=100,
-        tracks_updated=50,
-        tracks_removed=10,
-        status='success'
+        tracks_added=100, tracks_updated=50, tracks_removed=10, status="success"
     )
     db_manager.insert_sync_record(sync_success)
 
     # Insert a failed sync record
-    sync_failed = SyncHistory(
-        tracks_added=0,
-        tracks_updated=0,
-        tracks_removed=0,
-        status='failed'
-    )
+    sync_failed = SyncHistory(tracks_added=0, tracks_updated=0, tracks_removed=0, status="failed")
     db_manager.insert_sync_record(sync_failed)
 
     # get_last_sync_time should return the success record's date
@@ -351,7 +356,7 @@ def test_track_upsert_preserves_existing_tags(db_manager):
         duration_ms=180000,
         tags="energetic,upbeat",
         environments="workout,party",
-        instruments="drums,guitar"
+        instruments="drums,guitar",
     )
     track_id = db_manager.insert_track(track_with_tags)
 
@@ -364,7 +369,7 @@ def test_track_upsert_preserves_existing_tags(db_manager):
         duration_ms=185000,
         tags=None,  # No tags provided
         environments=None,
-        instruments=None
+        instruments=None,
     )
     db_manager.insert_track(track_without_tags)
 
@@ -392,7 +397,7 @@ def test_bulk_fetch_tracks_by_ids(db_manager):
             plex_key=f"/library/metadata/{100 + i}",
             title=f"Track {i}",
             artist_id=artist_id,
-            album_id=album_id
+            album_id=album_id,
         )
         track_ids.append(db_manager.insert_track(track))
 
@@ -413,20 +418,17 @@ def test_bulk_fetch_track_details_by_ids(db_manager):
     album_id = db_manager.insert_album(album)
 
     track = Track(
-        plex_key="/library/metadata/3",
-        title="Test Track",
-        artist_id=artist_id,
-        album_id=album_id
+        plex_key="/library/metadata/3", title="Test Track", artist_id=artist_id, album_id=album_id
     )
     track_id = db_manager.insert_track(track)
 
     details = db_manager.get_track_details_by_ids([track_id])
 
     assert len(details) == 1
-    assert details[0]['title'] == "Test Track"
-    assert details[0]['artist_name'] == "Test Artist"
-    assert details[0]['album_title'] == "Test Album"
-    assert 'file_path' in details[0]
+    assert details[0]["title"] == "Test Track"
+    assert details[0]["artist_name"] == "Test Artist"
+    assert details[0]["album_title"] == "Test Album"
+    assert "file_path" in details[0]
 
 
 def test_bulk_fetch_track_details_includes_file_path(db_manager):
@@ -442,14 +444,14 @@ def test_bulk_fetch_track_details_includes_file_path(db_manager):
         title="Path Track",
         artist_id=artist_id,
         album_id=album_id,
-        file_path="/music/artist/album/track.flac"
+        file_path="/music/artist/album/track.flac",
     )
     track_id = db_manager.insert_track(track)
 
     details = db_manager.get_track_details_by_ids([track_id])
 
     assert len(details) == 1
-    assert details[0]['file_path'] == "/music/artist/album/track.flac"
+    assert details[0]["file_path"] == "/music/artist/album/track.flac"
 
 
 def _create_test_track(db_manager, title="Track", plex_key="t1", file_path=None):
@@ -538,3 +540,209 @@ def test_audio_features_count(db_manager):
 
     db_manager.insert_audio_features(t1, {"tempo": 120.0})
     assert db_manager.get_audio_features_count() == 1
+
+
+# ============================================================================
+# Playlist CRUD operations
+# ============================================================================
+
+
+def _setup_track_with_metadata(db_manager, plex_key="t1", title="Track", genre=None, year=None):
+    """Create a track with artist/album and return (track_id, artist_id, album_id)."""
+    artist = Artist(plex_key=f"a-{plex_key}", name=f"Artist for {title}")
+    artist_id = db_manager.insert_artist(artist)
+    album = Album(plex_key=f"al-{plex_key}", title=f"Album for {title}", artist_id=artist_id)
+    album_id = db_manager.insert_album(album)
+    track = Track(
+        plex_key=plex_key,
+        title=title,
+        artist_id=artist_id,
+        album_id=album_id,
+        genre=genre,
+        year=year,
+    )
+    track_id = db_manager.insert_track(track)
+    return track_id, artist_id, album_id
+
+
+def test_get_playlists_empty(db_manager):
+    assert db_manager.get_playlists() == []
+
+
+def test_get_playlists_with_track_count(db_manager):
+    t1, _, _ = _setup_track_with_metadata(db_manager, "t1", "Song 1")
+    t2, _, _ = _setup_track_with_metadata(db_manager, "t2", "Song 2")
+
+    p1 = db_manager.insert_playlist(Playlist(name="Two Songs", created_by_ai=True))
+    db_manager.add_track_to_playlist(p1, t1, 0)
+    db_manager.add_track_to_playlist(p1, t2, 1)
+
+    db_manager.insert_playlist(Playlist(name="Empty Playlist", created_by_ai=False))
+
+    playlists = db_manager.get_playlists()
+    assert len(playlists) == 2
+
+    by_name = {p.name: p for p in playlists}
+    assert by_name["Two Songs"].track_count == 2
+    assert by_name["Empty Playlist"].track_count == 0
+
+
+def test_get_playlist_by_id_found(db_manager):
+    pid = db_manager.insert_playlist(
+        Playlist(name="My Playlist", description="desc", created_by_ai=True, mood_query="chill")
+    )
+    result = db_manager.get_playlist_by_id(pid)
+    assert result is not None
+    assert result.name == "My Playlist"
+    assert result.description == "desc"
+    assert result.mood_query == "chill"
+
+
+def test_get_playlist_by_id_not_found(db_manager):
+    assert db_manager.get_playlist_by_id(99999) is None
+
+
+def test_get_playlist_tracks_ordered(db_manager):
+    t1, _, _ = _setup_track_with_metadata(db_manager, "t1", "First")
+    t2, _, _ = _setup_track_with_metadata(db_manager, "t2", "Second")
+    t3, _, _ = _setup_track_with_metadata(db_manager, "t3", "Third")
+
+    pid = db_manager.insert_playlist(Playlist(name="Ordered", created_by_ai=False))
+    db_manager.add_track_to_playlist(pid, t3, 0)
+    db_manager.add_track_to_playlist(pid, t1, 1)
+    db_manager.add_track_to_playlist(pid, t2, 2)
+
+    tracks = db_manager.get_playlist_tracks(pid)
+    assert len(tracks) == 3
+    assert tracks[0]["title"] == "Third"
+    assert tracks[1]["title"] == "First"
+    assert tracks[2]["title"] == "Second"
+    assert tracks[0]["position"] == 0
+    assert "artist_name" in tracks[0]
+    assert "album_title" in tracks[0]
+
+
+def test_get_playlist_tracks_empty(db_manager):
+    pid = db_manager.insert_playlist(Playlist(name="Empty", created_by_ai=False))
+    assert db_manager.get_playlist_tracks(pid) == []
+
+
+def test_add_tracks_to_playlist_bulk(db_manager):
+    t1, _, _ = _setup_track_with_metadata(db_manager, "t1", "Song 1")
+    t2, _, _ = _setup_track_with_metadata(db_manager, "t2", "Song 2")
+    t3, _, _ = _setup_track_with_metadata(db_manager, "t3", "Song 3")
+
+    pid = db_manager.insert_playlist(Playlist(name="Bulk", created_by_ai=False))
+    db_manager.add_tracks_to_playlist(pid, [t1, t2, t3])
+
+    tracks = db_manager.get_playlist_tracks(pid)
+    assert len(tracks) == 3
+    assert tracks[0]["position"] == 0
+    assert tracks[2]["position"] == 2
+
+
+def test_add_tracks_to_playlist_empty_list(db_manager):
+    pid = db_manager.insert_playlist(Playlist(name="Nothing", created_by_ai=False))
+    db_manager.add_tracks_to_playlist(pid, [])
+    assert db_manager.get_playlist_tracks(pid) == []
+
+
+def test_delete_playlist(db_manager):
+    t1, _, _ = _setup_track_with_metadata(db_manager, "t1", "Song")
+    pid = db_manager.insert_playlist(Playlist(name="ToDelete", created_by_ai=False))
+    db_manager.add_track_to_playlist(pid, t1, 0)
+
+    db_manager.delete_playlist(pid)
+    assert db_manager.get_playlist_by_id(pid) is None
+    assert db_manager.get_playlist_tracks(pid) == []
+
+
+def test_update_playlist_name(db_manager):
+    pid = db_manager.insert_playlist(Playlist(name="Old Name", created_by_ai=False))
+    db_manager.update_playlist(pid, name="New Name")
+
+    result = db_manager.get_playlist_by_id(pid)
+    assert result.name == "New Name"
+
+
+def test_update_playlist_description(db_manager):
+    pid = db_manager.insert_playlist(
+        Playlist(name="P", description="old desc", created_by_ai=False)
+    )
+    db_manager.update_playlist(pid, description="new desc")
+
+    result = db_manager.get_playlist_by_id(pid)
+    assert result.description == "new desc"
+    assert result.name == "P"  # unchanged
+
+
+def test_update_playlist_no_changes(db_manager):
+    pid = db_manager.insert_playlist(Playlist(name="NoChange", created_by_ai=False))
+    db_manager.update_playlist(pid)  # no args → no-op
+    result = db_manager.get_playlist_by_id(pid)
+    assert result.name == "NoChange"
+
+
+# ============================================================================
+# FTS and recently tagged
+# ============================================================================
+
+
+def test_search_tracks_fts(db_manager):
+    _setup_track_with_metadata(db_manager, "t1", "Bohemian Rhapsody", genre="Rock")
+    _setup_track_with_metadata(db_manager, "t2", "Stairway to Heaven", genre="Rock")
+    _setup_track_with_metadata(db_manager, "t3", "Take Five", genre="Jazz")
+
+    results = db_manager.search_tracks_fts("Bohemian")
+    assert len(results) == 1
+    assert results[0].title == "Bohemian Rhapsody"
+
+
+def test_search_tracks_fts_no_results(db_manager):
+    _setup_track_with_metadata(db_manager, "t1", "Hello World")
+    results = db_manager.search_tracks_fts("nonexistent")
+    assert results == []
+
+
+def test_get_recently_tagged_tracks(db_manager):
+    artist = Artist(plex_key="a1", name="Artist")
+    artist_id = db_manager.insert_artist(artist)
+    album = Album(plex_key="al1", title="Album", artist_id=artist_id)
+    album_id = db_manager.insert_album(album)
+
+    # Track with tags
+    tagged = Track(
+        plex_key="t1",
+        title="Tagged Song",
+        artist_id=artist_id,
+        album_id=album_id,
+        tags="energetic,upbeat",
+        environments="gym,party",
+        instruments="drums,bass",
+    )
+    db_manager.insert_track(tagged)
+
+    # Track without tags
+    untagged = Track(
+        plex_key="t2",
+        title="Untagged Song",
+        artist_id=artist_id,
+        album_id=album_id,
+    )
+    db_manager.insert_track(untagged)
+
+    results = db_manager.get_recently_tagged_tracks(limit=10)
+    assert len(results) == 1
+    assert results[0]["title"] == "Tagged Song"
+    assert results[0]["tags"] == "energetic,upbeat"
+    assert results[0]["artist"] == "Artist"
+
+
+def test_get_audio_features_by_track_ids_empty(db_manager):
+    result = db_manager.get_audio_features_by_track_ids([])
+    assert result == {}
+
+
+def test_get_audio_features_nonexistent(db_manager):
+    result = db_manager.get_audio_features(99999)
+    assert result is None

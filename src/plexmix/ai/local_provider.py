@@ -91,7 +91,7 @@ class LocalLLMProvider(AIProvider):
         prompt: str,
         temperature: Optional[float] = None,
         max_tokens: int = 4096,
-        timeout: int = 30
+        timeout: int = 30,
     ) -> str:
         """Send a prompt to local LLM and return the text response."""
         # Use provided temperature or fall back to instance default
@@ -114,16 +114,78 @@ class LocalLLMProvider(AIProvider):
                 is_retryable = any(x in error_str for x in ["timeout", "connection", "pipe"])
 
                 if is_retryable and attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
-                    logger.warning(f"[LocalLLM] Retryable error on attempt {attempt + 1}: {e}. Retrying in {delay}s...")
+                    delay = base_delay * (2**attempt)
+                    logger.warning(
+                        f"[LocalLLM] Retryable error on attempt {attempt + 1}: {e}. Retrying in {delay}s..."
+                    )
                     time.sleep(delay)
                     continue
                 raise
 
         raise RuntimeError("Failed to get response from LocalLLM after retries")
 
-    def _call_endpoint_with_params(self, prompt: str, temperature: float, max_tokens: int, timeout: int) -> str:
-        """Call endpoint with specific parameters."""
+    def _call_endpoint_with_params(
+        self, prompt: str, temperature: float, max_tokens: int, timeout: int
+    ) -> str:
+        """Call endpoint with specific parameters, using streaming to avoid timeouts."""
+        messages = [{"role": "user", "content": prompt}]
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+
+        headers = {"Content-Type": "application/json"}
+        if self.auth_token:
+            headers["Authorization"] = f"Bearer {self.auth_token}"
+
+        if not self.endpoint:
+            raise ValueError("Local endpoint URL required when using endpoint mode")
+
+        response = requests.post(
+            self.endpoint,
+            data=json.dumps(payload),
+            headers=headers,
+            timeout=timeout,
+            stream=True,
+        )
+        response.raise_for_status()
+
+        # Accumulate streamed SSE chunks into full response text
+        parts: list[str] = []
+        try:
+            for line in response.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data:"):
+                    continue
+                data_str = line[len("data:") :].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = (chunk.get("choices") or [{}])[0].get("delta", {})
+                    content = delta.get("content")
+                    if content:
+                        parts.append(content)
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+        except requests.exceptions.ChunkedEncodingError:
+            # Stream ended unexpectedly; return what we have
+            pass
+        finally:
+            response.close()
+
+        if parts:
+            return "".join(parts)
+
+        # Fallback: if streaming produced nothing, try non-streaming
+        return self._call_endpoint_non_streaming(prompt, temperature, max_tokens, timeout)
+
+    def _call_endpoint_non_streaming(
+        self, prompt: str, temperature: float, max_tokens: int, timeout: int
+    ) -> str:
+        """Non-streaming fallback for endpoints that don't support SSE."""
         messages = [{"role": "user", "content": prompt}]
         payload = {
             "model": self.model,
@@ -137,7 +199,7 @@ class LocalLLMProvider(AIProvider):
             headers["Authorization"] = f"Bearer {self.auth_token}"
 
         response = requests.post(
-            self.endpoint,
+            self.endpoint,  # type: ignore[arg-type]
             data=json.dumps(payload),
             headers=headers,
             timeout=timeout,
@@ -148,9 +210,9 @@ class LocalLLMProvider(AIProvider):
         choices = data.get("choices", [])
         if choices:
             message = choices[0].get("message") or {}
-            return message.get("content", "")
+            return str(message.get("content", ""))
 
-        return data.get("content", "") or data.get("text", "")
+        return str(data.get("content", "") or data.get("text", ""))
 
     def _generate_with_worker_params(self, prompt: str, temperature: float, max_tokens: int) -> str:
         """Generate with worker using specific parameters."""
@@ -176,7 +238,7 @@ class LocalLLMProvider(AIProvider):
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Unknown local generation error"))
 
-        return result.get("text", "")
+        return str(result.get("text", ""))
 
     # ------------------------------------------------------------------
     # Builtin worker handling
@@ -250,7 +312,7 @@ class LocalLLMProvider(AIProvider):
         if result.get("status") != "ok":
             raise RuntimeError(result.get("error", "Unknown local generation error"))
 
-        return result.get("text", "")
+        return str(result.get("text", ""))
 
     def _shutdown_worker(self, cache_key: str) -> None:
         worker_info = self.worker_cache.get(cache_key)
@@ -260,50 +322,21 @@ class LocalLLMProvider(AIProvider):
         conn = worker_info.get("conn")
         proc = worker_info.get("process")
         try:
-            conn.send({"cmd": "shutdown"})
+            if conn is not None:
+                conn.send({"cmd": "shutdown"})
         except Exception:
             pass
-        if proc.is_alive():
+        if proc is not None and proc.is_alive():
             proc.join(timeout=2)
         self.worker_cache.pop(cache_key, None)
 
     # ------------------------------------------------------------------
-    # Endpoint handling
+    # Endpoint handling (legacy — delegates to parameterised variant)
     # ------------------------------------------------------------------
     def _call_endpoint(self, prompt: str) -> str:
-        messages = [
-            {
-                "role": "user",
-                "content": prompt,
-            }
-        ]
-        payload = {
-            "model": self.model,
-            "messages": messages,
-            "temperature": self.temperature,
-            "max_tokens": self.max_output_tokens,
-        }
-
-        headers = {"Content-Type": "application/json"}
-        if self.auth_token:
-            headers["Authorization"] = f"Bearer {self.auth_token}"
-
-        response = requests.post(
-            self.endpoint,
-            data=json.dumps(payload),
-            headers=headers,
-            timeout=60,
+        return self._call_endpoint_with_params(
+            prompt, self.temperature, self.max_output_tokens, timeout=60
         )
-        response.raise_for_status()
-        data = response.json()
-
-        # Support OpenAI-compatible responses by default
-        choices = data.get("choices", [])
-        if choices:
-            message = choices[0].get("message") or {}
-            return message.get("content", "")
-
-        return data.get("content", "") or data.get("text", "")
 
 
 def _local_llm_worker(
@@ -311,8 +344,8 @@ def _local_llm_worker(
     trust_remote_code: bool,
     torch_dtype: str,
     device_preference: str,
-    conn,
-):
+    conn: Any,
+) -> None:
     try:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -339,7 +372,7 @@ def _local_llm_worker(
 
         if device_preference != "auto":
             device = torch.device(device_preference)
-            model.to(device)
+            model.to(device)  # type: ignore[arg-type]
         else:
             device = next(model.parameters()).device
 
@@ -371,7 +404,7 @@ def _local_llm_worker(
                     top_p=0.95,
                 )
 
-                new_tokens = generation[:, inputs["input_ids"].shape[-1]:]
+                new_tokens = generation[:, inputs["input_ids"].shape[-1] :]
                 text = tokenizer.batch_decode(new_tokens, skip_special_tokens=True)[0]
                 conn.send({"status": "ok", "text": text})
             else:

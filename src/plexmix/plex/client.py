@@ -1,7 +1,7 @@
-from plexapi.server import PlexServer
-from plexapi.exceptions import Unauthorized, NotFound, BadRequest
-from plexapi.library import MusicSection
-from typing import List, Optional, Generator
+from plexapi.server import PlexServer  # type: ignore[import-untyped]
+from plexapi.exceptions import Unauthorized, NotFound, BadRequest  # type: ignore[import-untyped]
+from plexapi.library import MusicSection  # type: ignore[import-untyped]
+from typing import Any, List, Optional, Generator
 import logging
 import time
 
@@ -20,7 +20,7 @@ class PlexClient:
     def connect(self) -> bool:
         max_retries = 3
         retry_delay = 1
-        
+
         # Clean the token (remove any whitespace)
         cleaned_token = self.token.strip() if self.token else ""
 
@@ -47,7 +47,9 @@ class PlexClient:
                     time.sleep(retry_delay)
                     retry_delay *= 2
                 else:
-                    logger.error(f"Failed to connect to Plex server after {max_retries} attempts: {e}")
+                    logger.error(
+                        f"Failed to connect to Plex server after {max_retries} attempts: {e}"
+                    )
                     return False
 
         return False
@@ -62,14 +64,35 @@ class PlexClient:
             logger.error(f"Connection test failed: {e}")
             return False
 
+    def validate_token(self) -> tuple[bool, str]:
+        """Validate the current Plex token and return (valid, message).
+
+        Use this as a pre-flight check before expensive operations like sync.
+        Returns a tuple of (is_valid, human_readable_message).
+        """
+        if not self.token or not self.token.strip():
+            return False, "Plex token is empty. Configure it in settings or via CLI."
+
+        try:
+            server = PlexServer(self.url, self.token.strip())
+            name = server.friendlyName
+            return True, f"Connected to {name}"
+        except Unauthorized:
+            return False, "Plex token is invalid or expired. Please update your token."
+        except BadRequest as e:
+            return False, f"Bad request: {e}. Check server URL and token format."
+        except Exception as e:
+            return False, f"Cannot reach Plex server: {e}"
+
     def get_music_libraries(self) -> List[str]:
         if not self.server:
             if not self.connect():
                 return []
 
         try:
+            assert self.server is not None
             sections = self.server.library.sections()
-            music_sections = [section.title for section in sections if section.type == 'artist']
+            music_sections = [section.title for section in sections if section.type == "artist"]
             logger.info(f"Found {len(music_sections)} music libraries")
             return music_sections
         except Exception as e:
@@ -92,6 +115,7 @@ class PlexClient:
             else:
                 library_name = name_or_index
 
+            assert self.server is not None
             self.music_library = self.server.library.section(library_name)
             logger.info(f"Selected music library: {library_name}")
             return True
@@ -195,60 +219,62 @@ class PlexClient:
         except Exception as e:
             logger.error(f"Failed to retrieve tracks: {e}")
 
-    def extract_artist_metadata(self, plex_artist) -> Artist:
+    def extract_artist_metadata(self, plex_artist: Any) -> Artist:
         if not plex_artist.title or not plex_artist.title.strip():
             raise ValueError(f"Artist has empty name (key: {plex_artist.ratingKey})")
 
-        genres = [genre.tag for genre in plex_artist.genres] if hasattr(plex_artist, 'genres') else []
+        genres = (
+            [genre.tag for genre in plex_artist.genres] if hasattr(plex_artist, "genres") else []
+        )
         genre_str = ", ".join(genres) if genres else None
 
         return Artist(
             plex_key=str(plex_artist.ratingKey),
             name=plex_artist.title,
             genre=genre_str,
-            bio=plex_artist.summary if hasattr(plex_artist, 'summary') else None
+            bio=plex_artist.summary if hasattr(plex_artist, "summary") else None,
         )
 
-    def extract_album_metadata(self, plex_album) -> Album:
+    def extract_album_metadata(self, plex_album: Any) -> Album:
         if not plex_album.title or not plex_album.title.strip():
             raise ValueError(f"Album has empty title (key: {plex_album.ratingKey})")
 
-        genres = [genre.tag for genre in plex_album.genres] if hasattr(plex_album, 'genres') else []
+        genres = [genre.tag for genre in plex_album.genres] if hasattr(plex_album, "genres") else []
         genre_str = ", ".join(genres) if genres else None
 
         # Use parentRatingKey (available without extra API call) instead of plex_album.artist()
         artist_key = None
-        if hasattr(plex_album, 'parentRatingKey') and plex_album.parentRatingKey:
+        if hasattr(plex_album, "parentRatingKey") and plex_album.parentRatingKey:
             artist_key = str(plex_album.parentRatingKey)
 
         album = Album(
             plex_key=str(plex_album.ratingKey),
             title=plex_album.title,
             artist_id=0,  # Will be set in sync based on artist rating key
-            year=plex_album.year if hasattr(plex_album, 'year') else None,
+            year=plex_album.year if hasattr(plex_album, "year") else None,
             genre=genre_str,
-            cover_art_url=plex_album.thumb if hasattr(plex_album, 'thumb') else None
+            cover_art_url=plex_album.thumb if hasattr(plex_album, "thumb") else None,
         )
 
         # Store artist rating key as temporary attribute (not part of model schema)
-        album.__dict__['_artist_key'] = artist_key
+        album.__dict__["_artist_key"] = artist_key
 
         return album
 
-    def extract_track_metadata(self, plex_track) -> Track:
+    def extract_track_metadata(self, plex_track: Any) -> Track:
         if not plex_track.title or not plex_track.title.strip():
             raise ValueError(f"Track has empty title (key: {plex_track.ratingKey})")
 
-        genres = [genre.tag for genre in plex_track.genres] if hasattr(plex_track, 'genres') else []
+        genres = [genre.tag for genre in plex_track.genres] if hasattr(plex_track, "genres") else []
         genre_str = ", ".join(genres) if genres else None
 
         # Use grandparentRatingKey (artist) and parentRatingKey (album) — available
         # without extra API calls, unlike plex_track.artist() / plex_track.album()
         artist_key = None
-        if hasattr(plex_track, 'grandparentRatingKey') and plex_track.grandparentRatingKey:
+        if hasattr(plex_track, "grandparentRatingKey") and plex_track.grandparentRatingKey:
             artist_key = str(plex_track.grandparentRatingKey)
         album_key = None
-        if hasattr(plex_track, 'parentRatingKey') and plex_track.parentRatingKey:
+        if hasattr(plex_track, "parentRatingKey") and plex_track.parentRatingKey:
             album_key = str(plex_track.parentRatingKey)
 
         track = Track(
@@ -256,34 +282,37 @@ class PlexClient:
             title=plex_track.title,
             artist_id=0,  # Will be set in sync based on artist rating key
             album_id=0,  # Will be set in sync based on album rating key
-            duration_ms=plex_track.duration if hasattr(plex_track, 'duration') else None,
+            duration_ms=plex_track.duration if hasattr(plex_track, "duration") else None,
             genre=genre_str,
-            year=plex_track.year if hasattr(plex_track, 'year') else None,
-            rating=plex_track.userRating if hasattr(plex_track, 'userRating') else None,
-            play_count=plex_track.viewCount if hasattr(plex_track, 'viewCount') else 0,
-            last_played=plex_track.lastViewedAt if hasattr(plex_track, 'lastViewedAt') else None,
-            file_path=self._extract_file_path(plex_track)
+            year=plex_track.year if hasattr(plex_track, "year") else None,
+            rating=plex_track.userRating if hasattr(plex_track, "userRating") else None,
+            play_count=plex_track.viewCount if hasattr(plex_track, "viewCount") else 0,
+            last_played=plex_track.lastViewedAt if hasattr(plex_track, "lastViewedAt") else None,
+            file_path=self._extract_file_path(plex_track),
         )
 
         # Store rating keys as temporary attributes (not part of model schema)
-        track.__dict__['_artist_key'] = artist_key
-        track.__dict__['_album_key'] = album_key
+        track.__dict__["_artist_key"] = artist_key
+        track.__dict__["_album_key"] = album_key
 
         return track
 
     @staticmethod
-    def _extract_file_path(plex_track: object) -> Optional[str]:
+    def _extract_file_path(plex_track: Any) -> Optional[str]:
         """Extract the file path from a Plex track's media parts."""
         try:
-            if hasattr(plex_track, 'media') and plex_track.media:
+            if hasattr(plex_track, "media") and plex_track.media:
                 parts = plex_track.media[0].parts if plex_track.media[0].parts else []
                 if parts:
-                    return parts[0].file
+                    file_path: Optional[str] = parts[0].file
+                    return file_path
         except Exception:
             pass
         return None
 
-    def create_playlist(self, name: str, track_plex_keys: List[str], description: Optional[str] = None):
+    def create_playlist(
+        self, name: str, track_plex_keys: List[str], description: Optional[str] = None
+    ) -> Any:
         if not self.music_library:
             logger.error("No music library selected")
             return None
@@ -302,9 +331,13 @@ class PlexClient:
                 logger.error("No valid tracks found for playlist")
                 return None
 
+            if not self.server:
+                logger.error("Not connected to Plex server")
+                return None
+
             playlist = self.server.createPlaylist(title=name, items=tracks)
 
-            if description and hasattr(playlist, 'editSummary'):
+            if description and hasattr(playlist, "editSummary"):
                 playlist.editSummary(description)
 
             logger.info(f"Created playlist '{name}' with {len(tracks)} tracks")

@@ -1,7 +1,6 @@
 import hmac
 import logging
 import reflex as rx
-from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -17,7 +16,7 @@ class AppState(rx.State):
     plex_configured: bool = False
     ai_provider_configured: bool = False
     embedding_provider_configured: bool = False
-    
+
     # Configuration details
     plex_library_name: str = ""
     plex_server_url: str = ""
@@ -30,7 +29,7 @@ class AppState(rx.State):
     embedded_tracks: str = "0"
     audio_analyzed_tracks: str = "0"
     last_sync: Optional[str] = None
-    
+
     embedding_dimension_warning: str = ""
 
     current_task: Optional[str] = None
@@ -41,6 +40,9 @@ class AppState(rx.State):
 
     # Page loading state for navigation transitions
     is_page_loading: bool = True
+
+    # Cross-page rerun config (set by History, consumed by Generator)
+    _rerun_generation_config: str = ""
 
     @rx.event
     def set_page_loading(self, loading: bool):
@@ -125,6 +127,16 @@ class AppState(rx.State):
         if not self.check_auth():
             self.is_page_loading = False
             return
+
+        # Cancel orphaned background tasks from dead browser sessions.
+        # When a user closes and reopens the browser they get a new session
+        # token; old tasks keep pushing deltas to the dead WebSocket which
+        # floods the console with "delta to disconnected client" warnings.
+        from plexmix.ui.job_manager import jobs
+
+        token = self.router.session.client_token
+        jobs.cancel_stale_clients(token)
+
         self.check_configuration_status()
         self.load_library_stats()
         return rx.console_log("App state loaded")
@@ -132,7 +144,13 @@ class AppState(rx.State):
     def check_configuration_status(self):
         try:
             from plexmix.config.settings import Settings
-            from plexmix.config.credentials import get_plex_token, get_google_api_key, get_openai_api_key, get_anthropic_api_key, get_cohere_api_key
+            from plexmix.config.credentials import (
+                get_plex_token,
+                get_google_api_key,
+                get_openai_api_key,
+                get_anthropic_api_key,
+                get_cohere_api_key,
+            )
             import os
 
             settings = Settings.load_from_file()
@@ -141,18 +159,19 @@ class AppState(rx.State):
             plex_token = get_plex_token()
             logger.debug(
                 "Plex URL: %s, Token: %s, Library: %s",
-                settings.plex.url, bool(plex_token), settings.plex.library_name,
+                settings.plex.url,
+                bool(plex_token),
+                settings.plex.library_name,
             )
             self.plex_configured = bool(
-                settings.plex.url and
-                plex_token and
-                settings.plex.library_name
+                settings.plex.url and plex_token and settings.plex.library_name
             )
             self.plex_library_name = settings.plex.library_name or ""
             self.plex_server_url = settings.plex.url or ""
 
             # Check AI provider configuration — only check the key for the *selected* provider
             from plexmix.config.credentials import get_custom_ai_api_key
+
             ai_provider = settings.ai.default_provider
             ai_key_map = {
                 "gemini": lambda: get_google_api_key() or os.environ.get("GOOGLE_API_KEY"),
@@ -178,6 +197,7 @@ class AppState(rx.State):
 
             # Check embedding provider configuration — only check the key for the *selected* provider
             from plexmix.config.credentials import get_custom_embedding_api_key
+
             embed_provider = settings.embedding.default_provider
             embed_key_map = {
                 "gemini": lambda: get_google_api_key() or os.environ.get("GOOGLE_API_KEY"),
@@ -238,12 +258,13 @@ class AppState(rx.State):
 
                 # Check for dimension mismatch using metadata file
                 import pickle
+
                 faiss_path = settings.database.get_index_path()
-                metadata_path = faiss_path.with_suffix('.metadata')
+                metadata_path = faiss_path.with_suffix(".metadata")
                 if metadata_path.exists():
-                    with open(metadata_path, 'rb') as f:
+                    with open(metadata_path, "rb") as f:
                         metadata = pickle.load(f)
-                        loaded_dimension = metadata.get('dimension', 0)
+                        loaded_dimension = metadata.get("dimension", 0)
                         expected_dimension = settings.embedding.get_dimension_for_provider(
                             settings.embedding.default_provider
                         )

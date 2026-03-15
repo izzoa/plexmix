@@ -22,6 +22,7 @@ class CustomProvider(AIProvider):
         self.provider_name = "Custom"
         try:
             from openai import OpenAI
+
             self.client = OpenAI(base_url=base_url, api_key=self.api_key)
             logger.info(f"Initialized custom provider: {base_url} with model {model}")
         except ImportError:
@@ -59,7 +60,7 @@ class CustomProvider(AIProvider):
                 is_retryable = any(x in error_str for x in ["timeout", "429", "rate", "overloaded"])
 
                 if is_retryable and attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)
+                    delay = base_delay * (2**attempt)
                     logger.warning(
                         f"[Custom] Retryable error on attempt {attempt + 1}: {e}. "
                         f"Retrying in {delay}s..."

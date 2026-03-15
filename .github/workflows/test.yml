@@ -50,8 +50,27 @@ jobs:
     - name: Install project
       run: poetry install --no-interaction
 
-    - name: Run tests
-      run: poetry run pytest
+    - name: Check formatting (Black)
+      run: poetry run black --check src tests
+
+    - name: Lint (Ruff)
+      run: poetry run ruff check src tests
+
+    - name: Type check (Mypy)
+      if: matrix.python-version == '3.10'
+      run: >
+        poetry run mypy
+        src/plexmix/cli/
+        src/plexmix/config/
+        src/plexmix/database/
+        src/plexmix/plex/
+        src/plexmix/playlist/
+        src/plexmix/utils/
+        src/plexmix/ai/
+        src/plexmix/__init__.py
+
+    - name: Run tests with coverage
+      run: poetry run pytest --cov=plexmix --cov-fail-under=35 --cov-report=xml
 
     - name: Upload coverage
       uses: codecov/codecov-action@v4
