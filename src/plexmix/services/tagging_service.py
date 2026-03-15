@@ -1,7 +1,7 @@
 """Tag and embedding generation orchestration — shared between CLI and UI."""
 
 import logging
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from plexmix.config.constants import EMBEDDING_BATCH_SIZE
 from plexmix.database.models import Embedding

@@ -622,7 +622,7 @@ class LibraryState(AppState):
                     message=f"Generated {generated}/{total} embeddings",
                 )
 
-            embeddings_generated = generate_embeddings_for_tracks(
+            generate_embeddings_for_tracks(
                 db,
                 embedding_generator,
                 tracks,

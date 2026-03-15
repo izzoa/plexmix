@@ -5,7 +5,6 @@ used across sync, playlist, tagging, and other workflows.
 """
 
 import logging
-from typing import Optional
 
 from plexmix.config import credentials
 from plexmix.config.settings import Settings

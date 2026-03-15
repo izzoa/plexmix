@@ -212,7 +212,7 @@ def tags_generate(
                         progress_callback=on_progress,
                     )
 
-                total_in_index = rebuild_vector_index(db, vector_index, index_path)
+                rebuild_vector_index(db, vector_index, index_path)
                 console.print(
                     f"[green]Regenerated {embeddings_saved} embeddings with tags![/green]"
                 )
