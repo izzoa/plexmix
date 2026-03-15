@@ -33,7 +33,7 @@ def launch_ui(
 
         sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
 
-        import reflex as rx  # noqa: F401
+        import reflex as rx  # type: ignore[import-not-found]  # noqa: F401
 
         console.print("[bold green]Launching PlexMix Web UI...[/bold green]")
         console.print(f"Frontend: http://localhost:{port}")

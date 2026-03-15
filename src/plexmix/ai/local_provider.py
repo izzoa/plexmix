@@ -347,8 +347,8 @@ def _local_llm_worker(
     conn: Any,
 ) -> None:
     try:
-        import torch
-        from transformers import AutoModelForCausalLM, AutoTokenizer
+        import torch  # type: ignore[import-not-found]
+        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore[import-not-found]
 
         dtype = None
         if torch_dtype and torch_dtype != "auto":

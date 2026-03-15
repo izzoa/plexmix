@@ -306,7 +306,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         super().__init__()
         try:
-            from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]  # noqa: F401
+            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]  # noqa: F401
         except ImportError:
             raise ImportError(
                 "sentence-transformers not installed. Run: pip install sentence-transformers"
