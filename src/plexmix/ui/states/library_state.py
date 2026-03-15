@@ -468,18 +468,23 @@ class LibraryState(AppState):
                 )
             sync_engine = SyncEngine(plex_client, db, ai_provider=ai_provider)
 
-            if sync_mode == "regenerate":
-                sync_engine.regenerate_sync(
-                    generate_embeddings=False,
-                    progress_callback=progress_callback,
-                    cancel_event=cancel_event,
-                )
-            else:
-                sync_engine.incremental_sync(
-                    generate_embeddings=False,
-                    progress_callback=progress_callback,
-                    cancel_event=cancel_event,
-                )
+            loop = asyncio.get_running_loop()
+
+            def run_sync():
+                if sync_mode == "regenerate":
+                    sync_engine.regenerate_sync(
+                        generate_embeddings=False,
+                        progress_callback=progress_callback,
+                        cancel_event=cancel_event,
+                    )
+                else:
+                    sync_engine.incremental_sync(
+                        generate_embeddings=False,
+                        progress_callback=progress_callback,
+                        cancel_event=cancel_event,
+                    )
+
+            await loop.run_in_executor(None, run_sync)
 
             # Run audio analysis if enabled
             run_audio = settings.audio.analyze_on_sync
@@ -493,7 +498,7 @@ class LibraryState(AppState):
                         t for t in db.get_tracks_without_audio_features() if t.file_path
                     ]
                     if pending_tracks:
-                        loop = asyncio.get_event_loop()
+                        loop = asyncio.get_running_loop()
                         duration_limit = settings.audio.duration_limit
                         num_workers = max(1, settings.audio.workers)
                         executor = ThreadPoolExecutor(max_workers=num_workers)
@@ -622,12 +627,16 @@ class LibraryState(AppState):
                     message=f"Generated {generated}/{total} embeddings",
                 )
 
-            generate_embeddings_for_tracks(
-                db,
-                embedding_generator,
-                tracks,
-                batch_size=EMBEDDING_BATCH_SIZE,
-                progress_callback=on_progress,
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: generate_embeddings_for_tracks(
+                    db,
+                    embedding_generator,
+                    tracks,
+                    batch_size=EMBEDDING_BATCH_SIZE,
+                    progress_callback=on_progress,
+                ),
             )
 
             db.close()

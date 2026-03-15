@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-03-15
+
+### Fixed
+- Fix frontend freezing during tag generation, embedding generation, and library sync by wrapping blocking API calls and CPU-bound work in `run_in_executor` so the asyncio event loop stays responsive for WebSocket heartbeats
+- Wrap sync engine operations (`incremental_sync`, `regenerate_sync`) in executor
+- Wrap embedding generation API calls in executor (library and doctor pages)
+- Wrap tag generation API calls + `time.sleep` retries in executor (tagging and doctor pages)
+- Replace deprecated `asyncio.get_event_loop()` with `asyncio.get_running_loop()`
+
 ## [0.8.2] - 2026-03-15
 
 ### Fixed

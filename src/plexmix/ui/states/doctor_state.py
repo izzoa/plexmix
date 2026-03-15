@@ -387,26 +387,31 @@ class DoctorState(AppState):
                         extra={"fix_target": "tags", "fix_total": total_untagged},
                     )
 
-                results = tag_generator.generate_tags_batch(
-                    untagged_tracks,
-                    batch_size=20,
-                    progress_callback=progress_callback,
-                )
+                def run_tag_regen():
+                    results = tag_generator.generate_tags_batch(
+                        untagged_tracks,
+                        batch_size=20,
+                        progress_callback=progress_callback,
+                    )
 
-                updated = 0
-                for track_id, tag_data in results.items():
-                    tags = ",".join(tag_data.get("tags", []))
-                    environments = ",".join(tag_data.get("environments", []))
-                    instruments = ",".join(tag_data.get("instruments", []))
+                    count = 0
+                    for track_id, tag_data in results.items():
+                        tags = ",".join(tag_data.get("tags", []))
+                        environments = ",".join(tag_data.get("environments", []))
+                        instruments = ",".join(tag_data.get("instruments", []))
 
-                    if tags or environments or instruments:
-                        db.update_track_tags(
-                            track_id,
-                            tags=tags,
-                            environments=environments,
-                            instruments=instruments,
-                        )
-                        updated += 1
+                        if tags or environments or instruments:
+                            db.update_track_tags(
+                                track_id,
+                                tags=tags,
+                                environments=environments,
+                                instruments=instruments,
+                            )
+                            count += 1
+                    return count
+
+                loop = asyncio.get_running_loop()
+                updated = await loop.run_in_executor(None, run_tag_regen)
 
             task_store.update(
                 "doctor_fix",
@@ -562,59 +567,66 @@ class DoctorState(AppState):
 
         total = len(tracks_to_embed)
         batch_size = 50
-        embeddings_saved = 0
 
-        for i in range(0, len(tracks_to_embed), batch_size):
-            if cancel_event is not None and cancel_event.is_set():
-                break
+        def run_embedding_generation() -> int:
+            embeddings_saved = 0
 
-            batch_tracks = tracks_to_embed[i : i + batch_size]
+            for i in range(0, len(tracks_to_embed), batch_size):
+                if cancel_event is not None and cancel_event.is_set():
+                    break
 
-            track_data_list: List[Dict[str, Any]] = []
-            for track in batch_tracks:
-                artist = db.get_artist_by_id(track.artist_id)
-                album = db.get_album_by_id(track.album_id)
+                batch_tracks = tracks_to_embed[i : i + batch_size]
 
-                track_data = {
-                    "id": track.id,
-                    "title": track.title,
-                    "artist": artist.name if artist else "Unknown",
-                    "album": album.title if album else "Unknown",
-                    "genre": track.genre or "",
-                    "year": track.year or "",
-                    "tags": track.tags or "",
-                }
-                track_data_list.append(track_data)
+                track_data_list: List[Dict[str, Any]] = []
+                for track in batch_tracks:
+                    artist = db.get_artist_by_id(track.artist_id)
+                    album = db.get_album_by_id(track.album_id)
 
-            texts = [create_track_text(td) for td in track_data_list]
-            embeddings = embedding_generator.generate_batch_embeddings(texts, batch_size=batch_size)
+                    track_data = {
+                        "id": track.id,
+                        "title": track.title,
+                        "artist": artist.name if artist else "Unknown",
+                        "album": album.title if album else "Unknown",
+                        "genre": track.genre or "",
+                        "year": track.year or "",
+                        "tags": track.tags or "",
+                    }
+                    track_data_list.append(track_data)
 
-            for track_data, embedding_vector in zip(track_data_list, embeddings):
-                embedding = Embedding(
-                    track_id=track_data["id"],
-                    embedding_model=embedding_generator.provider_name,
-                    embedding_dim=embedding_generator.get_dimension(),
-                    vector=embedding_vector,
-                )
-                db.insert_embedding(embedding)
-                embeddings_saved += 1
-
-                task_store.update(
-                    "doctor_fix",
-                    progress=embeddings_saved,
-                    message=f"{progress_label} {embeddings_saved}/{total}",
-                    extra={"fix_total": total},
+                texts = [create_track_text(td) for td in track_data_list]
+                embeddings = embedding_generator.generate_batch_embeddings(
+                    texts, batch_size=batch_size
                 )
 
-        all_embeddings = db.get_all_embeddings()
-        track_ids = [emb[0] for emb in all_embeddings]
-        vectors = [emb[1] for emb in all_embeddings]
+                for track_data, embedding_vector in zip(track_data_list, embeddings):
+                    embedding = Embedding(
+                        track_id=track_data["id"],
+                        embedding_model=embedding_generator.provider_name,
+                        embedding_dim=embedding_generator.get_dimension(),
+                        vector=embedding_vector,
+                    )
+                    db.insert_embedding(embedding)
+                    embeddings_saved += 1
 
-        if track_ids:
-            vector_index.build_index(vectors, track_ids)
-            vector_index.save_index(str(index_path))
+                    task_store.update(
+                        "doctor_fix",
+                        progress=embeddings_saved,
+                        message=f"{progress_label} {embeddings_saved}/{total}",
+                        extra={"fix_total": total},
+                    )
 
-        return embeddings_saved
+            all_embeddings = db.get_all_embeddings()
+            track_ids = [emb[0] for emb in all_embeddings]
+            vectors = [emb[1] for emb in all_embeddings]
+
+            if track_ids:
+                vector_index.build_index(vectors, track_ids)
+                vector_index.save_index(str(index_path))
+
+            return embeddings_saved
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, run_embedding_generation)
 
     @rx.event
     def poll_task_progress(self):

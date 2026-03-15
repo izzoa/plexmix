@@ -297,27 +297,32 @@ class TaggingState(AppState):
                     },
                 )
 
-            # Generate tags
-            results = tag_generator.generate_tags_batch(
-                tracks,
-                batch_size=batch_size,
-                progress_callback=progress_callback,
-                cancel_event=cancel_event,
-            )
+            # Generate tags + save in executor to avoid blocking event loop
+            loop = asyncio.get_running_loop()
 
-            # Save tags to database
-            saved_count = 0
-            for track_id, tag_data in results.items():
-                if tag_data["tags"] or tag_data["environments"] or tag_data["instruments"]:
-                    db.update_track_tags(
-                        track_id,
-                        tags=",".join(tag_data["tags"]),
-                        environments=",".join(tag_data["environments"]),
-                        instruments=",".join(tag_data["instruments"]),
-                    )
-                    saved_count += 1
+            def run_tagging():
+                results = tag_generator.generate_tags_batch(
+                    tracks,
+                    batch_size=batch_size,
+                    progress_callback=progress_callback,
+                    cancel_event=cancel_event,
+                )
 
-            db.close()
+                saved_count = 0
+                for track_id, tag_data in results.items():
+                    if tag_data["tags"] or tag_data["environments"] or tag_data["instruments"]:
+                        db.update_track_tags(
+                            track_id,
+                            tags=",".join(tag_data["tags"]),
+                            environments=",".join(tag_data["environments"]),
+                            instruments=",".join(tag_data["instruments"]),
+                        )
+                        saved_count += 1
+
+                db.close()
+                return saved_count
+
+            saved_count = await loop.run_in_executor(None, run_tagging)
 
             task_store.update("tagging", extra={"tags_generated_count": saved_count})
             task_store.complete("tagging")
