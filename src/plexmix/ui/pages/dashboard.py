@@ -230,7 +230,6 @@ def dashboard() -> rx.Component:
             spacing="1",
             align="start",
         ),
-        on_mount=DashboardState.on_load,
         # ── Stats row ─────────────────────────────────────────────
         rx.grid(
             _stat_tile(
@@ -303,6 +302,7 @@ def dashboard() -> rx.Component:
         ),
         # ── Recent playlists ─────────────────────────────────────
         _recent_playlists_section(),
+        on_mount=DashboardState.on_load,
         spacing="6",
         width="100%",
     )
