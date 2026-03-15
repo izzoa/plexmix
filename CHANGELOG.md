@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-03-15
+
+### Added
+- App version number displayed in sidebar navigation (desktop and mobile)
+
+### Fixed
+- Dashboard showing 0/0/0/0 stats and "Configure" on fresh page load — added `on_mount` fallback for when `on_load` doesn't fire after the index page redirect
+- Last Sync now uses `sync_history` table instead of `MAX(last_played)` which was always NULL for users who sync but don't play through Plex
+- Mypy errors for optional dependency imports (reflex, torch, transformers, sentence-transformers)
+- Ruff lint warnings for unused imports and variables
+
 ## [0.8.0] - 2026-03-15
 
 ### Added
