@@ -16,9 +16,7 @@ sync_app = typer.Typer(name="sync", help="Library synchronization", invoke_witho
 console = Console()
 
 
-def _connect_and_build(
-    settings: Settings, generate_embeddings: bool = True
-) -> Tuple:
+def _connect_and_build(settings: Settings, generate_embeddings: bool = True) -> Tuple:
     """Returns (plex_client, ai_provider, embedding_generator, vector_index).
 
     Raises :class:`PlexConnectionError` if Plex connection fails.

@@ -553,9 +553,7 @@ class LibraryState(AppState):
             if cancel_event.is_set():
                 task_store.complete("sync", status="cancelled")
             elif ai_provider is None:
-                task_store.complete(
-                    "sync", message="Sync completed (tagging skipped)"
-                )
+                task_store.complete("sync", message="Sync completed (tagging skipped)")
             else:
                 task_store.complete("sync")
 
@@ -625,7 +623,11 @@ class LibraryState(AppState):
                 )
 
             embeddings_generated = generate_embeddings_for_tracks(
-                db, embedding_generator, tracks, batch_size=EMBEDDING_BATCH_SIZE, progress_callback=on_progress
+                db,
+                embedding_generator,
+                tracks,
+                batch_size=EMBEDDING_BATCH_SIZE,
+                progress_callback=on_progress,
             )
 
             db.close()
@@ -804,7 +806,9 @@ class LibraryState(AppState):
             if cancelled:
                 task_store.update(
                     "audio",
-                    extra={"result_msg": f"Audio analysis stopped — {analyzed}/{total} tracks analyzed"},
+                    extra={
+                        "result_msg": f"Audio analysis stopped — {analyzed}/{total} tracks analyzed"
+                    },
                 )
                 task_store.complete("audio", status="cancelled")
             else:

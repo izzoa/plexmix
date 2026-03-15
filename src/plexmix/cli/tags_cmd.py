@@ -199,9 +199,7 @@ def tags_generate(
                     TaskProgressColumn(),
                     TimeRemainingColumn(),
                 ) as progress:
-                    task = progress.add_task(
-                        "Regenerating embeddings...", total=len(tagged_tracks)
-                    )
+                    task = progress.add_task("Regenerating embeddings...", total=len(tagged_tracks))
 
                     def on_progress(generated: int, total: int) -> None:
                         progress.update(task, completed=generated)

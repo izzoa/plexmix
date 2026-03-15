@@ -128,9 +128,7 @@ class TestSyncIncremental:
 
         settings = _make_settings(tmp_path)
         mock_load.return_value = settings
-        mock_connect_plex.side_effect = PlexConnectionError(
-            "Failed to connect to Plex server."
-        )
+        mock_connect_plex.side_effect = PlexConnectionError("Failed to connect to Plex server.")
 
         result = runner.invoke(app, ["sync", "incremental"])
         assert result.exit_code == 1
@@ -174,7 +172,13 @@ class TestEmbeddingsGenerate:
     @patch("plexmix.cli.embeddings_cmd._build_embedding_generator")
     @patch("plexmix.cli.embeddings_cmd.Settings.load_from_file")
     def test_generate_for_n_tracks(
-        self, mock_load, mock_build_emb, mock_db_cls, mock_bvi, mock_gen_emb, mock_rebuild,
+        self,
+        mock_load,
+        mock_build_emb,
+        mock_db_cls,
+        mock_bvi,
+        mock_gen_emb,
+        mock_rebuild,
         tmp_path,
     ):
         settings = _make_settings(tmp_path)

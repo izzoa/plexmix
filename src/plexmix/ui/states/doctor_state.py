@@ -94,7 +94,9 @@ class DoctorState(AppState):
 
                 if orphaned_count == 0 and tracks_needing_embeddings == 0:
                     self.is_healthy = True
-                    self.check_message = "✓ Database is healthy! All tracks have embeddings and no orphaned data."
+                    self.check_message = (
+                        "✓ Database is healthy! All tracks have embeddings and no orphaned data."
+                    )
                 else:
                     self.is_healthy = False
                     issues = []
@@ -248,9 +250,7 @@ class DoctorState(AppState):
             self.fix_progress = 0
             self.current_fix_target = "embeddings_full"
 
-        cancel_event = task_store.start(
-            "doctor_fix", message="Regenerating all embeddings..."
-        )
+        cancel_event = task_store.start("doctor_fix", message="Regenerating all embeddings...")
         if cancel_event is None:
             return  # already running
 

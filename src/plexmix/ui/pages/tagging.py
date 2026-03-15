@@ -17,18 +17,24 @@ def _filter_section() -> rx.Component:
             content=rx.vstack(
                 # Row 1: genre + artist
                 rx.grid(
-                    form_field("Genre", rx.input(
-                        placeholder="e.g., rock, jazz",
-                        value=TaggingState.genre_filter,
-                        on_change=TaggingState.set_genre_filter,
-                        width="100%",
-                    )),
-                    form_field("Artist", rx.input(
-                        placeholder="Filter by artist",
-                        value=TaggingState.artist_filter,
-                        on_change=TaggingState.set_artist_filter,
-                        width="100%",
-                    )),
+                    form_field(
+                        "Genre",
+                        rx.input(
+                            placeholder="e.g., rock, jazz",
+                            value=TaggingState.genre_filter,
+                            on_change=TaggingState.set_genre_filter,
+                            width="100%",
+                        ),
+                    ),
+                    form_field(
+                        "Artist",
+                        rx.input(
+                            placeholder="Filter by artist",
+                            value=TaggingState.artist_filter,
+                            on_change=TaggingState.set_artist_filter,
+                            width="100%",
+                        ),
+                    ),
                     columns=rx.breakpoints(initial="1", sm="2"),
                     spacing="4",
                     width="100%",

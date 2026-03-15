@@ -55,9 +55,7 @@ def open_db(settings: Settings) -> SQLiteManager:
     return db
 
 
-def build_vector_index(
-    settings: Settings, embedding_generator: EmbeddingGenerator
-) -> VectorIndex:
+def build_vector_index(settings: Settings, embedding_generator: EmbeddingGenerator) -> VectorIndex:
     """Create a :class:`VectorIndex` using the embedding generator's dimension."""
     index_path = settings.database.get_index_path()
     return VectorIndex(

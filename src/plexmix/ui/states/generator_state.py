@@ -397,7 +397,11 @@ class GeneratorState(AppState):
             embedding_provider = settings.embedding.default_provider
             index_path = str(settings.database.get_index_path())
 
-            from plexmix.services.playlist_service import build_generation_filters, safe_int, safe_float
+            from plexmix.services.playlist_service import (
+                build_generation_filters,
+                safe_int,
+                safe_float,
+            )
 
             filters = build_generation_filters(
                 genre=self.genre_filter or None,
@@ -418,7 +422,9 @@ class GeneratorState(AppState):
                         progress_value = max(0, min(100, int(progress * 100)))
                         self.generation_progress = progress_value
                         self.generation_message = message
-                        self.generation_log = (self.generation_log + [message])[-GENERATION_LOG_MAX:]
+                        self.generation_log = (self.generation_log + [message])[
+                            -GENERATION_LOG_MAX:
+                        ]
 
                 asyncio.run_coroutine_threadsafe(update(), loop)
 
@@ -505,7 +511,9 @@ class GeneratorState(AppState):
                 async with self:
                     self.is_generating = False
                     self.generation_message = error_message
-                    self.generation_log = (self.generation_log + [error_message])[-GENERATION_LOG_MAX:]
+                    self.generation_log = (self.generation_log + [error_message])[
+                        -GENERATION_LOG_MAX:
+                    ]
                 return
 
             playlist_tracks = generation_result["tracks"]
