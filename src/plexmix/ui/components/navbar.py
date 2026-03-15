@@ -1,4 +1,5 @@
 import reflex as rx
+from plexmix import __version__
 from plexmix.ui.states.app_state import AppState
 from plexmix.ui.components.login import login_page
 
@@ -251,7 +252,13 @@ def navbar() -> rx.Component:
                 width="100%",
             ),
             rx.spacer(),
-            # Bottom controls
+            # Version + bottom controls
+            rx.text(
+                f"v{__version__}",
+                size="1",
+                color="gray.8",
+                padding_x="12px",
+            ),
             rx.hstack(
                 _logout_button(),
                 rx.spacer(),
@@ -349,7 +356,13 @@ def mobile_sidebar() -> rx.Component:
                 padding_x="4px",
             ),
             rx.spacer(),
-            # Bottom
+            # Version + bottom
+            rx.text(
+                f"v{__version__}",
+                size="1",
+                color="gray.8",
+                padding_x="12px",
+            ),
             rx.hstack(
                 _logout_button(),
                 width="100%",
