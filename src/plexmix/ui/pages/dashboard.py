@@ -230,6 +230,7 @@ def dashboard() -> rx.Component:
             spacing="1",
             align="start",
         ),
+        on_mount=DashboardState.on_load,
         # ── Stats row ─────────────────────────────────────────────
         rx.grid(
             _stat_tile(

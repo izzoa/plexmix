@@ -279,10 +279,8 @@ class AppState(rx.State):
                 else:
                     self.embedding_dimension_warning = ""
 
-                # Use last_played as a proxy for last sync
-                cursor.execute("SELECT MAX(last_played) FROM tracks")
-                last_update = cursor.fetchone()[0]
-                self.last_sync = last_update if last_update else None
+                # Use sync_history for last sync time
+                self.last_sync = db.get_last_sync_time()
 
         except Exception as e:
             logger.error("Error loading library stats: %s", e)
