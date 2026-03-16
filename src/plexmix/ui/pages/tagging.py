@@ -362,7 +362,10 @@ def _recent_tags_table() -> rx.Component:
                                             rx.button(
                                                 "Edit",
                                                 on_click=lambda t=track: TaggingState.start_edit_tag(
-                                                    t
+                                                    t["id"],
+                                                    t["tags"],
+                                                    t["environments"],
+                                                    t["instruments"],
                                                 ),
                                                 variant="soft",
                                                 size="1",

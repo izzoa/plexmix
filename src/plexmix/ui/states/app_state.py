@@ -41,6 +41,10 @@ class AppState(rx.State):
     # Page loading state for navigation transitions
     is_page_loading: bool = True
 
+    # Changelog modal
+    show_changelog: bool = False
+    changelog_content: str = ""
+
     # Cross-page rerun config (set by History, consumed by Generator)
     _rerun_generation_config: str = ""
 
@@ -48,6 +52,25 @@ class AppState(rx.State):
     def set_page_loading(self, loading: bool):
         """Set the page loading state."""
         self.is_page_loading = loading
+
+    @rx.event
+    def open_changelog(self):
+        """Open the changelog modal, loading content on first access."""
+        if not self.changelog_content:
+            from pathlib import Path
+
+            for path in [Path("CHANGELOG.md"), Path("/app/CHANGELOG.md")]:
+                if path.exists():
+                    self.changelog_content = path.read_text()
+                    break
+            else:
+                self.changelog_content = "*Changelog not available.*"
+        self.show_changelog = True
+
+    @rx.event
+    def close_changelog(self):
+        """Close the changelog modal."""
+        self.show_changelog = False
 
     @rx.event
     def toggle_mobile_nav(self):

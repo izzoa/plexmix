@@ -614,9 +614,14 @@ code, pre, kbd, samp,
 /* ================================================================
    21. Table Row Hover Refinement
    ================================================================ */
-.rt-TableRow:hover .rt-TableCell {
-  background-color: var(--pm-gray-2);
+.rt-TableBody .rt-TableRow:hover > .rt-TableCell {
+  background-color: var(--pm-gray-3);
+  color: var(--pm-gray-12);
   transition: background-color var(--duration-fast) var(--ease-default);
+}
+
+.rt-TableBody .rt-TableRow:hover > .rt-TableCell .rt-Text {
+  color: var(--pm-gray-12);
 }
 
 /* ================================================================

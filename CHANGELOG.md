@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-03-16
+
+### Added
+- Clickable version badge in sidebar opens a changelog modal with full release history rendered as markdown
+
+### Fixed
+- Fix KeyError 'id' when clicking Edit on the tagging page (pass individual fields instead of whole dict to avoid Reflex serialization issue)
+- Fix unreadable text when hovering over table rows (explicit text color on hover with proper CSS specificity)
+
 ## [0.8.4] - 2026-03-16
 
 ### Fixed

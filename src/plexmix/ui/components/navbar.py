@@ -152,6 +152,65 @@ def _theme_toggle() -> rx.Component:
 # ── Logout button ────────────────────────────────────────────────────
 
 
+def _changelog_dialog() -> rx.Component:
+    """Modal dialog showing the project changelog."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title(
+                rx.hstack(
+                    rx.icon("file-text", size=18),
+                    rx.text("Changelog"),
+                    spacing="2",
+                    align="center",
+                ),
+            ),
+            rx.dialog.description(
+                rx.text("Release history for PlexMix", size="2", color="gray.9"),
+            ),
+            rx.scroll_area(
+                rx.markdown(
+                    AppState.changelog_content,
+                    component_map={
+                        "h1": lambda text: rx.heading(text, size="5", margin_top="16px", margin_bottom="8px"),
+                        "h2": lambda text: rx.heading(text, size="4", margin_top="16px", margin_bottom="8px"),
+                        "h3": lambda text: rx.heading(text, size="3", margin_top="12px", margin_bottom="4px"),
+                    },
+                ),
+                max_height="60vh",
+                padding_right="12px",
+            ),
+            rx.dialog.close(
+                rx.button("Close", variant="soft", size="2", margin_top="16px"),
+            ),
+            max_width="640px",
+        ),
+        open=AppState.show_changelog,
+        on_open_change=lambda open: rx.cond(
+            open,
+            AppState.open_changelog,
+            AppState.close_changelog,
+        ),
+    )
+
+
+def _version_badge() -> rx.Component:
+    """Clickable version badge that opens the changelog."""
+    return rx.tooltip(
+        rx.text(
+            f"v{__version__}",
+            size="1",
+            color="gray.8",
+            text_align="center",
+            width="100%",
+            cursor="pointer",
+            _hover={"color": "accent.9"},
+            transition="color 150ms ease",
+            on_click=AppState.open_changelog,
+        ),
+        content="View changelog",
+    )
+
+
 def _logout_button() -> rx.Component:
     """Icon-only logout button, shown when auth is required."""
     return rx.cond(
@@ -253,12 +312,7 @@ def navbar() -> rx.Component:
             ),
             rx.spacer(),
             # Version + bottom controls
-            rx.text(
-                f"v{__version__}",
-                size="1",
-                color="gray.8",
-                padding_x="12px",
-            ),
+            _version_badge(),
             rx.hstack(
                 _logout_button(),
                 rx.spacer(),
@@ -357,12 +411,7 @@ def mobile_sidebar() -> rx.Component:
             ),
             rx.spacer(),
             # Version + bottom
-            rx.text(
-                f"v{__version__}",
-                size="1",
-                color="gray.8",
-                padding_x="12px",
-            ),
+            _version_badge(),
             rx.hstack(
                 _logout_button(),
                 width="100%",
@@ -484,6 +533,7 @@ def layout(content: rx.Component) -> rx.Component:
         rx.fragment(
             rx.toast.provider(),
             _keyboard_shortcuts(),
+            _changelog_dialog(),
             rx.box(
                 navbar(),
                 mobile_top_bar(),

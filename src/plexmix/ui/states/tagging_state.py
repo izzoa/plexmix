@@ -334,11 +334,17 @@ class TaggingState(AppState):
         task_store.cancel("tagging")
         self.tagging_message = "Cancelling tagging..."
 
-    def start_edit_tag(self, track: dict[str, str]):
-        self.editing_track_id = track["id"]
-        self.edit_tags = track.get("tags", "")
-        self.edit_environments = track.get("environments", "")
-        self.edit_instruments = track.get("instruments", "")
+    def start_edit_tag(
+        self,
+        track_id: str,
+        tags: str,
+        environments: str,
+        instruments: str,
+    ):
+        self.editing_track_id = track_id
+        self.edit_tags = tags
+        self.edit_environments = environments
+        self.edit_instruments = instruments
 
     def cancel_edit(self):
         self.editing_track_id = ""
