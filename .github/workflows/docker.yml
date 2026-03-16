@@ -6,54 +6,8 @@ on:
       - "v*"
 
 jobs:
-  # Build slim (default) image first — this one owns the :latest tag
-  docker-default:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository_owner }}/plexmix
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
-
-      - name: Build and push (slim)
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: WITH_LOCAL=false
-          cache-from: type=gha,scope=default
-          cache-to: type=gha,mode=max,scope=default
-
-  # Build local image after slim — ensures :latest is never overwritten
+  # Build local image first (heavier variant)
   docker-local:
-    needs: docker-default
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -96,3 +50,51 @@ jobs:
           build-args: WITH_LOCAL=true
           cache-from: type=gha,scope=local
           cache-to: type=gha,mode=max,scope=local
+
+  # Build slim (default) image last — GHCR shows the most recently pushed
+  # manifest as the default package, so this must run after docker-local
+  # to ensure :latest points to the slim image in the GHCR UI.
+  docker-default:
+    needs: docker-local
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/plexmix
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+
+      - name: Build and push (slim)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: WITH_LOCAL=false
+          cache-from: type=gha,scope=default
+          cache-to: type=gha,mode=max,scope=default

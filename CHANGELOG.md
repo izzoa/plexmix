@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-03-16
+
+### Fixed
+- Fix Docker "latest" tag pointing to -local image instead of slim (default) image by reordering CI jobs so the slim image is pushed last
+
 ## [0.8.3] - 2026-03-15
 
 ### Fixed
