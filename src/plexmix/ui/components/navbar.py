@@ -171,9 +171,15 @@ def _changelog_dialog() -> rx.Component:
                 rx.markdown(
                     AppState.changelog_content,
                     component_map={
-                        "h1": lambda text: rx.heading(text, size="5", margin_top="16px", margin_bottom="8px"),
-                        "h2": lambda text: rx.heading(text, size="4", margin_top="16px", margin_bottom="8px"),
-                        "h3": lambda text: rx.heading(text, size="3", margin_top="12px", margin_bottom="4px"),
+                        "h1": lambda text: rx.heading(
+                            text, size="5", margin_top="16px", margin_bottom="8px"
+                        ),
+                        "h2": lambda text: rx.heading(
+                            text, size="4", margin_top="16px", margin_bottom="8px"
+                        ),
+                        "h3": lambda text: rx.heading(
+                            text, size="3", margin_top="12px", margin_bottom="4px"
+                        ),
                     },
                 ),
                 max_height="60vh",
