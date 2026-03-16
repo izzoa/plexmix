@@ -532,13 +532,7 @@ class TestTaggingState:
         state = TaggingState()
 
         # Start editing a track
-        track = {
-            "id": "1",
-            "tags": "chill,relaxing",
-            "environments": "study",
-            "instruments": "piano",
-        }
-        state.start_edit_tag(track)
+        state.start_edit_tag("1", "chill,relaxing", "study", "piano")
 
         # Verify editing state
         assert state.editing_track_id == "1"
