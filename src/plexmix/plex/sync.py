@@ -17,6 +17,7 @@ from ..database.vector_index import VectorIndex
 from ..utils.embeddings import EmbeddingGenerator, create_track_text
 from ..ai.tag_generator import TagGenerator
 from ..ai.base import AIProvider
+from ..config.settings import MusicBrainzSettings
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class SyncEngine:
         embedding_generator: Optional[EmbeddingGenerator] = None,
         vector_index: Optional[VectorIndex] = None,
         ai_provider: Optional[AIProvider] = None,
+        musicbrainz_settings: Optional[MusicBrainzSettings] = None,
     ):
         self.plex = plex_client
         self.db = db_manager
@@ -36,6 +38,7 @@ class SyncEngine:
         self.vector_index = vector_index
         self.ai_provider = ai_provider
         self.tag_generator = TagGenerator(ai_provider) if ai_provider else None
+        self.musicbrainz_settings = musicbrainz_settings
 
     def incremental_sync(
         self,
@@ -85,9 +88,19 @@ class SyncEngine:
 
                 task = progress.add_task("Comparing with database...", total=None)
                 changes = self._detect_library_changes(
-                    plex_library, progress, task, progress_callback, cancel_event, 0.3, 0.5
+                    plex_library, progress, task, progress_callback, cancel_event, 0.3, 0.45
                 )
                 stats.update(changes)
+
+                if cancel_event and cancel_event.is_set():
+                    raise KeyboardInterrupt("Sync cancelled by user")
+
+                # MusicBrainz enrichment (between DB sync and AI tags)
+                if self.musicbrainz_settings and self.musicbrainz_settings.enrich_on_sync:
+                    task = progress.add_task("Enriching with MusicBrainz...", total=None)
+                    self._enrich_musicbrainz(
+                        progress, task, progress_callback, cancel_event, 0.45, 0.55
+                    )
 
                 if cancel_event and cancel_event.is_set():
                     raise KeyboardInterrupt("Sync cancelled by user")
@@ -95,7 +108,7 @@ class SyncEngine:
                 if self.tag_generator and self.ai_provider:
                     task = progress.add_task("Generating AI tags...", total=None)
                     self._generate_tags_for_untagged_tracks(
-                        progress, task, progress_callback, cancel_event, 0.5, 0.7
+                        progress, task, progress_callback, cancel_event, 0.55, 0.7
                     )
 
                 if cancel_event and cancel_event.is_set():
@@ -443,6 +456,8 @@ class SyncEngine:
                         "tags": track.tags or "",
                         "environments": track.environments or "",
                         "instruments": track.instruments or "",
+                        "musicbrainz_genres": track.musicbrainz_genres or "",
+                        "recording_type": track.recording_type or "",
                     }
                     track_data_list.append(track_data)
 
@@ -558,13 +573,17 @@ class SyncEngine:
             artist = artists_map.get(track.artist_id)
             album = albums_map.get(track.album_id)
 
-            track_data = {
+            track_data: Dict[str, Any] = {
                 "id": track.id,
                 "title": track.title,
                 "artist": artist.name if artist else "Unknown",
                 "album": album.title if album else "Unknown",
                 "genre": track.genre or "",
             }
+            if track.musicbrainz_genres:
+                track_data["musicbrainz_genres"] = track.musicbrainz_genres
+            if track.recording_type:
+                track_data["recording_type"] = track.recording_type
             track_data_list.append(track_data)
 
         def tag_progress_callback(batch_num: int, total_batches: int, tracks_tagged: int) -> None:
@@ -607,3 +626,63 @@ class SyncEngine:
         except Exception as e:
             logger.error(f"Tag generation failed: {e}")
             progress.update(task, description="Tag generation failed")
+
+    def _enrich_musicbrainz(
+        self,
+        progress: Progress,
+        task: Any,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0,
+    ) -> None:
+        if not self.musicbrainz_settings:
+            return
+
+        try:
+            from ..services.musicbrainz_service import get_enrichable_tracks, enrich_tracks
+
+            tracks = get_enrichable_tracks(self.db)
+            if not tracks:
+                progress.update(task, description="No tracks need MusicBrainz enrichment")
+                return
+
+            progress.update(task, total=len(tracks))
+            logger.info(f"Enriching {len(tracks)} tracks with MusicBrainz data")
+
+            def mb_progress_callback(
+                enriched: int, cached: int, mb_errors: int, total: int
+            ) -> None:
+                processed = enriched + cached + mb_errors
+                current_progress = progress_start + (progress_end - progress_start) * (
+                    processed / total if total else 0
+                )
+                if progress_callback:
+                    progress_callback(
+                        current_progress,
+                        f"MusicBrainz enrichment... ({processed}/{total})",
+                    )
+                progress.update(task, completed=processed)
+
+            enriched, cached, errors = enrich_tracks(
+                self.db,
+                self.musicbrainz_settings,
+                tracks,
+                progress_callback=mb_progress_callback,
+                cancel_event=cancel_event,
+            )
+
+            progress.update(
+                task,
+                description=f"MusicBrainz: {enriched} enriched, {cached} cached, {errors} errors",
+            )
+            logger.info(
+                f"MusicBrainz enrichment: {enriched} enriched, {cached} cached, {errors} errors"
+            )
+
+        except ImportError:
+            logger.warning("musicbrainzngs not available, skipping MusicBrainz enrichment")
+            progress.update(task, description="MusicBrainz: library not available")
+        except Exception as e:
+            logger.error(f"MusicBrainz enrichment failed: {e}")
+            progress.update(task, description="MusicBrainz enrichment failed")

@@ -184,14 +184,17 @@ Example output format:
 
         tracks_list = []
         for track in tracks:
-            tracks_list.append(
-                {
-                    "id": track["id"],
-                    "title": track["title"],
-                    "artist": track["artist"],
-                    "genre": track.get("genre", "unknown"),
-                }
-            )
+            entry: Dict[str, Any] = {
+                "id": track["id"],
+                "title": track["title"],
+                "artist": track["artist"],
+                "genre": track.get("genre", "unknown"),
+            }
+            if track.get("musicbrainz_genres"):
+                entry["musicbrainz_genres"] = track["musicbrainz_genres"]
+            if track.get("recording_type"):
+                entry["recording_type"] = track["recording_type"]
+            tracks_list.append(entry)
 
         tracks_json = json.dumps(tracks_list, indent=2)
 

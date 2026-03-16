@@ -63,6 +63,11 @@ class SettingsState(AppState):
     audio_analyze_on_sync: bool = False
     audio_duration_limit: int = 60
 
+    musicbrainz_enabled: bool = False
+    musicbrainz_enrich_on_sync: bool = False
+    musicbrainz_confidence_threshold: float = 80.0
+    musicbrainz_contact_email: str = ""
+
     testing_connection: bool = False
     plex_test_status: str = ""
     ai_test_status: str = ""
@@ -158,6 +163,11 @@ class SettingsState(AppState):
             self.audio_enabled = settings.audio.enabled
             self.audio_analyze_on_sync = settings.audio.analyze_on_sync
             self.audio_duration_limit = settings.audio.duration_limit
+
+            self.musicbrainz_enabled = settings.musicbrainz.enabled
+            self.musicbrainz_enrich_on_sync = settings.musicbrainz.enrich_on_sync
+            self.musicbrainz_confidence_threshold = settings.musicbrainz.confidence_threshold
+            self.musicbrainz_contact_email = settings.musicbrainz.contact_email
 
         except Exception as e:
             logger.error("Error loading settings: %s", e)
@@ -373,6 +383,19 @@ class SettingsState(AppState):
         except (ValueError, TypeError):
             self.audio_duration_limit = 60
 
+    def set_musicbrainz_enabled(self, enabled: bool):
+        self.musicbrainz_enabled = enabled
+
+    def set_musicbrainz_enrich_on_sync(self, enabled: bool):
+        self.musicbrainz_enrich_on_sync = enabled
+
+    def set_musicbrainz_confidence_threshold(self, value: list):
+        if value:
+            self.musicbrainz_confidence_threshold = float(value[0])
+
+    def set_musicbrainz_contact_email(self, email: str):
+        self.musicbrainz_contact_email = email
+
     @rx.event(background=True)
     async def test_plex_connection(self):
         from ._settings_testing import test_plex_connection_impl
@@ -457,6 +480,11 @@ class SettingsState(AppState):
             settings.audio.enabled = self.audio_enabled
             settings.audio.analyze_on_sync = self.audio_analyze_on_sync
             settings.audio.duration_limit = self.audio_duration_limit
+
+            settings.musicbrainz.enabled = self.musicbrainz_enabled
+            settings.musicbrainz.enrich_on_sync = self.musicbrainz_enrich_on_sync
+            settings.musicbrainz.confidence_threshold = self.musicbrainz_confidence_threshold
+            settings.musicbrainz.contact_email = self.musicbrainz_contact_email
 
             settings.save_to_file()
 
@@ -565,6 +593,10 @@ class SettingsState(AppState):
                 "audio_enabled": self.audio_enabled,
                 "audio_analyze_on_sync": self.audio_analyze_on_sync,
                 "audio_duration_limit": self.audio_duration_limit,
+                "musicbrainz_enabled": self.musicbrainz_enabled,
+                "musicbrainz_enrich_on_sync": self.musicbrainz_enrich_on_sync,
+                "musicbrainz_confidence_threshold": self.musicbrainz_confidence_threshold,
+                "musicbrainz_contact_email": self.musicbrainz_contact_email,
             },
             sort_keys=True,
         )

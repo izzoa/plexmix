@@ -18,6 +18,8 @@ class DoctorState(AppState):
     doctor_tracks_needing_embeddings: int = 0
     doctor_tracks_without_audio: int = 0
     doctor_audio_features_count: int = 0
+    doctor_tracks_without_musicbrainz: int = 0
+    doctor_musicbrainz_enriched: int = 0
 
     is_healthy: bool = False
     is_checking: bool = False
@@ -28,6 +30,8 @@ class DoctorState(AppState):
     fix_progress: int = 0
     fix_total: int = 0
     current_fix_target: str = ""
+
+    show_retag_confirm: bool = False
 
     @rx.event
     def on_load(self):
@@ -84,6 +88,10 @@ class DoctorState(AppState):
                 audio_features_count = db.get_audio_features_count()
                 tracks_without_audio = len(db.get_tracks_without_audio_features())
 
+                # Get MusicBrainz enrichment stats
+                mb_enriched = db.get_musicbrainz_enrichment_count()
+                mb_without = len(db.get_tracks_without_musicbrainz())
+
                 self.doctor_total_tracks = total_tracks
                 self.doctor_tracks_with_embeddings = tracks_with_embeddings
                 self.doctor_orphaned_embeddings = orphaned_count
@@ -91,6 +99,8 @@ class DoctorState(AppState):
                 self.doctor_tracks_needing_embeddings = tracks_needing_embeddings
                 self.doctor_audio_features_count = audio_features_count
                 self.doctor_tracks_without_audio = tracks_without_audio
+                self.doctor_musicbrainz_enriched = mb_enriched
+                self.doctor_tracks_without_musicbrainz = mb_without
 
                 if orphaned_count == 0 and tracks_needing_embeddings == 0:
                     self.is_healthy = True
@@ -310,6 +320,127 @@ class DoctorState(AppState):
             task_store.update(
                 "doctor_fix",
                 extra={"fix_target": "embeddings_full", "result_msg": result_msg},
+            )
+            task_store.complete("doctor_fix")
+
+        except Exception as e:
+            task_store.complete("doctor_fix", status="failed", message=str(e))
+
+    @rx.event
+    def open_retag_confirm(self):
+        self.show_retag_confirm = True
+
+    @rx.event
+    def close_retag_confirm(self):
+        self.show_retag_confirm = False
+
+    @rx.event
+    def confirm_retag(self):
+        self.show_retag_confirm = False
+        return DoctorState.regenerate_all_tags
+
+    @rx.event(background=True)
+    async def regenerate_all_tags(self):
+        """Regenerate tags for ALL tracks (force retag)."""
+        async with self:
+            self.is_fixing = True
+            self.fix_message = "Regenerating tags for all tracks..."
+            self.fix_progress = 0
+            self.current_fix_target = "tags"
+
+        cancel_event = task_store.start("doctor_fix", message="Regenerating tags for all tracks...")
+        if cancel_event is None:
+            return
+
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+            from plexmix.ai.tag_generator import TagGenerator
+            from plexmix.services.providers import build_ai_provider
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+
+            if not db_path.exists():
+                task_store.complete(
+                    "doctor_fix",
+                    status="failed",
+                    message="Database not found. Please run a sync first.",
+                )
+                return
+
+            ai_provider = build_ai_provider(settings, silent=True)
+            if ai_provider is None:
+                ai_provider_name = settings.ai.default_provider or "gemini"
+                task_store.complete(
+                    "doctor_fix",
+                    status="failed",
+                    message=f"AI provider '{ai_provider_name}' is not fully configured.",
+                )
+                return
+
+            tag_generator = TagGenerator(ai_provider)
+
+            with SQLiteManager(str(db_path)) as db:
+                all_tracks = db.get_all_tracks()
+
+                if not all_tracks:
+                    task_store.update(
+                        "doctor_fix",
+                        extra={
+                            "fix_target": "tags",
+                            "result_msg": "No tracks in database.",
+                        },
+                    )
+                    task_store.complete("doctor_fix")
+                    return
+
+                total_tracks = len(all_tracks)
+                task_store.update(
+                    "doctor_fix",
+                    extra={"fix_target": "tags", "fix_total": total_tracks},
+                )
+
+                def progress_callback(batch_num: int, total: int, tracks_tagged: int):
+                    task_store.update(
+                        "doctor_fix",
+                        progress=tracks_tagged,
+                        message=f"Regenerating all tags... {tracks_tagged}/{total_tracks}",
+                        extra={"fix_target": "tags", "fix_total": total_tracks},
+                    )
+
+                def run_tag_regen():
+                    results = tag_generator.generate_tags_batch(
+                        all_tracks,
+                        batch_size=20,
+                        progress_callback=progress_callback,
+                    )
+
+                    count = 0
+                    for track_id, tag_data in results.items():
+                        tags = ",".join(tag_data.get("tags", []))
+                        environments = ",".join(tag_data.get("environments", []))
+                        instruments = ",".join(tag_data.get("instruments", []))
+
+                        if tags or environments or instruments:
+                            db.update_track_tags(
+                                track_id,
+                                tags=tags,
+                                environments=environments,
+                                instruments=instruments,
+                            )
+                            count += 1
+                    return count
+
+                loop = asyncio.get_running_loop()
+                updated = await loop.run_in_executor(None, run_tag_regen)
+
+            task_store.update(
+                "doctor_fix",
+                extra={
+                    "fix_target": "tags",
+                    "result_msg": f"Regenerated tags for {updated} tracks",
+                },
             )
             task_store.complete("doctor_fix")
 
@@ -710,3 +841,90 @@ class DoctorState(AppState):
             "All tracks currently have AI-generated tags. "
             "You can regenerate them if you want to refresh metadata."
         )
+
+    @rx.var(cache=True)
+    def missing_musicbrainz_label(self) -> str:
+        return f"{self.doctor_tracks_without_musicbrainz} Tracks Need MusicBrainz Enrichment"
+
+    @rx.var(cache=True)
+    def musicbrainz_job_running(self) -> bool:
+        return self.current_fix_target == "musicbrainz"
+
+    @rx.event(background=True)
+    async def enrich_missing_musicbrainz(self):
+        async with self:
+            self.is_fixing = True
+            self.fix_message = "Enriching tracks with MusicBrainz metadata..."
+            self.fix_progress = 0
+            self.current_fix_target = "musicbrainz"
+
+        cancel_event = task_store.start(
+            "doctor_fix", message="Enriching tracks with MusicBrainz metadata..."
+        )
+        if cancel_event is None:
+            return
+
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+            from plexmix.services.musicbrainz_service import (
+                get_enrichable_tracks,
+                enrich_tracks,
+            )
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+
+            if not db_path.exists():
+                task_store.complete(
+                    "doctor_fix",
+                    status="failed",
+                    message="Database not found. Please run a sync first.",
+                )
+                return
+
+            def run_enrichment():
+                with SQLiteManager(str(db_path)) as db:
+                    tracks = get_enrichable_tracks(db)
+                    if not tracks:
+                        return 0, 0, 0
+
+                    total = len(tracks)
+                    task_store.update(
+                        "doctor_fix",
+                        extra={"fix_target": "musicbrainz", "fix_total": total},
+                    )
+
+                    def on_progress(
+                        enriched: int, cached: int, mb_errors: int, total_count: int
+                    ) -> None:
+                        processed = enriched + cached + mb_errors
+                        task_store.update(
+                            "doctor_fix",
+                            progress=processed,
+                            message=f"MusicBrainz enrichment... {processed}/{total_count}",
+                            extra={"fix_target": "musicbrainz", "fix_total": total_count},
+                        )
+
+                    return enrich_tracks(
+                        db,
+                        settings.musicbrainz,
+                        tracks,
+                        progress_callback=on_progress,
+                        cancel_event=cancel_event,
+                    )
+
+            loop = asyncio.get_running_loop()
+            enriched, cached, errors = await loop.run_in_executor(None, run_enrichment)
+
+            task_store.update(
+                "doctor_fix",
+                extra={
+                    "fix_target": "musicbrainz",
+                    "result_msg": f"Enriched {enriched} tracks, {cached} cached ({errors} errors)",
+                },
+            )
+            task_store.complete("doctor_fix")
+
+        except Exception as e:
+            task_store.complete("doctor_fix", status="failed", message=str(e))

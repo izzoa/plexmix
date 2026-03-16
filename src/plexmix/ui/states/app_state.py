@@ -28,6 +28,7 @@ class AppState(rx.State):
     total_tracks: str = "0"
     embedded_tracks: str = "0"
     audio_analyzed_tracks: str = "0"
+    musicbrainz_enriched_tracks: str = "0"
     last_sync: Optional[str] = None
 
     embedding_dimension_warning: str = ""
@@ -257,6 +258,7 @@ class AppState(rx.State):
                 self.total_tracks = "0"
                 self.embedded_tracks = "0"
                 self.audio_analyzed_tracks = "0"
+                self.musicbrainz_enriched_tracks = "0"
                 self.last_sync = None
                 self.embedding_dimension_warning = ""
                 return
@@ -278,6 +280,13 @@ class AppState(rx.State):
                     self.audio_analyzed_tracks = str(audio_count)
                 except Exception:
                     self.audio_analyzed_tracks = "0"
+
+                # Get MusicBrainz enriched tracks count
+                try:
+                    mb_count = db.get_musicbrainz_enrichment_count()
+                    self.musicbrainz_enriched_tracks = str(mb_count)
+                except Exception:
+                    self.musicbrainz_enriched_tracks = "0"
 
                 # Check for dimension mismatch using metadata file
                 import pickle
@@ -302,13 +311,24 @@ class AppState(rx.State):
                 else:
                     self.embedding_dimension_warning = ""
 
-                # Use sync_history for last sync time
-                self.last_sync = db.get_last_sync_time()
+                # Use sync_history for last sync time (formatted for display)
+                raw_sync = db.get_last_sync_time()
+                if raw_sync:
+                    try:
+                        from datetime import datetime
+
+                        dt = datetime.fromisoformat(raw_sync)
+                        self.last_sync = dt.strftime("%b %d, %Y %H:%M")
+                    except (ValueError, TypeError):
+                        self.last_sync = raw_sync
+                else:
+                    self.last_sync = None
 
         except Exception as e:
             logger.error("Error loading library stats: %s", e)
             self.total_tracks = "0"
             self.embedded_tracks = "0"
             self.audio_analyzed_tracks = "0"
+            self.musicbrainz_enriched_tracks = "0"
             self.last_sync = None
             self.embedding_dimension_warning = ""

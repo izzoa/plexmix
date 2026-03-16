@@ -29,6 +29,8 @@ def build_track_embedding_data(db: SQLiteManager, track: Any) -> Dict[str, Any]:
         "tags": track.tags or "",
         "environments": track.environments or "",
         "instruments": track.instruments or "",
+        "musicbrainz_genres": track.musicbrainz_genres or "",
+        "recording_type": track.recording_type or "",
     }
 
 

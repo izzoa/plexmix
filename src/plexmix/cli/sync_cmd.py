@@ -44,15 +44,17 @@ def sync_callback(
     ctx: typer.Context,
     embeddings: bool = typer.Option(True, help="Generate embeddings during sync"),
     audio: bool = typer.Option(False, help="Extract audio features during sync"),
+    musicbrainz: bool = typer.Option(False, help="Enrich with MusicBrainz metadata during sync"),
 ) -> None:
     if ctx.invoked_subcommand is None:
-        sync_incremental(embeddings=embeddings, audio=audio)
+        sync_incremental(embeddings=embeddings, audio=audio, musicbrainz=musicbrainz)
 
 
 @sync_app.command("incremental")
 def sync_incremental(
     embeddings: bool = typer.Option(True, help="Generate embeddings during sync"),
     audio: bool = typer.Option(False, help="Extract audio features during sync"),
+    musicbrainz: bool = typer.Option(False, help="Enrich with MusicBrainz metadata during sync"),
 ) -> None:
     console.print("[bold]Starting incremental library sync...[/bold]")
 
@@ -66,10 +68,23 @@ def sync_incremental(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
+    # Enable MusicBrainz if --musicbrainz flag or config says so (gated by enabled)
+    mb_settings = None
+    run_mb = musicbrainz or (settings.musicbrainz.enabled and settings.musicbrainz.enrich_on_sync)
+    if run_mb:
+        mb_settings = settings.musicbrainz
+
     with SQLiteManager(str(settings.database.get_db_path())) as db:
         db.create_tables()
 
-        sync_engine = SyncEngine(plex_client, db, embedding_generator, vector_index, ai_provider)
+        sync_engine = SyncEngine(
+            plex_client,
+            db,
+            embedding_generator,
+            vector_index,
+            ai_provider,
+            musicbrainz_settings=mb_settings,
+        )
 
         try:
             sync_result = sync_engine.incremental_sync(generate_embeddings=embeddings)

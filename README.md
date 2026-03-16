@@ -3,7 +3,7 @@
 
   # PlexMix
 
-  [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+  [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
   [![PyPI version](https://badge.fury.io/py/plexmix.svg)](https://badge.fury.io/py/plexmix)
   [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
@@ -20,6 +20,7 @@ PlexMix syncs your Plex music library to a local SQLite database, generates sema
 - 🔌 **Bring-Your-Own LLM** - Point PlexMix at any OpenAI-compatible local endpoint (Ollama, LM Studio, llama.cpp) with auto-discovery and SSE streaming
 - 🏷️ **AI Tagging** - Automatically generates tags, environments, and instruments with stale tag detection and re-tagging
 - 🎵 **Audio Analysis** - Extract tempo, key, energy, danceability via Essentia DSP (optional)
+- 🎸 **MusicBrainz Enrichment** - Community-curated genres, canonical artist IDs, and recording type detection (optional)
 - 🔍 **Semantic Search** - FAISS vector similarity search with incremental index updates
 - 🎨 **Mood-Based** - Generate playlists from natural language descriptions
 - 🔀 **Smart Ordering** - 4 track ordering modes: similarity, random, alternating artists, and energy curve
@@ -311,6 +312,9 @@ plexmix sync incremental
 
 # Sync with audio feature analysis (requires essentia)
 plexmix sync --audio
+
+# Sync with MusicBrainz metadata enrichment
+plexmix sync --musicbrainz
 
 # Regenerate everything from scratch (WARNING: Deletes ALL tags and embeddings)
 plexmix sync regenerate
@@ -849,6 +853,8 @@ All credentials can be passed as environment variables (no keyring required in c
 | `AUDIO_ANALYZE_ON_SYNC` | Run audio analysis during sync (default: `false`) |
 | `AUDIO_PATH_PREFIX_FROM` | Plex file path prefix to replace (for path remapping) |
 | `AUDIO_PATH_PREFIX_TO` | Local file path prefix replacement (for path remapping) |
+| `MUSICBRAINZ_ENRICH_ON_SYNC` | Enrich tracks with MusicBrainz data during sync (default: `false`) |
+| `MUSICBRAINZ_CONTACT_EMAIL` | Contact email for MusicBrainz API (recommended by their TOS) |
 
 ### Running CLI Commands
 
@@ -1076,7 +1082,7 @@ Contributions welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for guidel
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details
+This project is licensed under the GNU Affero General Public License v3.0 - see [LICENSE](LICENSE) for details.
 
 ## Acknowledgments
 

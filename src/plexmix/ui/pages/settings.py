@@ -22,6 +22,7 @@ _NAV_ITEMS = [
     ("ai", "brain", "AI Provider"),
     ("embedding", "layers", "Embeddings"),
     ("audio", "audio-waveform", "Audio Analysis"),
+    ("musicbrainz", "disc", "MusicBrainz"),
     ("advanced", "settings", "Advanced"),
 ]
 
@@ -77,12 +78,14 @@ def _mobile_tabs() -> rx.Component:
             rx.tabs.trigger("AI", value="ai"),
             rx.tabs.trigger("Embed", value="embedding"),
             rx.tabs.trigger("Audio", value="audio"),
+            rx.tabs.trigger("MB", value="musicbrainz"),
             rx.tabs.trigger("Adv", value="advanced"),
         ),
         rx.tabs.content(_plex_section(), value="plex"),
         rx.tabs.content(_ai_provider_section(), value="ai"),
         rx.tabs.content(_embedding_section(), value="embedding"),
         rx.tabs.content(_audio_section(), value="audio"),
+        rx.tabs.content(_musicbrainz_section(), value="musicbrainz"),
         rx.tabs.content(_advanced_section(), value="advanced"),
         value=SettingsState.active_tab,
         on_change=SettingsState.set_active_tab,
@@ -210,6 +213,91 @@ def _audio_section() -> rx.Component:
     )
 
 
+# ── MusicBrainz section ──────────────────────────────────────────────
+
+
+def _musicbrainz_section() -> rx.Component:
+    return rx.vstack(
+        _section_heading("MusicBrainz"),
+        rx.callout(
+            "MusicBrainz enriches your tracks with community-curated genres, canonical artist IDs, "
+            "and recording type annotations (live, remix, etc.). These improve embedding quality "
+            "and playlist diversity.",
+            icon="disc",
+            color_scheme="blue",
+            size="2",
+        ),
+        _field_group(
+            rx.hstack(
+                rx.switch(
+                    checked=SettingsState.musicbrainz_enabled,
+                    on_change=SettingsState.set_musicbrainz_enabled,
+                ),
+                rx.text(
+                    "Enable MusicBrainz Enrichment", size="2", weight="medium", color="gray.11"
+                ),
+                spacing="3",
+                align="center",
+            ),
+            rx.hstack(
+                rx.switch(
+                    checked=SettingsState.musicbrainz_enrich_on_sync,
+                    on_change=SettingsState.set_musicbrainz_enrich_on_sync,
+                ),
+                rx.text("Enrich on Sync", size="2", weight="medium", color="gray.11"),
+                spacing="3",
+                align="center",
+            ),
+            _help_text("When enabled, new tracks will be enriched during sync"),
+        ),
+        _field_group(
+            _field_label("Confidence Threshold"),
+            rx.hstack(
+                rx.slider(
+                    value=[SettingsState.musicbrainz_confidence_threshold],
+                    on_change=SettingsState.set_musicbrainz_confidence_threshold,
+                    min=0,
+                    max=100,
+                    step=5,
+                    width="200px",
+                ),
+                rx.text(
+                    SettingsState.musicbrainz_confidence_threshold.to(str) + "%",
+                    size="2",
+                    color="gray.11",
+                    font_family="var(--font-mono)",
+                ),
+                spacing="3",
+                align="center",
+            ),
+            _help_text("Minimum match score (0-100) for accepting MusicBrainz results"),
+        ),
+        _field_group(
+            _field_label("Contact Email"),
+            _input_40(
+                placeholder="your@email.com",
+                value=SettingsState.musicbrainz_contact_email,
+                on_change=SettingsState.set_musicbrainz_contact_email,
+                width="100%",
+            ),
+            _help_text("Required by MusicBrainz Terms of Service for API usage"),
+        ),
+        rx.hstack(
+            rx.spacer(),
+            rx.button(
+                "Save",
+                on_click=SettingsState.save_all_settings,
+                color_scheme="orange",
+            ),
+            width="100%",
+            margin_top="4",
+        ),
+        _status_text(SettingsState.save_status),
+        spacing="4",
+        width="100%",
+    )
+
+
 # ── Advanced section ─────────────────────────────────────────────────
 
 
@@ -278,7 +366,11 @@ def _active_section() -> rx.Component:
                     rx.cond(
                         SettingsState.active_tab == "audio",
                         _audio_section(),
-                        _advanced_section(),
+                        rx.cond(
+                            SettingsState.active_tab == "musicbrainz",
+                            _musicbrainz_section(),
+                            _advanced_section(),
+                        ),
                     ),
                 ),
             ),

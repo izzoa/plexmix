@@ -26,6 +26,9 @@ services:
       # Audio path remapping: translate Plex paths to local container paths
       # - AUDIO_PATH_PREFIX_FROM=/data/music
       # - AUDIO_PATH_PREFIX_TO=/music
+      # MusicBrainz enrichment during sync
+      # - MUSICBRAINZ_ENRICH_ON_SYNC=true
+      # - MUSICBRAINZ_CONTACT_EMAIL=your@email.com
     restart: unless-stopped
 
 volumes:

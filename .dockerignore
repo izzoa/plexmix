@@ -19,6 +19,7 @@ tests/
 docs/
 *.md
 !README.md
+!CHANGELOG.md
 logo.svg
 PLAN.md
 UI.md

@@ -10,6 +10,7 @@ class Artist(BaseModel):
     name: str
     genre: Optional[str] = None
     bio: Optional[str] = None
+    musicbrainz_id: Optional[str] = None
 
     @field_validator("name")
     @classmethod
@@ -27,6 +28,7 @@ class Album(BaseModel):
     year: Optional[int] = None
     genre: Optional[str] = None
     cover_art_url: Optional[str] = None
+    musicbrainz_release_group_id: Optional[str] = None
 
     @field_validator("title")
     @classmethod
@@ -60,6 +62,10 @@ class Track(BaseModel):
     environments: Optional[str] = None
     instruments: Optional[str] = None
     tags_generated_at: Optional[datetime] = None
+    musicbrainz_recording_id: Optional[str] = None
+    musicbrainz_genres: Optional[str] = None
+    recording_type: Optional[str] = None
+    musicbrainz_enriched_at: Optional[datetime] = None
 
     @field_validator("title")
     @classmethod

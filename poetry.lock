@@ -1630,6 +1630,18 @@ gmpy = ["gmpy2 (>=2.1.0a4) ; platform_python_implementation != \"PyPy\""]
 tests = ["pytest (>=4.6)"]
 
 [[package]]
+name = "musicbrainzngs"
+version = "0.7.1"
+description = "Python bindings for the MusicBrainz NGS and the Cover Art Archive webservices"
+optional = false
+python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*"
+groups = ["main"]
+files = [
+    {file = "musicbrainzngs-0.7.1-py2.py3-none-any.whl", hash = "sha256:e841a8f975104c0a72290b09f59326050194081a5ae62ee512f41915090e1a10"},
+    {file = "musicbrainzngs-0.7.1.tar.gz", hash = "sha256:ab1c0100fd0b305852e65f2ed4113c6de12e68afd55186987b8ed97e0f98e627"},
+]
+
+[[package]]
 name = "mypy"
 version = "1.18.2"
 description = "Optional static typing for Python"
@@ -4141,4 +4153,4 @@ ui = ["reflex"]
 [metadata]
 lock-version = "2.1"
 python-versions = "^3.10"
-content-hash = "1a477b959ab586c08381c9b78b90dd954bb11fed91dbbc871b5f384a11b253fd"
+content-hash = "3f8a081330b1003a91e8b45f5ebcf1709125a8f22fc81eace5d9b72f8d6149b0"

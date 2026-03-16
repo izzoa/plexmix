@@ -247,6 +247,7 @@ class PlaylistGenerator:
                     "genre": detail["genre"] or "",
                     "year": detail["year"] or "",
                     "similarity": similarity_map.get(detail["id"], 0.0),
+                    "artist_mbid": detail.get("artist_mbid"),
                 }
             )
 
@@ -273,12 +274,14 @@ class PlaylistGenerator:
             artist = candidate["artist"]
             album = candidate["album"]
             title = candidate["title"]
+            # Use MBID for artist grouping when available (handles name variants)
+            artist_key = candidate.get("artist_mbid") or artist
 
             track_key = (title.lower(), artist.lower())
             if track_key in seen_combinations:
                 continue
 
-            artist_count = artist_counts.get(artist, 0)
+            artist_count = artist_counts.get(artist_key, 0)
             album_count = album_counts.get(album, 0)
 
             if artist_count >= 3:
@@ -288,7 +291,7 @@ class PlaylistGenerator:
 
             selected_ids.append(track_id)
             seen_combinations.add(track_key)
-            artist_counts[artist] = artist_count + 1
+            artist_counts[artist_key] = artist_count + 1
             album_counts[album] = album_count + 1
 
         logger.info(

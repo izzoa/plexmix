@@ -42,6 +42,10 @@ class LibraryState(AppState):
     audio_analysis_eta: str = ""
     show_audio_cancel_confirm: bool = False
 
+    is_enriching_musicbrainz: bool = False
+    musicbrainz_progress: int = 0
+    musicbrainz_message: str = ""
+
     selected_tracks: list[str] = []
     sort_column: str = "title"
     sort_ascending: bool = True
@@ -138,6 +142,28 @@ class LibraryState(AppState):
                 self.embedding_message = ""
                 msg = embed_entry.message or "Embedding generation failed"
                 task_store.clear("embedding")
+                return rx.toast.error(msg)
+
+        # -- MusicBrainz enrichment --
+        mb_entry = task_store.get("musicbrainz")
+        if mb_entry:
+            if mb_entry.status == "running":
+                self.is_enriching_musicbrainz = True
+                self.musicbrainz_progress = mb_entry.progress
+                self.musicbrainz_message = mb_entry.message
+            elif mb_entry.status == "completed":
+                self.is_enriching_musicbrainz = False
+                self.musicbrainz_progress = 100
+                self.musicbrainz_message = ""
+                self.load_library_stats()
+                msg = mb_entry.message or "MusicBrainz enrichment complete!"
+                task_store.clear("musicbrainz")
+                return rx.toast.success(msg)
+            elif mb_entry.status == "failed":
+                self.is_enriching_musicbrainz = False
+                self.musicbrainz_message = ""
+                msg = mb_entry.message or "MusicBrainz enrichment failed"
+                task_store.clear("musicbrainz")
                 return rx.toast.error(msg)
 
         # -- Audio analysis --
@@ -466,7 +492,18 @@ class LibraryState(AppState):
                 task_store.update(
                     "sync", message="AI provider not configured — syncing without tagging..."
                 )
-            sync_engine = SyncEngine(plex_client, db, ai_provider=ai_provider)
+
+            # Pass MusicBrainz settings if enabled and enrichment on sync is on
+            mb_settings = None
+            if settings.musicbrainz.enabled and settings.musicbrainz.enrich_on_sync:
+                mb_settings = settings.musicbrainz
+
+            sync_engine = SyncEngine(
+                plex_client,
+                db,
+                ai_provider=ai_provider,
+                musicbrainz_settings=mb_settings,
+            )
 
             loop = asyncio.get_running_loop()
 
@@ -645,6 +682,94 @@ class LibraryState(AppState):
 
         except Exception as e:
             task_store.complete("embedding", status="failed", message=str(e))
+
+    @rx.event(background=True)
+    async def enrich_musicbrainz(self):
+        async with self:
+            self.is_enriching_musicbrainz = True
+            self.musicbrainz_progress = 0
+            self.musicbrainz_message = "Starting MusicBrainz enrichment..."
+
+        cancel_event = task_store.start("musicbrainz", message="Starting MusicBrainz enrichment...")
+        if cancel_event is None:
+            return
+
+        try:
+            from plexmix.config.settings import Settings
+            from plexmix.database.sqlite_manager import SQLiteManager
+
+            try:
+                from plexmix.services.musicbrainz_service import (
+                    get_enrichable_tracks,
+                    enrich_tracks,
+                )
+            except ImportError:
+                task_store.complete(
+                    "musicbrainz",
+                    status="failed",
+                    message="musicbrainzngs is not installed. Run: pip install musicbrainzngs",
+                )
+                return
+
+            settings = Settings.load_from_file()
+            db_path = settings.database.get_db_path()
+
+            if not db_path.exists():
+                task_store.complete("musicbrainz", status="failed", message="Database not found")
+                return
+
+            def run_enrichment():
+                """Run enrichment in executor thread with its own DB connection."""
+                with SQLiteManager(str(db_path)) as db:
+                    tracks = get_enrichable_tracks(db)
+
+                    if not tracks:
+                        return 0, 0, 0, False  # enriched, cached, errors, had_tracks
+
+                    def on_progress(
+                        enriched: int, cached: int, mb_errors: int, total_count: int
+                    ) -> None:
+                        if cancel_event.is_set():
+                            return
+                        processed = enriched + cached + mb_errors
+                        task_store.update(
+                            "musicbrainz",
+                            progress=int((processed / total_count) * 100) if total_count else 0,
+                            message=f"Enriched {enriched}/{total_count} tracks ({cached} cached)",
+                        )
+
+                    e, c, err = enrich_tracks(
+                        db,
+                        settings.musicbrainz,
+                        tracks,
+                        progress_callback=on_progress,
+                        cancel_event=cancel_event,
+                    )
+                    return e, c, err, True
+
+            loop = asyncio.get_running_loop()
+            enriched, cached, errors, had_tracks = await loop.run_in_executor(
+                None,
+                run_enrichment,
+            )
+
+            if not had_tracks:
+                task_store.complete(
+                    "musicbrainz",
+                    message="All tracks already have MusicBrainz metadata.",
+                )
+                return
+
+            if cancel_event.is_set():
+                task_store.complete("musicbrainz", status="cancelled")
+            else:
+                task_store.complete(
+                    "musicbrainz",
+                    message=f"Enriched {enriched} tracks, {cached} cached ({errors} errors)",
+                )
+
+        except Exception as e:
+            task_store.complete("musicbrainz", status="failed", message=str(e))
 
     def pause_audio_analysis(self):
         task_store.pause("audio")

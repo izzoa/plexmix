@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-03-16
+
+### Added
+- MusicBrainz integration for community-curated genre enrichment, canonical artist IDs (MBIDs), and recording type detection (live, remix, cover, etc.)
+- `musicbrainzngs` as a required dependency (no separate install needed)
+- CLI commands: `plexmix musicbrainz enrich`, `plexmix musicbrainz info`, `plexmix musicbrainz clear-cache`
+- `--musicbrainz` flag on `plexmix sync` to enrich during sync
+- MusicBrainz settings tab in web UI (enable/disable, confidence threshold slider, contact email)
+- "Enrich with MusicBrainz" button on Library page with progress tracking
+- MusicBrainz genres and recording type feed into embedding text for better semantic search
+- MusicBrainz genres included in AI tag generation prompts for improved accuracy
+- Artist MBID-based deduplication in playlist generation (handles name variants)
+- SQLite cache table for MusicBrainz lookups (90-day TTL, avoids re-fetching)
+- Dashboard and Doctor page stats for MusicBrainz-enriched tracks
+- MusicBrainz enrichment detection and fix on Doctor page
+- "Regenerate All" tags button with confirmation modal on Doctor page
+- AGPLv3 license
+- 61 new tests: embedding pipeline (32) and sync error recovery (29)
+- 29 new MusicBrainz tests covering client, service, cache, and database
+
+### Changed
+- License changed from MIT to AGPL-3.0-only
+- Last sync time displayed in human-readable 24hr format (e.g., "Mar 14, 2026 16:50")
+- `musicbrainzngs` moved from optional to required dependency
+
+### Fixed
+- Changelog not loading in Docker (added `!CHANGELOG.md` to `.dockerignore`)
+- MusicBrainz transient API errors no longer cached as definitive no-match results
+- SQLite thread-affinity in MusicBrainz enrichment (DB created inside executor thread)
+- MusicBrainz enrichment gated on `enabled` setting in sync pipeline and UI
+
 ## [0.8.5] - 2026-03-16
 
 ### Added

@@ -259,6 +259,16 @@ def _floating_actions_bar() -> rx.Component:
                     title="Analyze Audio",
                 ),
                 rx.button(
+                    rx.icon("disc", size=14),
+                    rx.text("MusicBrainz", class_name="hide-mobile"),
+                    on_click=LibraryState.enrich_musicbrainz,
+                    disabled=LibraryState.is_enriching_musicbrainz,
+                    loading=LibraryState.is_enriching_musicbrainz,
+                    color_scheme="teal",
+                    size="2",
+                    title="Enrich with MusicBrainz",
+                ),
+                rx.button(
                     rx.icon("tags", size=14),
                     rx.text("Tags", class_name="hide-mobile"),
                     on_click=LibraryState.open_bulk_tag_dialog,
@@ -458,6 +468,15 @@ def _audio_cancel_confirm_dialog() -> rx.Component:
     )
 
 
+def _musicbrainz_modal() -> rx.Component:
+    return progress_modal(
+        is_open=LibraryState.is_enriching_musicbrainz,
+        progress=LibraryState.musicbrainz_progress,
+        message=LibraryState.musicbrainz_message,
+        on_cancel=None,
+    )
+
+
 def _confirm_regenerate_dialog() -> rx.Component:
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
@@ -649,6 +668,7 @@ def library() -> rx.Component:
             _sync_modal(),
             _cancel_confirm_dialog(),
             _embedding_modal(),
+            _musicbrainz_modal(),
             _audio_modal(),
             _audio_cancel_confirm_dialog(),
             _confirm_regenerate_dialog(),
@@ -674,7 +694,10 @@ def _task_polling_trigger() -> rx.Component:
             display="none",
         ),
         rx.cond(
-            LibraryState.is_syncing | LibraryState.is_embedding | LibraryState.is_analyzing_audio,
+            LibraryState.is_syncing
+            | LibraryState.is_embedding
+            | LibraryState.is_analyzing_audio
+            | LibraryState.is_enriching_musicbrainz,
             rx.script(
                 "if (!window._pm_poll_lib) {"
                 "  window._pm_poll_lib = setInterval(function() {"

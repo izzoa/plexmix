@@ -23,7 +23,7 @@ This file is the **project-specific playbook** for using Claude (or any coding a
 
 ### Repository layout (high-signal map)
 
-- `src/plexmix/cli/main.py`: Typer CLI (commands: `config`, `sync`, `tags`, `embeddings`, `create`, `ui`, `doctor`, `db`, `audio`)
+- `src/plexmix/cli/main.py`: Typer CLI (commands: `config`, `sync`, `tags`, `embeddings`, `create`, `ui`, `doctor`, `db`, `audio`, `musicbrainz`)
 - `src/plexmix/config/settings.py`: Pydantic settings + YAML config load/save
 - `src/plexmix/config/credentials.py`: Credential storage (env var fallback → keyring)
 - `src/plexmix/database/`: SQLite manager, models, recovery, FAISS vector index
@@ -31,6 +31,8 @@ This file is the **project-specific playbook** for using Claude (or any coding a
 - `src/plexmix/ai/`: AI provider implementations + provider factory
 - `src/plexmix/playlist/`: Playlist generation logic (`generator.py`) — supports audio feature filters
 - `src/plexmix/audio/`: Audio feature analysis via Essentia (`analyzer.py`)
+- `src/plexmix/musicbrainz/`: MusicBrainz API client (`client.py`) — genre enrichment, artist MBID resolution
+- `src/plexmix/services/musicbrainz_service.py`: MusicBrainz enrichment orchestration (cache-first, artist batching)
 - `src/plexmix/ui/`: Reflex pages/states/components (the UI implementation)
   - **Pages**: `index`, `dashboard`, `settings`, `library`, `generator`, `history`, `tagging`, `doctor`
   - **States**: `app_state` (base), `dashboard_state`, `settings_state`, `library_state`, `generator_state`, `history_state`, `tagging_state`, `doctor_state`
@@ -151,12 +153,23 @@ Rule for changes:
 - Audio features enrich embedding text (tempo, key, energy, danceability) for better semantic search
 - Config: `AudioSettings` in `settings.py` (env prefix `AUDIO_`)
 
-#### Sync pipeline (Plex → SQLite → tags → audio → embeddings → FAISS)
+#### MusicBrainz enrichment
+
+- Client: `src/plexmix/musicbrainz/client.py` (`MusicBrainzClient`) — wraps `musicbrainzngs` with rate limiting
+- Service: `src/plexmix/services/musicbrainz_service.py` — orchestrates enrichment with cache-first lookups and artist MBID batching
+- `musicbrainzngs` is a **required** dependency (always installed), but MusicBrainz **usage** is optional (controlled by `MusicBrainzSettings.enabled`)
+- Data stored in tracks table: `musicbrainz_recording_id`, `musicbrainz_genres`, `recording_type`, `musicbrainz_enriched_at`
+- Cache table: `musicbrainz_cache` with 90-day TTL
+- Config: `MusicBrainzSettings` in `settings.py` (env prefix `MUSICBRAINZ_`)
+- CLI: `plexmix musicbrainz enrich|info|clear-cache`; also `plexmix sync --musicbrainz`
+
+#### Sync pipeline (Plex → SQLite → MusicBrainz → tags → audio → embeddings → FAISS)
 
 - Sync logic is centralized in `src/plexmix/plex/sync.py` (`SyncEngine`).
 - Sync supports:
   - **progress callbacks** (`progress_callback(progress_float, message)`) for UI/CLI feedback
   - **cancellation** via `threading.Event` (`cancel_event`)
+- MusicBrainz enrichment (if enabled via `--musicbrainz` flag or `musicbrainz.enrich_on_sync`) runs after DB sync, before tags.
 - Tag generation (if AI provider configured) is designed to run **before** embeddings so embeddings can incorporate tags.
 - Audio analysis (if enabled via `--audio` flag or `audio.analyze_on_sync`) runs after tags, before embeddings.
 

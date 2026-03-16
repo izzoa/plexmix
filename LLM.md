@@ -218,7 +218,7 @@ git ls-remote --tags origin
 
 Before publishing a release, ensure:
 
-- [ ] All tests pass: `poetry run pytest tests/ -v`
+- [ ] **CI checks pass locally** (see below)
 - [ ] Version incremented in `pyproject.toml`
 - [ ] Version incremented in `src/plexmix/__init__.py`
 - [ ] README.md updated with new features/commands
@@ -226,6 +226,29 @@ Before publishing a release, ensure:
 - [ ] Commit message follows conventional commits format
 - [ ] Tag message includes comprehensive release notes
 - [ ] GitHub release notes are detailed and well-formatted
+
+### Run CI Checks Locally Before Pushing
+
+**You MUST run the same checks that the GitHub CI pipeline runs and fix any issues locally BEFORE pushing to GitHub.** Do not rely on CI to catch problems — broken pushes waste time and clutter the commit history with fix-up commits.
+
+To find the exact checks, read the pipeline YAML files directly:
+
+```bash
+cat .github/workflows/test.yml
+```
+
+Look at the `steps:` section for the actual commands the pipeline executes (formatting, linting, type checking, tests). Run each of those commands locally and fix any failures before committing or pushing. The pipeline YAML is the source of truth — do not assume the checks below are complete or current; always verify against the YAML.
+
+As of this writing, the typical checks are:
+
+```bash
+poetry run black --check src tests
+poetry run ruff check src tests
+poetry run mypy src
+poetry run pytest tests/ -v --cov=plexmix
+```
+
+But **always check the YAML first** — new checks may be added over time.
 
 ## Testing Commands
 

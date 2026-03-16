@@ -551,6 +551,74 @@ class SQLiteManager:
             self._record_version(cursor, 9)
             migrations_run = True
 
+        # Migration 10: MusicBrainz integration columns + cache table
+        if 10 not in applied:
+            logger.info("Migration 10: Adding MusicBrainz columns and cache table")
+
+            # Add MB columns to tracks
+            cursor.execute("PRAGMA table_info(tracks)")
+            track_cols = {col[1] for col in cursor.fetchall()}
+            for col, ctype in [
+                ("musicbrainz_recording_id", "TEXT"),
+                ("musicbrainz_genres", "TEXT"),
+                ("recording_type", "TEXT"),
+                ("musicbrainz_enriched_at", "TIMESTAMP"),
+            ]:
+                if col not in track_cols:
+                    cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col} {ctype}")
+
+            # Add MB column to artists
+            cursor.execute("PRAGMA table_info(artists)")
+            artist_cols = {col[1] for col in cursor.fetchall()}
+            if "musicbrainz_id" not in artist_cols:
+                cursor.execute("ALTER TABLE artists ADD COLUMN musicbrainz_id TEXT")
+
+            # Add MB column to albums
+            cursor.execute("PRAGMA table_info(albums)")
+            album_cols = {col[1] for col in cursor.fetchall()}
+            if "musicbrainz_release_group_id" not in album_cols:
+                cursor.execute("ALTER TABLE albums ADD COLUMN musicbrainz_release_group_id TEXT")
+
+            # Create musicbrainz_cache table
+            cursor.execute(
+                "SELECT name FROM sqlite_master " "WHERE type='table' AND name='musicbrainz_cache'"
+            )
+            if cursor.fetchone() is None:
+                cursor.execute(
+                    """
+                    CREATE TABLE musicbrainz_cache (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        lookup_key TEXT NOT NULL,
+                        entity_type TEXT NOT NULL,
+                        mbid TEXT,
+                        response_json TEXT,
+                        confidence REAL,
+                        expires_at TIMESTAMP,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_mb_cache_lookup "
+                    "ON musicbrainz_cache(lookup_key, entity_type)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_mb_cache_expires "
+                    "ON musicbrainz_cache(expires_at)"
+                )
+
+            # Indexes on MB columns
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tracks_mb_recording "
+                "ON tracks(musicbrainz_recording_id)"
+            )
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_artists_mb_id " "ON artists(musicbrainz_id)"
+            )
+
+            self._record_version(cursor, 10)
+            migrations_run = True
+
         if migrations_run:
             self._commit()
             logger.info("Database migrations completed (applied up to version 9)")
@@ -771,6 +839,7 @@ class SQLiteManager:
                 t.artist_id,
                 t.album_id,
                 a.name as artist_name,
+                a.musicbrainz_id as artist_mbid,
                 al.title as album_title
             FROM tracks t
             JOIN artists a ON t.artist_id = a.id
@@ -1007,6 +1076,104 @@ class SQLiteManager:
         row = cursor.fetchone()
         count: int = row[0] if row else 0
         return count
+
+    # ── MusicBrainz helpers ─────────────────────────────────────────
+
+    def get_tracks_without_musicbrainz(self) -> List[Track]:
+        cursor = self.get_connection().cursor()
+        cursor.execute("SELECT * FROM tracks WHERE musicbrainz_recording_id IS NULL")
+        return [Track(**dict(row)) for row in cursor.fetchall()]
+
+    def update_track_musicbrainz(
+        self,
+        track_id: int,
+        recording_id: Optional[str] = None,
+        genres: Optional[str] = None,
+        recording_type: Optional[str] = None,
+    ) -> None:
+        cursor = self.get_connection().cursor()
+        cursor.execute(
+            """
+            UPDATE tracks
+            SET musicbrainz_recording_id = ?,
+                musicbrainz_genres = ?,
+                recording_type = ?,
+                musicbrainz_enriched_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """,
+            (recording_id, genres, recording_type, track_id),
+        )
+        self._commit()
+
+    def update_artist_musicbrainz_id(self, artist_id: int, mbid: str) -> None:
+        cursor = self.get_connection().cursor()
+        cursor.execute(
+            "UPDATE artists SET musicbrainz_id = ? WHERE id = ?",
+            (mbid, artist_id),
+        )
+        self._commit()
+
+    def update_album_musicbrainz_id(self, album_id: int, release_group_id: str) -> None:
+        cursor = self.get_connection().cursor()
+        cursor.execute(
+            "UPDATE albums SET musicbrainz_release_group_id = ? WHERE id = ?",
+            (release_group_id, album_id),
+        )
+        self._commit()
+
+    def get_musicbrainz_cache(self, lookup_key: str, entity_type: str) -> Optional[Dict[str, Any]]:
+        cursor = self.get_connection().cursor()
+        cursor.execute(
+            """
+            SELECT * FROM musicbrainz_cache
+            WHERE lookup_key = ? AND entity_type = ?
+              AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+            ORDER BY created_at DESC LIMIT 1
+        """,
+            (lookup_key, entity_type),
+        )
+        row = cursor.fetchone()
+        if row:
+            d = dict(row)
+            if d.get("response_json"):
+                d["response_json"] = json.loads(d["response_json"])
+            return d
+        return None
+
+    def set_musicbrainz_cache(
+        self,
+        lookup_key: str,
+        entity_type: str,
+        mbid: Optional[str],
+        response_json: Optional[dict],
+        confidence: float,
+        ttl_days: int = 90,
+    ) -> None:
+        cursor = self.get_connection().cursor()
+        resp_str = json.dumps(response_json) if response_json else None
+        cursor.execute(
+            """
+            INSERT INTO musicbrainz_cache
+                (lookup_key, entity_type, mbid, response_json, confidence, expires_at)
+            VALUES (?, ?, ?, ?, ?, datetime('now', '+' || ? || ' days'))
+        """,
+            (lookup_key, entity_type, mbid, resp_str, confidence, ttl_days),
+        )
+        self._commit()
+
+    def get_musicbrainz_enrichment_count(self) -> int:
+        cursor = self.get_connection().cursor()
+        cursor.execute("SELECT COUNT(*) FROM tracks WHERE musicbrainz_recording_id IS NOT NULL")
+        row = cursor.fetchone()
+        count: int = row[0] if row else 0
+        return count
+
+    def clear_expired_musicbrainz_cache(self) -> int:
+        cursor = self.get_connection().cursor()
+        cursor.execute("DELETE FROM musicbrainz_cache WHERE expires_at < CURRENT_TIMESTAMP")
+        deleted: int = cursor.rowcount
+        self._commit()
+        return deleted
 
     def insert_playlist(self, playlist: Playlist) -> int:
         cursor = self.get_connection().cursor()

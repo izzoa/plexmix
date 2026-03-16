@@ -227,6 +227,47 @@ def _missing_embeddings_item() -> rx.Component:
     )
 
 
+def _retag_confirm_modal() -> rx.Component:
+    """Confirmation modal for regenerating all tags."""
+    return rx.alert_dialog.root(
+        rx.alert_dialog.content(
+            rx.alert_dialog.title("Regenerate All Tags?"),
+            rx.alert_dialog.description(
+                "This will regenerate AI tags for all tracks in your library, "
+                "overwriting any existing tags. This may take a while and will "
+                "use your configured AI provider.",
+                size="2",
+            ),
+            rx.hstack(
+                rx.alert_dialog.cancel(
+                    rx.button(
+                        "Cancel",
+                        variant="soft",
+                        color_scheme="gray",
+                    ),
+                ),
+                rx.alert_dialog.action(
+                    rx.button(
+                        "Regenerate All",
+                        color_scheme="red",
+                        on_click=DoctorState.confirm_retag,
+                    ),
+                ),
+                spacing="3",
+                justify="end",
+                width="100%",
+            ),
+            max_width="450px",
+        ),
+        open=DoctorState.show_retag_confirm,
+        on_open_change=lambda open: rx.cond(
+            open,
+            DoctorState.open_retag_confirm,
+            DoctorState.close_retag_confirm,
+        ),
+    )
+
+
 def _tag_maintenance_item() -> rx.Component:
     """Tag regeneration issue card."""
     return rx.card(
@@ -244,20 +285,97 @@ def _tag_maintenance_item() -> rx.Component:
                     align="start",
                     flex="1",
                 ),
+                rx.cond(
+                    DoctorState.doctor_untagged_tracks > 0,
+                    # Untagged tracks exist — generate missing (no confirmation needed)
+                    rx.button(
+                        "Generate",
+                        size="2",
+                        color_scheme="blue",
+                        variant="soft",
+                        on_click=DoctorState.regenerate_missing_tags,
+                        loading=DoctorState.tag_job_running,
+                        disabled=DoctorState.is_fixing,
+                        title=rx.cond(
+                            DoctorState.is_fixing,
+                            "Another operation is in progress",
+                            "",
+                        ),
+                        flex_shrink="0",
+                    ),
+                    # All tagged — offer regenerate all (with confirmation)
+                    rx.button(
+                        "Regenerate All",
+                        size="2",
+                        color_scheme="blue",
+                        variant="soft",
+                        on_click=DoctorState.open_retag_confirm,
+                        loading=DoctorState.tag_job_running,
+                        disabled=DoctorState.is_fixing,
+                        title=rx.cond(
+                            DoctorState.is_fixing,
+                            "Another operation is in progress",
+                            "Regenerate tags for all tracks",
+                        ),
+                        flex_shrink="0",
+                    ),
+                ),
+                spacing="4",
+                align="center",
+                width="100%",
+            ),
+            rx.cond(
+                DoctorState.tag_job_running,
+                _progress_section(),
+                rx.fragment(),
+            ),
+            spacing="3",
+            width="100%",
+        ),
+        width="100%",
+    )
+
+
+def _musicbrainz_item() -> rx.Component:
+    """MusicBrainz enrichment issue card."""
+    return rx.card(
+        rx.vstack(
+            rx.hstack(
+                rx.icon("disc", size=18, color="purple.9", flex_shrink="0"),
+                rx.vstack(
+                    rx.text("MusicBrainz Enrichment", size="3", weight="bold"),
+                    rx.cond(
+                        DoctorState.doctor_tracks_without_musicbrainz > 0,
+                        rx.text(
+                            DoctorState.missing_musicbrainz_label,
+                            size="2",
+                            color="yellow.11",
+                        ),
+                        rx.text(
+                            "All tracks have been enriched with MusicBrainz metadata.",
+                            size="2",
+                            color="green.11",
+                        ),
+                    ),
+                    spacing="1",
+                    align="start",
+                    flex="1",
+                ),
                 rx.button(
-                    "Regenerate",
+                    "Enrich",
                     size="2",
-                    color_scheme="blue",
+                    color_scheme="purple",
                     variant="soft",
-                    on_click=DoctorState.regenerate_missing_tags,
-                    loading=DoctorState.tag_job_running,
-                    disabled=DoctorState.is_fixing | (DoctorState.doctor_untagged_tracks == 0),
+                    on_click=DoctorState.enrich_missing_musicbrainz,
+                    loading=DoctorState.musicbrainz_job_running,
+                    disabled=DoctorState.is_fixing
+                    | (DoctorState.doctor_tracks_without_musicbrainz == 0),
                     title=rx.cond(
                         DoctorState.is_fixing,
                         "Another operation is in progress",
                         rx.cond(
-                            DoctorState.doctor_untagged_tracks == 0,
-                            "No untagged tracks",
+                            DoctorState.doctor_tracks_without_musicbrainz == 0,
+                            "All tracks enriched",
                             "",
                         ),
                     ),
@@ -268,7 +386,7 @@ def _tag_maintenance_item() -> rx.Component:
                 width="100%",
             ),
             rx.cond(
-                DoctorState.tag_job_running,
+                DoctorState.musicbrainz_job_running,
                 _progress_section(),
                 rx.fragment(),
             ),
@@ -389,7 +507,15 @@ def doctor() -> rx.Component:
                 icon_bg="green.3",
                 stagger="stagger-4",
             ),
-            columns=rx.breakpoints(initial="2", md="4"),
+            _stat_tile(
+                "MB Enriched",
+                DoctorState.doctor_musicbrainz_enriched,
+                "disc",
+                icon_color="purple.9",
+                icon_bg="purple.3",
+                stagger="stagger-5",
+            ),
+            columns=rx.breakpoints(initial="2", md="5"),
             spacing="6",
             width="100%",
         ),
@@ -401,6 +527,7 @@ def doctor() -> rx.Component:
             _orphaned_embeddings_item(),
             _missing_embeddings_item(),
             _tag_maintenance_item(),
+            _musicbrainz_item(),
             _audio_analysis_item(),
             spacing="4",
             width="100%",
@@ -409,7 +536,7 @@ def doctor() -> rx.Component:
         spacing="6",
         width="100%",
     )
-    return layout(rx.fragment(content, _task_polling_trigger()))
+    return layout(rx.fragment(content, _retag_confirm_modal(), _task_polling_trigger()))
 
 
 def _task_polling_trigger() -> rx.Component:

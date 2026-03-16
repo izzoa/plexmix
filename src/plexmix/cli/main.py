@@ -12,6 +12,7 @@ from .tags_cmd import tags_app
 from .embeddings_cmd import embeddings_app
 from .db_cmd import db_app
 from .audio_cmd import audio_app
+from .musicbrainz_cmd import musicbrainz_app
 from .playlist_cmd import playlist_app
 from .ui_cmd import launch_ui
 from .create_cmd import create_playlist
@@ -37,6 +38,7 @@ app.add_typer(tags_app)
 app.add_typer(embeddings_app)
 app.add_typer(db_app)
 app.add_typer(audio_app)
+app.add_typer(musicbrainz_app)
 app.add_typer(playlist_app)
 
 # Register top-level commands

@@ -306,7 +306,7 @@ class LocalEmbeddingProvider(EmbeddingProvider):
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         super().__init__()
         try:
-            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found]  # noqa: F401
+            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found,import-untyped]  # noqa: F401
         except ImportError:
             raise ImportError(
                 "sentence-transformers not installed. Run: pip install sentence-transformers"
@@ -622,6 +622,14 @@ def create_track_text(track_data: dict, audio_features: Optional[dict] = None) -
         text += f" | environments: {environments}"
     if instruments:
         text += f" | instruments: {instruments}"
+
+    # MusicBrainz genres and recording type
+    mb_genres = track_data.get("musicbrainz_genres", "")
+    recording_type = track_data.get("recording_type", "")
+    if mb_genres:
+        text += f" | mb-genres: {mb_genres}"
+    if recording_type:
+        text += f" | type: {recording_type}"
 
     if audio_features:
         audio_parts: List[str] = []

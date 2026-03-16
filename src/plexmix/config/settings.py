@@ -142,6 +142,25 @@ class AudioSettings(BaseSettings):
         return file_path
 
 
+class MusicBrainzSettings(BaseSettings):
+    enabled: bool = Field(default=False, description="Enable MusicBrainz metadata enrichment")
+    enrich_on_sync: bool = Field(
+        default=False, description="Run MusicBrainz enrichment during sync"
+    )
+    confidence_threshold: float = Field(
+        default=80.0, description="Minimum match confidence score (0-100)"
+    )
+    rate_limit_delay: float = Field(
+        default=1.0, description="Seconds between MusicBrainz API calls"
+    )
+    contact_email: str = Field(
+        default="", description="Contact email (required by MusicBrainz TOS)"
+    )
+
+    class Config:
+        env_prefix = "MUSICBRAINZ_"
+
+
 class UISettings(BaseSettings):
     password: Optional[str] = Field(default=None, description="Password to protect the web UI")
 
@@ -185,6 +204,7 @@ class Settings(BaseSettings):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     playlist: PlaylistSettings = Field(default_factory=PlaylistSettings)
     audio: AudioSettings = Field(default_factory=AudioSettings)
+    musicbrainz: MusicBrainzSettings = Field(default_factory=MusicBrainzSettings)
     ui: UISettings = Field(default_factory=UISettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
 
@@ -219,6 +239,19 @@ class Settings(BaseSettings):
             ("AUDIO_WORKERS", "audio.workers", int),
             ("AUDIO_PATH_PREFIX_FROM", "audio.path_prefix_from", str),
             ("AUDIO_PATH_PREFIX_TO", "audio.path_prefix_to", str),
+            (
+                "MUSICBRAINZ_ENABLED",
+                "musicbrainz.enabled",
+                lambda v: v.lower() in ("1", "true", "yes"),
+            ),
+            (
+                "MUSICBRAINZ_ENRICH_ON_SYNC",
+                "musicbrainz.enrich_on_sync",
+                lambda v: v.lower() in ("1", "true", "yes"),
+            ),
+            ("MUSICBRAINZ_CONFIDENCE_THRESHOLD", "musicbrainz.confidence_threshold", float),
+            ("MUSICBRAINZ_RATE_LIMIT_DELAY", "musicbrainz.rate_limit_delay", float),
+            ("MUSICBRAINZ_CONTACT_EMAIL", "musicbrainz.contact_email", str),
         ]
         for env_key, yaml_path, cast in _env_maps:
             val = os.getenv(env_key)
