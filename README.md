@@ -944,6 +944,12 @@ poetry run pytest --cov=plexmix --cov-report=html
 - Check internet connection
 - Try local embeddings: `--embedding-provider local`
 
+### "AI tagging stopped" / "rejected before it reached the model"
+- This means the AI provider rejected the request at the network edge before it reached the model — tagging stops immediately instead of retrying every track.
+- **Most common cause:** a malformed or invalid API key. Re-enter the key in Settings (or `plexmix config`); leading/trailing spaces and newlines are now stripped automatically, but an otherwise-wrong key still needs correcting.
+- If the key is correct, check for a corporate proxy, VPN, or firewall that may be intercepting HTTPS requests to the provider.
+- Keys containing invalid characters (interior spaces, control, or non-ASCII characters) are now rejected up front with a clear message rather than failing mid-run.
+
 ### "No tracks found matching criteria"
 - **First, try:** `plexmix doctor` to check for database issues
 - Ensure library is synced: `plexmix sync`

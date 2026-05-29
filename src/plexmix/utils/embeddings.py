@@ -11,6 +11,8 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
+from plexmix.config.credentials import sanitize_credential_value, validate_api_key
+
 logger = logging.getLogger(__name__)
 
 LOCAL_EMBEDDING_MODELS: Dict[str, Dict[str, Union[int, bool]]] = {
@@ -541,6 +543,16 @@ class EmbeddingGenerator:
         custom_dimension: int = 1536,
     ):
         self.provider_name = provider.lower()
+
+        # Normalize and validate the key that will actually be used, so a
+        # transport-unsafe key fails here with a clear message instead of a
+        # cryptic error inside the SDK client.
+        api_key = sanitize_credential_value(api_key)
+        custom_api_key = sanitize_credential_value(custom_api_key)
+        if self.provider_name == "custom":
+            validate_api_key(custom_api_key, "custom")
+        else:
+            validate_api_key(api_key, self.provider_name)
 
         self.provider: EmbeddingProvider
         if self.provider_name == "gemini":

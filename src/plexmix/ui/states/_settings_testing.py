@@ -11,6 +11,7 @@ import re
 from typing import Any
 
 from plexmix.ai.local_provider import LOCAL_LLM_DEFAULT_MODEL
+from plexmix.config.credentials import sanitize_credential_value, validate_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +87,9 @@ async def test_ai_provider_impl(state: Any) -> None:
     try:
         loop = asyncio.get_running_loop()
         provider = state.ai_provider
-        api_key = state.ai_api_key
+        api_key = sanitize_credential_value(state.ai_api_key)
+        if provider in ("gemini", "openai", "anthropic", "cohere"):
+            validate_api_key(api_key, provider)
 
         if provider == "gemini":
             async with state:
@@ -251,7 +254,9 @@ async def test_embedding_provider_impl(state: Any) -> None:
     try:
         loop = asyncio.get_running_loop()
         provider = state.embedding_provider
-        api_key = state.embedding_api_key
+        api_key = sanitize_credential_value(state.embedding_api_key)
+        if provider in ("gemini", "openai", "cohere"):
+            validate_api_key(api_key, provider)
         test_text = "This is a test string for embedding generation."
 
         if provider == "gemini":

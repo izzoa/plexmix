@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 from pathlib import Path
 from plexmix.ui.states.app_state import AppState
 from plexmix.ui.job_manager import task_store
+from plexmix.ai.errors import FatalProviderError
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +185,8 @@ class DoctorState(AppState):
             )
             task_store.complete("doctor_fix")
 
+        except FatalProviderError as e:
+            task_store.complete("doctor_fix", status="failed", message=e.user_message)
         except Exception as e:
             task_store.complete("doctor_fix", status="failed", message=str(e))
 
@@ -249,6 +252,8 @@ class DoctorState(AppState):
             )
             task_store.complete("doctor_fix")
 
+        except FatalProviderError as e:
+            task_store.complete("doctor_fix", status="failed", message=e.user_message)
         except Exception as e:
             task_store.complete("doctor_fix", status="failed", message=str(e))
 
@@ -323,6 +328,8 @@ class DoctorState(AppState):
             )
             task_store.complete("doctor_fix")
 
+        except FatalProviderError as e:
+            task_store.complete("doctor_fix", status="failed", message=e.user_message)
         except Exception as e:
             task_store.complete("doctor_fix", status="failed", message=str(e))
 
@@ -410,11 +417,16 @@ class DoctorState(AppState):
                     )
 
                 def run_tag_regen():
-                    results = tag_generator.generate_tags_batch(
-                        all_tracks,
-                        batch_size=20,
-                        progress_callback=progress_callback,
-                    )
+                    fatal = None
+                    try:
+                        results = tag_generator.generate_tags_batch(
+                            all_tracks,
+                            batch_size=20,
+                            progress_callback=progress_callback,
+                        )
+                    except FatalProviderError as e:
+                        results = e.partial_results
+                        fatal = e
 
                     count = 0
                     for track_id, tag_data in results.items():
@@ -430,6 +442,8 @@ class DoctorState(AppState):
                                 instruments=instruments,
                             )
                             count += 1
+                    if fatal:
+                        raise fatal
                     return count
 
                 loop = asyncio.get_running_loop()
@@ -444,6 +458,8 @@ class DoctorState(AppState):
             )
             task_store.complete("doctor_fix")
 
+        except FatalProviderError as e:
+            task_store.complete("doctor_fix", status="failed", message=e.user_message)
         except Exception as e:
             task_store.complete("doctor_fix", status="failed", message=str(e))
 
@@ -519,11 +535,16 @@ class DoctorState(AppState):
                     )
 
                 def run_tag_regen():
-                    results = tag_generator.generate_tags_batch(
-                        untagged_tracks,
-                        batch_size=20,
-                        progress_callback=progress_callback,
-                    )
+                    fatal = None
+                    try:
+                        results = tag_generator.generate_tags_batch(
+                            untagged_tracks,
+                            batch_size=20,
+                            progress_callback=progress_callback,
+                        )
+                    except FatalProviderError as e:
+                        results = e.partial_results
+                        fatal = e
 
                     count = 0
                     for track_id, tag_data in results.items():
@@ -539,6 +560,8 @@ class DoctorState(AppState):
                                 instruments=instruments,
                             )
                             count += 1
+                    if fatal:
+                        raise fatal
                     return count
 
                 loop = asyncio.get_running_loop()
@@ -553,6 +576,8 @@ class DoctorState(AppState):
             )
             task_store.complete("doctor_fix")
 
+        except FatalProviderError as e:
+            task_store.complete("doctor_fix", status="failed", message=e.user_message)
         except Exception as e:
             task_store.complete("doctor_fix", status="failed", message=str(e))
 
@@ -676,6 +701,8 @@ class DoctorState(AppState):
             )
             task_store.complete("doctor_fix")
 
+        except FatalProviderError as e:
+            task_store.complete("doctor_fix", status="failed", message=e.user_message)
         except Exception as e:
             task_store.complete("doctor_fix", status="failed", message=str(e))
 
@@ -926,5 +953,7 @@ class DoctorState(AppState):
             )
             task_store.complete("doctor_fix")
 
+        except FatalProviderError as e:
+            task_store.complete("doctor_fix", status="failed", message=e.user_message)
         except Exception as e:
             task_store.complete("doctor_fix", status="failed", message=str(e))

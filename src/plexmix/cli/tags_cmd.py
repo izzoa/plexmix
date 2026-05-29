@@ -5,6 +5,7 @@ from ..config.constants import EMBEDDING_BATCH_SIZE, TAG_BATCH_SIZE
 from ..config.settings import Settings
 from ..database.sqlite_manager import SQLiteManager
 from ..ai.tag_generator import TagGenerator
+from ..ai.errors import FatalProviderError
 from ..services.providers import (
     canonical_ai_provider as _canonical_ai_provider,
     resolve_ai_api_key as _resolve_ai_api_key,
@@ -124,7 +125,11 @@ def tags_generate(
                         description=f"Generating tags (batch {batch_num}/{total_batches})...",
                     )
 
-                    tags_dict = tag_generator.generate_tags_batch(batch, batch_size=batch_size)
+                    try:
+                        tags_dict = tag_generator.generate_tags_batch(batch, batch_size=batch_size)
+                    except FatalProviderError as e:
+                        console.print(f"\n[red]AI tagging stopped:[/red] {e.user_message}")
+                        break
 
                     for track in tracks_needing_tags:
                         if track.id in tags_dict and tags_dict[track.id]:

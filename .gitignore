@@ -63,3 +63,8 @@ dmypy.json
 *.code-workspace
 
 .early.coverage
+
+# OpenSpec
+openspec/
+.claude/commands/opsx/
+.claude/skills/openspec-*/

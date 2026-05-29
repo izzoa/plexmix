@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-28
+
+### Added
+- Sanitize and validate API keys across all sources (keyring, environment variables, and saved settings): surrounding whitespace and newlines are stripped, and a key containing characters that cannot be sent over HTTP now fails fast with a clear "re-enter your key" message instead of a cryptic error mid-run.
+
+### Fixed
+- Stop AI tag generation immediately on an unrecoverable provider error (e.g. an invalid API key or an HTTP-edge/proxy rejection) instead of retrying every batch and writing empty tags across the whole library; the failure is reported once in plain language and any tags generated beforehand are kept.
+- Translate opaque provider errors — including the HTML "Error 400 (Bad Request)" page returned by an API gateway or proxy — into an actionable message pointing at the API key or network path.
+
 ## [0.9.0] - 2026-03-16
 
 ### Added
@@ -560,7 +569,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI interface with Rich formatting
 - Tag generation and management
 
-[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/izzoa/plexmix/compare/v0.9.0...v0.10.0
 [0.7.0]: https://github.com/izzoa/plexmix/compare/v0.6.7...v0.7.0
 [0.6.7]: https://github.com/izzoa/plexmix/compare/v0.6.6...v0.6.7
 [0.6.6]: https://github.com/izzoa/plexmix/compare/v0.6.5...v0.6.6

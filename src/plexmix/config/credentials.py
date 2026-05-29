@@ -1,10 +1,65 @@
 import os
+import re
 import logging
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 SERVICE_NAME = "plexmix"
+
+# Permissive superset of characters seen in real cloud API keys. A transport-safe
+# key that does not match this only triggers a non-blocking warning (key formats
+# vary and change), and the check is scoped to known cloud providers.
+_API_KEY_SHAPE_RE = re.compile(r"^[A-Za-z0-9_.+/=-]+$")
+_SHAPE_CHECKED_PROVIDERS = {"gemini", "openai", "claude", "anthropic", "cohere"}
+
+
+class InvalidAPIKeyError(ValueError):
+    """Raised when an API key cannot be sent as an HTTP header value.
+
+    Subclasses ``ValueError`` so existing provider-construction handlers that
+    already catch ``ValueError`` continue to work.
+    """
+
+
+def sanitize_credential_value(value: Optional[str]) -> Optional[str]:
+    """Strip surrounding whitespace/newlines from a credential value.
+
+    Only the surrounding characters are removed; the interior is never altered.
+    Returns ``None`` unchanged so callers can distinguish "missing" from "empty".
+    """
+    if value is None:
+        return None
+    return value.strip()
+
+
+def validate_api_key(key: Optional[str], provider: Optional[str] = None) -> None:
+    """Validate a resolved API key before it is used to construct a provider.
+
+    Raises :class:`InvalidAPIKeyError` when the key contains characters that
+    cannot be sent in an HTTP header (interior whitespace, control characters,
+    or non-ASCII) — these would otherwise surface as a cryptic transport error
+    mid-run. Logs a non-blocking warning when a known cloud provider's key has an
+    unexpected shape. Never raises for an empty/None key (that is handled
+    elsewhere as "not configured").
+    """
+    if not key:
+        return
+    # HTTP header values must be printable ASCII without spaces; surrounding
+    # whitespace is already stripped, so anything outside 0x21-0x7E here is an
+    # interior anomaly the transport cannot send.
+    if any(ord(ch) < 0x21 or ord(ch) > 0x7E for ch in key):
+        raise InvalidAPIKeyError(
+            "API key contains invalid characters (whitespace, control, or "
+            "non-ASCII characters). Re-enter it in Settings."
+        )
+    if provider and provider.lower() in _SHAPE_CHECKED_PROVIDERS:
+        if not _API_KEY_SHAPE_RE.match(key):
+            logger.warning(
+                "API key for provider '%s' has an unexpected format; it may be malformed.",
+                provider,
+            )
+
 
 # Map credential keys to environment variable names
 _ENV_VAR_MAP = {
@@ -33,6 +88,7 @@ def store_credential(key: str, value: str) -> bool:
     if kr is None:
         logger.warning(f"Keyring unavailable; cannot store credential: {key}")
         return False
+    value = sanitize_credential_value(value) or ""
     try:
         kr.set_password(SERVICE_NAME, key, value)
         logger.info(f"Stored credential: {key}")
@@ -49,7 +105,7 @@ def get_credential(key: str) -> Optional[str]:
         value = os.getenv(env_var)
         if value:
             logger.debug(f"Retrieved credential {key} from env var {env_var}")
-            return value
+            return sanitize_credential_value(value)
 
     # Fall back to keyring
     kr = _get_keyring()
@@ -59,6 +115,7 @@ def get_credential(key: str) -> Optional[str]:
         kr_value: Optional[str] = kr.get_password(SERVICE_NAME, key)
         if kr_value:
             logger.debug(f"Retrieved credential: {key}")
+            return sanitize_credential_value(kr_value)
         return kr_value
     except Exception as e:
         logger.error(f"Failed to retrieve credential {key}: {e}")

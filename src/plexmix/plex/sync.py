@@ -16,6 +16,7 @@ from ..database.models import Artist, Album, Track, Genre, SyncHistory
 from ..database.vector_index import VectorIndex
 from ..utils.embeddings import EmbeddingGenerator, create_track_text
 from ..ai.tag_generator import TagGenerator
+from ..ai.errors import FatalProviderError
 from ..ai.base import AIProvider
 from ..config.settings import MusicBrainzSettings
 
@@ -597,6 +598,20 @@ class SyncEngine:
                 )
             progress.update(task, completed=tracks_tagged)
 
+        def _save_tag_results(results: Dict[int, Dict[str, Any]]) -> int:
+            saved = 0
+            for track in tracks_needing_tags:
+                if track.id in results:
+                    result = results[track.id]
+                    self.db.update_track_tags(
+                        track.id,
+                        tags=",".join(result.get("tags", [])),
+                        environments=",".join(result.get("environments", [])),
+                        instruments=",".join(result.get("instruments", [])),
+                    )
+                    saved += 1
+            return saved
+
         try:
             tag_results = self.tag_generator.generate_tags_batch(
                 track_data_list,
@@ -604,22 +619,18 @@ class SyncEngine:
                 progress_callback=tag_progress_callback,
                 cancel_event=cancel_event,
             )
-
-            tags_saved = 0
-            for track in tracks_needing_tags:
-                if track.id in tag_results:
-                    result = tag_results[track.id]
-                    self.db.update_track_tags(
-                        track.id,
-                        tags=",".join(result.get("tags", [])),
-                        environments=",".join(result.get("environments", [])),
-                        instruments=",".join(result.get("instruments", [])),
-                    )
-                    tags_saved += 1
-
+            tags_saved = _save_tag_results(tag_results)
             progress.update(task, description=f"Generated tags for {tags_saved} tracks")
             logger.info(f"Generated AI tags for {tags_saved} tracks")
 
+        except FatalProviderError as e:
+            # Unrecoverable error (e.g. bad API key): stop tagging, keep partial
+            # results, surface the reason once, and let the rest of sync proceed.
+            tags_saved = _save_tag_results(e.partial_results)
+            logger.error("AI tagging stopped after %d tracks: %s", tags_saved, e.user_message)
+            progress.update(task, description=f"AI tagging stopped: {e.user_message}")
+            if progress_callback:
+                progress_callback(progress_end, f"AI tagging stopped: {e.user_message}")
         except KeyboardInterrupt:
             logger.warning("Tag generation interrupted by user")
             raise

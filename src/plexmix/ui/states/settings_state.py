@@ -117,6 +117,7 @@ class SettingsState(AppState):
                 get_plex_token,
                 get_custom_ai_api_key,
                 get_custom_embedding_api_key,
+                sanitize_credential_value,
             )
 
             settings = Settings.load_from_file()
@@ -137,7 +138,12 @@ class SettingsState(AppState):
             self.ai_local_auth_token = settings.ai.local_auth_token or ""
             self.ai_custom_endpoint = settings.ai.custom_endpoint or ""
             self.ai_custom_model = settings.ai.custom_model or ""
-            self.ai_custom_api_key = settings.ai.custom_api_key or get_custom_ai_api_key() or ""
+            self.ai_custom_api_key = (
+                sanitize_credential_value(
+                    settings.ai.custom_api_key or get_custom_ai_api_key() or ""
+                )
+                or ""
+            )
             self.local_llm_download_status = ""
             self.local_llm_download_progress = 0
             self.is_downloading_local_llm = False
@@ -150,7 +156,10 @@ class SettingsState(AppState):
             self.embedding_custom_endpoint = settings.embedding.custom_endpoint or ""
             self.embedding_custom_model = settings.embedding.custom_model or ""
             self.embedding_custom_api_key = (
-                settings.embedding.custom_api_key or get_custom_embedding_api_key() or ""
+                sanitize_credential_value(
+                    settings.embedding.custom_api_key or get_custom_embedding_api_key() or ""
+                )
+                or ""
             )
             self.embedding_custom_dimension = settings.embedding.custom_dimension
 
@@ -425,6 +434,7 @@ class SettingsState(AppState):
                 store_cohere_api_key,
                 store_custom_ai_api_key,
                 store_custom_embedding_api_key,
+                sanitize_credential_value,
             )
 
             settings = Settings.load_from_file()
@@ -443,7 +453,7 @@ class SettingsState(AppState):
             settings.ai.local_auth_token = self.ai_local_auth_token or None
             settings.ai.custom_endpoint = self.ai_custom_endpoint or None
             settings.ai.custom_model = self.ai_custom_model or None
-            settings.ai.custom_api_key = self.ai_custom_api_key or None
+            settings.ai.custom_api_key = sanitize_credential_value(self.ai_custom_api_key) or None
 
             if self.ai_api_key:
                 if self.ai_provider == "gemini":
@@ -462,7 +472,9 @@ class SettingsState(AppState):
             settings.embedding.dimension = self.embedding_dimension
             settings.embedding.custom_endpoint = self.embedding_custom_endpoint or None
             settings.embedding.custom_model = self.embedding_custom_model or None
-            settings.embedding.custom_api_key = self.embedding_custom_api_key or None
+            settings.embedding.custom_api_key = (
+                sanitize_credential_value(self.embedding_custom_api_key) or None
+            )
             settings.embedding.custom_dimension = self.embedding_custom_dimension
 
             if self.embedding_api_key and self.embedding_provider not in ("local", "custom"):

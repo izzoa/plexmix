@@ -3,6 +3,7 @@ import reflex as rx
 import asyncio
 import time
 from plexmix.config.constants import TAG_BATCH_SIZE
+from plexmix.ai.errors import FatalProviderError
 from plexmix.ui.states.app_state import AppState
 from plexmix.ui.job_manager import task_store
 
@@ -301,12 +302,18 @@ class TaggingState(AppState):
             loop = asyncio.get_running_loop()
 
             def run_tagging():
-                results = tag_generator.generate_tags_batch(
-                    tracks,
-                    batch_size=batch_size,
-                    progress_callback=progress_callback,
-                    cancel_event=cancel_event,
-                )
+                fatal = None
+                try:
+                    results = tag_generator.generate_tags_batch(
+                        tracks,
+                        batch_size=batch_size,
+                        progress_callback=progress_callback,
+                        cancel_event=cancel_event,
+                    )
+                except FatalProviderError as e:
+                    # Save whatever succeeded, then surface the reason upstream.
+                    results = e.partial_results
+                    fatal = e
 
                 saved_count = 0
                 for track_id, tag_data in results.items():
@@ -320,6 +327,8 @@ class TaggingState(AppState):
                         saved_count += 1
 
                 db.close()
+                if fatal:
+                    raise fatal
                 return saved_count
 
             saved_count = await loop.run_in_executor(None, run_tagging)
@@ -327,6 +336,8 @@ class TaggingState(AppState):
             task_store.update("tagging", extra={"tags_generated_count": saved_count})
             task_store.complete("tagging")
 
+        except FatalProviderError as e:
+            task_store.complete("tagging", status="failed", message=e.user_message)
         except Exception as e:
             task_store.complete("tagging", status="failed", message=str(e))
 

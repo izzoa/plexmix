@@ -9,6 +9,7 @@ from .claude_provider import ClaudeProvider
 from .cohere_provider import CohereProvider
 from .local_provider import LocalLLMProvider, LOCAL_LLM_MODELS, LOCAL_LLM_DEFAULT_MODEL
 from .custom_provider import CustomProvider
+from plexmix.config.credentials import sanitize_credential_value, validate_api_key
 from plexmix.services.registry import (
     AI_PROVIDERS,
     AI_PROVIDERS_REQUIRING_KEY,
@@ -60,6 +61,11 @@ def get_ai_provider(
         if env_getter:
             api_key = env_getter()
 
+    # Normalize keys from any source (keyring, direct env fallback, or YAML
+    # settings) before they reach a provider/HTTP client.
+    api_key = sanitize_credential_value(api_key)
+    custom_api_key = sanitize_credential_value(custom_api_key)
+
     if provider_name in AI_PROVIDERS_REQUIRING_KEY and not api_key:
         raise ValueError(f"API key required for {provider_name} provider")
 
@@ -68,6 +74,7 @@ def get_ai_provider(
     if cloud_ctor:
         model = model or get_default_ai_model(provider_name)
         assert api_key is not None  # guaranteed by the check above
+        validate_api_key(api_key, provider_name)
         return cloud_ctor(api_key, model, temperature)
 
     # Local provider
@@ -88,6 +95,7 @@ def get_ai_provider(
             raise ValueError("Endpoint URL required for custom provider")
         if not model:
             raise ValueError("Model name required for custom provider")
+        validate_api_key(custom_api_key, "custom")
         return CustomProvider(
             base_url=custom_endpoint,
             model=model,

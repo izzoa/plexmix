@@ -6,6 +6,7 @@ import re
 import threading
 
 from .base import AIProvider
+from .errors import FatalProviderError, classify_provider_error
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,7 @@ class TagGenerator:
         logger.debug(f"Generating tags for {len(tracks)} tracks")
 
         total_batches = (len(tracks) + batch_size - 1) // batch_size
-        all_results = {}
+        all_results: Dict[int, Dict[str, Any]] = {}
         tracks_tagged = 0
 
         for batch_num in range(total_batches):
@@ -42,7 +43,16 @@ class TagGenerator:
                 progress_callback(batch_num + 1, total_batches, tracks_tagged)
 
             # Generate tags for this batch
-            batch_results = self._generate_batch(batch_tracks)
+            try:
+                batch_results = self._generate_batch(batch_tracks)
+            except FatalProviderError as e:
+                # Abort the whole run; hand back whatever succeeded so far.
+                e.partial_results = all_results
+                logger.error(
+                    "Aborting tag generation after a fatal provider error: %s",
+                    e.user_message,
+                )
+                raise
             all_results.update(batch_results)
             tracks_tagged += len(batch_tracks)
 
@@ -78,58 +88,37 @@ class TagGenerator:
                         for track in tracks
                     }
             except Exception as e:
-                error_str = str(e)
+                is_retryable, is_fatal, user_message = classify_provider_error(e)
 
-                is_rate_limit = (
-                    "429" in error_str
-                    or "quota" in error_str.lower()
-                    or "rate" in error_str.lower()
-                )
-                is_timeout = (
-                    "504" in error_str
-                    or "timeout" in error_str.lower()
-                    or "timed out" in error_str.lower()
-                )
-                is_server_error = "500" in error_str or "502" in error_str or "503" in error_str
+                # Fatal (auth / 4xx / HTML edge rejection): abort the whole run.
+                if is_fatal:
+                    logger.error(f"Fatal AI provider error during tagging: {e}")
+                    raise FatalProviderError(str(e), user_message=user_message, cause=e)
 
-                if is_rate_limit or is_timeout or is_server_error:
-                    if attempt < max_retries - 1:
-                        retry_after = self._extract_retry_delay(error_str)
-
-                        if retry_after:
-                            delay = retry_after * 1.5
-                            logger.warning(
-                                f"API error (attempt {attempt + 1}/{max_retries}). Server suggested {retry_after}s, using {delay:.1f}s with backoff..."
-                            )
-                        else:
-                            delay = base_delay * (2**attempt)
-                            if is_rate_limit:
-                                logger.warning(
-                                    f"Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s..."
-                                )
-                            elif is_timeout:
-                                logger.warning(
-                                    f"Request timeout (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s..."
-                                )
-                            else:
-                                logger.warning(
-                                    f"Server error (attempt {attempt + 1}/{max_retries}). Retrying in {delay}s..."
-                                )
-
-                        time.sleep(delay)
-                        continue
+                # Retryable (rate limit / timeout / 5xx): back off and retry.
+                if is_retryable and attempt < max_retries - 1:
+                    retry_after = self._extract_retry_delay(str(e))
+                    if retry_after:
+                        delay = retry_after * 1.5
+                        logger.warning(
+                            f"API error (attempt {attempt + 1}/{max_retries}). Server suggested "
+                            f"{retry_after}s, using {delay:.1f}s with backoff..."
+                        )
                     else:
-                        logger.error(f"Failed after {max_retries} attempts: {e}")
-                        return {
-                            track["id"]: {"tags": [], "environments": [], "instruments": []}
-                            for track in tracks
-                        }
-                else:
-                    logger.error(f"Failed to generate tags for batch: {e}")
-                    return {
-                        track["id"]: {"tags": [], "environments": [], "instruments": []}
-                        for track in tracks
-                    }
+                        delay = base_delay * (2**attempt)
+                        logger.warning(
+                            f"Retryable API error (attempt {attempt + 1}/{max_retries}). "
+                            f"Retrying in {delay}s..."
+                        )
+                    time.sleep(delay)
+                    continue
+
+                # Retryable but exhausted, or unknown/non-fatal: degrade this batch only.
+                logger.error(f"Failed to generate tags for batch: {e}")
+                return {
+                    track["id"]: {"tags": [], "environments": [], "instruments": []}
+                    for track in tracks
+                }
 
         return {
             track["id"]: {"tags": [], "environments": [], "instruments": []} for track in tracks
