@@ -8,6 +8,7 @@ from plexmix.services.registry import (
     get_ai_models,
     get_ai_models_display,
     get_default_ai_model,
+    get_default_ai_model_display,
     get_embedding_models,
     get_default_embedding_model,
     get_embedding_dimension,
@@ -80,11 +81,11 @@ class TestGetAIModels:
 
     def test_openai(self):
         models = get_ai_models("openai")
-        assert "gpt-5-mini" in models
+        assert "gpt-5.4-mini" in models
 
     def test_claude(self):
         models = get_ai_models("claude")
-        assert "claude-sonnet-4-5-20250929" in models
+        assert "claude-sonnet-4-6" in models
 
     def test_cohere(self):
         models = get_ai_models("cohere")
@@ -115,16 +116,16 @@ class TestGetAIModelsDisplay:
 
 class TestGetDefaultAIModel:
     def test_gemini(self):
-        assert get_default_ai_model("gemini") == "gemini-2.5-flash"
+        assert get_default_ai_model("gemini") == "gemini-3.5-flash"
 
     def test_openai(self):
-        assert get_default_ai_model("openai") == "gpt-5-mini"
+        assert get_default_ai_model("openai") == "gpt-5.4-mini"
 
     def test_claude(self):
-        assert get_default_ai_model("claude") == "claude-sonnet-4-5-20250929"
+        assert get_default_ai_model("claude") == "claude-sonnet-4-6"
 
     def test_cohere(self):
-        assert get_default_ai_model("cohere") == "command-r7b-12-2024"
+        assert get_default_ai_model("cohere") == "command-a-03-2025"
 
     def test_local(self):
         assert get_default_ai_model("local") == "google/gemma-3-1b"
@@ -234,3 +235,56 @@ class TestRequiresKey:
     def test_embedding_local_custom_no_key(self):
         assert not requires_embedding_api_key("local")
         assert not requires_embedding_api_key("custom")
+
+
+# ---------------------------------------------------------------------------
+# Default model in display form (used by the Settings UI default selection)
+# ---------------------------------------------------------------------------
+
+
+class TestGetDefaultAIModelDisplay:
+    def test_gemini(self):
+        assert get_default_ai_model_display("gemini") == "gemini-3.5-flash"
+
+    def test_openai(self):
+        assert get_default_ai_model_display("openai") == "gpt-5.4-mini"
+
+    def test_claude(self):
+        assert get_default_ai_model_display("claude") == "claude-sonnet-4-6"
+
+    def test_anthropic_alias_resolves_to_claude_default(self):
+        assert get_default_ai_model_display("anthropic") == "claude-sonnet-4-6"
+
+    def test_default_is_present_in_display_list(self):
+        for p in ("gemini", "openai", "claude", "anthropic", "cohere"):
+            assert get_default_ai_model_display(p) in get_ai_models_display(p), p
+
+
+# ---------------------------------------------------------------------------
+# Catalog currency — new defaults present, EOL/invalid/deprecated absent
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogCurrency:
+    def test_new_default_models(self):
+        assert AI_PROVIDERS["gemini"].default_model == "gemini-3.5-flash"
+        assert AI_PROVIDERS["openai"].default_model == "gpt-5.4-mini"
+        assert AI_PROVIDERS["claude"].default_model == "claude-sonnet-4-6"
+        assert AI_PROVIDERS["cohere"].default_model == "command-a-03-2025"
+
+    def test_eol_invalid_and_deprecated_models_absent(self):
+        all_models = [m for p in AI_PROVIDERS.values() for m in p.models]
+        for dead in (
+            "gemini-2.0-flash-001",  # EOL 2026-06-01
+            "claude-opus-4-1-20250414",  # invalid ID
+            "gpt-5-mini",  # superseded GPT-5.0 tier
+            "command-r-plus",  # deprecated undated alias
+            "command-r",  # deprecated undated alias
+        ):
+            assert dead not in all_models, f"{dead} should not be offered"
+
+    def test_embedding_catalog_unchanged(self):
+        assert EMBEDDING_PROVIDERS["gemini"].default_model == "gemini-embedding-001"
+        assert EMBEDDING_PROVIDERS["gemini"].default_dimension == 3072
+        assert EMBEDDING_PROVIDERS["openai"].default_model == "text-embedding-3-small"
+        assert EMBEDDING_PROVIDERS["cohere"].default_model == "embed-v4.0"

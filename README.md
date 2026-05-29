@@ -660,13 +660,13 @@ PlexMix stores all music metadata locally:
 
 | Provider | Model | Context Window | Default Temp | Speed | Quality | Cost | Best For |
 |----------|-------|----------------|--------------|-------|---------|------|----------|
-| OpenAI | gpt-5-mini | 400K tokens | 0.7 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰 Medium | High-quality responses, reasoning |
-| Anthropic | claude-sonnet-4-5 | 200K tokens | 0.7 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰💰 High | Advanced reasoning, analysis |
-| Cohere | command-r-plus-08-2024 | 128K tokens | 0.3 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰 Medium | Multilingual, complex tasks |
-| **Google Gemini** ⭐ | gemini-2.5-flash | 1M tokens | 0.7 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | General use, RAG, large contexts |
-| OpenAI | gpt-5-nano | 400K tokens | 0.7 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Speed-optimized, efficient |
-| Cohere | command-r7b-12-2024 | 128K tokens | 0.3 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | RAG, tool use, agents |
-| Cohere | command-r-08-2024 | 128K tokens | 0.3 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Balanced performance |
+| **Google Gemini** ⭐ | gemini-3.5-flash | 1M tokens | n/a¹ | ⚡⚡⚡ Fast | ⭐⭐⭐⭐⭐ Outstanding | 💰 Low | General use, RAG, large contexts (default) |
+| OpenAI | gpt-5.4-mini | 400K tokens | n/a¹ | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰 Medium | High-quality reasoning |
+| Anthropic | claude-sonnet-4-6 | 200K tokens | 0.7 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰💰 High | Advanced reasoning, analysis |
+| OpenAI | gpt-5.5 | 400K tokens | n/a¹ | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Frontier | 💰💰💰 High | Most complex tasks |
+| Anthropic | claude-opus-4-8 | 1M tokens | n/a¹ | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Frontier | 💰💰💰 High | Highest-capability reasoning |
+| Cohere | command-a-03-2025 | 256K tokens | 0.3 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰 Medium | Multilingual, agentic, RAG |
+| OpenAI | gpt-5.4-nano | 400K tokens | n/a¹ | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Speed-optimized, efficient |
 | Anthropic | claude-haiku-4-5 | 200K tokens | 0.7 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Fast responses, efficiency |
 
 **Legend:**
@@ -674,6 +674,7 @@ PlexMix stores all music metadata locally:
 - Speed: ⚡ Slow, ⚡⚡ Moderate, ⚡⚡⚡ Fast
 - Quality: ⭐ Basic → ⭐⭐⭐⭐⭐ Outstanding
 - Cost: 💰 Low, 💰💰 Medium, 💰💰💰 High
+- ¹ Reasoning models (GPT-5, Gemini 3, Claude Opus 4.7+) ignore the temperature setting
 
 ## Embedding Provider Comparison
 
@@ -745,13 +746,13 @@ If you ever want to nuke cached weights, delete the relevant directories under `
 
 ### Online (Best Latency & Reasoning)
 
-- **AI Provider:** `gemini-2.5-flash` (default). For more advanced reasoning, upgrade to `gpt-5-mini` or `claude-sonnet-4-5` if you have the budget.
+- **AI Provider:** `gemini-3.5-flash` (default). For more advanced reasoning, upgrade to `claude-sonnet-4-6`, `gpt-5.5`, or `claude-opus-4-8` if you have the budget.
 - **Embeddings:** `gemini-embedding-001` for maximum semantic precision, or `text-embedding-3-small` if you want faster generation with a slightly smaller vector size.
 - **Network Tips:** Keep API keys in `~/.plexmix/credentials` and run `plexmix config init` to verify connectivity. Use `plexmix ui --reload` during development to check the status cards.
 
 ### Hybrid (Cloud AI + Local Embeddings)
 
-- **AI Provider:** Keep using `gemini-2.5-flash` (or `gpt-5-mini`) for playlist prompts so you get the latest reasoning updates.
+- **AI Provider:** Keep using `gemini-3.5-flash` (or `gpt-5.4-mini`) for playlist prompts so you get the latest reasoning updates.
 - **Embeddings:** Run `mixedbread-ai/mxbai-embed-large-v1` locally so FAISS never leaves your machine while still benefiting from high-quality vectors.
 - **Workflow Tips:** Regenerate embeddings locally after every sync, but keep the AI provider online. This gives you the best of both worlds—fast semantic search without exposing track metadata, plus cloud-scale LLM quality.
 

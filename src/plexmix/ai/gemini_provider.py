@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Any, Optional
 import logging
 import time
 
@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiProvider(AIProvider):
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash", temperature: float = 0.7):
+    def __init__(self, api_key: str, model: str = "gemini-3.5-flash", temperature: float = 0.7):
         super().__init__(api_key, model, temperature)
         try:
             from google import genai
@@ -30,10 +30,17 @@ class GeminiProvider(AIProvider):
         """Send a prompt to Gemini and return the text response."""
         temp = temperature if temperature is not None else self.temperature
 
-        config = self.types.GenerateContentConfig(
-            temperature=temp,
-            max_output_tokens=max_tokens,
-        )
+        # Gemini 3 is tuned for the default temperature (1.0) and loops at low
+        # values; max_output_tokens is a *combined* thinking+output budget, so
+        # constrain thinking to LOW to avoid starving the response.
+        config_kwargs: dict[str, Any] = {"max_output_tokens": max_tokens}
+        if self.model.lower().startswith("gemini-3"):
+            config_kwargs["thinking_config"] = self.types.ThinkingConfig(
+                thinking_level=self.types.ThinkingLevel.LOW
+            )
+        else:
+            config_kwargs["temperature"] = temp
+        config = self.types.GenerateContentConfig(**config_kwargs)
 
         # Retry with exponential backoff
         max_retries = 3

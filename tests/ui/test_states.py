@@ -243,6 +243,27 @@ class TestSettingsState:
         assert len(state.ai_models) > 0
         assert any("gpt" in model.lower() for model in state.ai_models)
 
+    def test_update_model_lists_preselects_registry_default(self):
+        """An empty model auto-selects the registry default, not sorted-first."""
+        from plexmix.ui.states.settings_state import SettingsState
+
+        state = SettingsState()
+        state.ai_provider = "gemini"
+        state.ai_model = ""
+        state.update_model_lists()
+        assert state.ai_model == "gemini-3.5-flash"
+
+    def test_set_ai_provider_selects_registry_default(self):
+        """Switching providers selects that provider's registry default."""
+        from unittest.mock import patch
+        from plexmix.ui.states.settings_state import SettingsState
+
+        state = SettingsState()
+        state.ai_model = "gemini-3.5-flash"  # a previous provider's selection
+        with patch("plexmix.ui.states.settings_state.SettingsState._load_ai_api_key_for_provider"):
+            state.set_ai_provider("anthropic")
+        assert state.ai_model == "claude-sonnet-4-6"
+
 
 class TestGeneratorState:
     """Test cases for GeneratorState."""
@@ -787,6 +808,28 @@ class TestSettingsStateExpanded:
         state = SettingsState()
         state.set_embedding_provider("openai")
         assert state.embedding_dimension == 1536
+
+    def test_set_ai_provider_custom_has_empty_model_list(self):
+        from unittest.mock import patch
+        from plexmix.ui.states.settings_state import SettingsState
+
+        state = SettingsState()
+        with patch("plexmix.ui.states.settings_state.SettingsState._load_ai_api_key_for_provider"):
+            state.set_ai_provider("custom")
+        # Custom has no catalog models; the dropdown is empty and nothing crashes.
+        assert state.ai_models == []
+
+    def test_set_ai_provider_local_selects_default_model(self):
+        from unittest.mock import patch
+        from plexmix.ui.states.settings_state import SettingsState
+        from plexmix.ai.local_provider import LOCAL_LLM_DEFAULT_MODEL
+
+        state = SettingsState()
+        state.ai_model = "gpt-5.4-mini"  # a previous provider's selection
+        with patch("plexmix.ui.states.settings_state.SettingsState._load_ai_api_key_for_provider"):
+            state.set_ai_provider("local")
+        assert state.ai_model == LOCAL_LLM_DEFAULT_MODEL
+        assert len(state.ai_models) > 0
 
     def test_set_ai_provider_loads_key_for_new_provider(self):
         from unittest.mock import patch

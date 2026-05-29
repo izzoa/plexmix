@@ -196,6 +196,7 @@ class SettingsState(AppState):
     def update_model_lists(self):
         from plexmix.services.registry import (
             get_ai_models_display,
+            get_default_ai_model_display,
             get_embedding_models,
         )
 
@@ -203,7 +204,7 @@ class SettingsState(AppState):
         self.ai_models = models
         # Only auto-select if model is empty (preserve custom model names)
         if models and not self.ai_model:
-            self.ai_model = models[0]
+            self.ai_model = get_default_ai_model_display(self.ai_provider) or models[0]
 
         models = get_embedding_models(self.embedding_provider)
         self.embedding_models = models
@@ -226,10 +227,12 @@ class SettingsState(AppState):
         self.embedding_api_key = resolve_embedding_api_key(provider) or ""
 
     def set_ai_provider(self, provider: str):
+        from plexmix.services.registry import get_default_ai_model_display
+
         self.ai_provider = provider
         self.update_model_lists()
         if self.ai_models:
-            self.ai_model = self.ai_models[0]
+            self.ai_model = get_default_ai_model_display(provider) or self.ai_models[0]
         if provider == "local" and not self.ai_model:
             self.ai_model = LOCAL_LLM_DEFAULT_MODEL
         if provider != "local":
