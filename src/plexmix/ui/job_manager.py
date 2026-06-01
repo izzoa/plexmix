@@ -387,6 +387,9 @@ class TaskStore:
         event = self._cancel_events.get(job_type)
         if event is not None:
             event.set()
+        # Wake a paused loop so it observes the cancel and exits, instead of
+        # staying blocked forever on `await pause_event.wait()`.
+        self.resume(job_type)
 
     def is_cancelled(self, job_type: str) -> bool:
         """Check whether a task has been cancelled."""
@@ -415,6 +418,7 @@ class TaskStore:
         for job_type, event in events:
             if not event.is_set():
                 event.set()
+                self.resume(job_type)  # unblock a paused loop so it can exit
                 cancelled.append(job_type)
         return cancelled
 

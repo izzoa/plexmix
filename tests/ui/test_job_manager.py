@@ -206,6 +206,24 @@ class TestTaskStoreCancelPause:
         ts.resume("audio")
         assert not ts.is_paused("audio")
 
+    def test_cancel_unblocks_paused(self, ts: TaskStore):
+        # Cancelling must resume the pause event so a loop blocked on
+        # `await pause_event.wait()` wakes up and can observe the cancel.
+        ts.start("audio")
+        ts.pause("audio")
+        assert ts.is_paused("audio")
+        ts.cancel("audio")
+        assert ts.is_cancelled("audio")
+        assert not ts.is_paused("audio")  # resumed so the loop can exit
+
+    def test_cancel_all_running_unblocks_paused(self, ts: TaskStore):
+        ts.start("audio")
+        ts.pause("audio")
+        cancelled = ts.cancel_all_running()
+        assert "audio" in cancelled
+        assert ts.is_cancelled("audio")
+        assert not ts.is_paused("audio")
+
     def test_get_pause_event(self, ts: TaskStore):
         ts.start("audio")
         event = ts.get_pause_event("audio")
