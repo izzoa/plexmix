@@ -13,6 +13,7 @@ from plexmix.ui.pages._settings_sections import (
     _status_text,
 )
 from plexmix.ui.states.settings_state import SettingsState
+from plexmix.ui.states.appearance_state import AppearanceState
 
 
 # ── Sidebar navigation ──────────────────────────────────────────────
@@ -24,6 +25,7 @@ _NAV_ITEMS = [
     ("audio", "audio-waveform", "Audio Analysis"),
     ("musicbrainz", "disc", "MusicBrainz"),
     ("advanced", "settings", "Advanced"),
+    ("appearance", "palette", "Appearance"),
 ]
 
 
@@ -80,6 +82,7 @@ def _mobile_tabs() -> rx.Component:
             rx.tabs.trigger("Audio", value="audio"),
             rx.tabs.trigger("MB", value="musicbrainz"),
             rx.tabs.trigger("Adv", value="advanced"),
+            rx.tabs.trigger("Look", value="appearance"),
         ),
         rx.tabs.content(_plex_section(), value="plex"),
         rx.tabs.content(_ai_provider_section(), value="ai"),
@@ -87,6 +90,7 @@ def _mobile_tabs() -> rx.Component:
         rx.tabs.content(_audio_section(), value="audio"),
         rx.tabs.content(_musicbrainz_section(), value="musicbrainz"),
         rx.tabs.content(_advanced_section(), value="advanced"),
+        rx.tabs.content(_appearance_section(), value="appearance"),
         value=SettingsState.active_tab,
         on_change=SettingsState.set_active_tab,
         width="100%",
@@ -351,6 +355,64 @@ def _advanced_section() -> rx.Component:
 # ── Content switcher (desktop) ───────────────────────────────────────
 
 
+def _seg_control(current, options, on_select) -> rx.Component:
+    return rx.box(
+        *[
+            rx.el.button(
+                label,
+                class_name=rx.cond(current == val, "on", ""),
+                on_click=on_select(val),
+                type="button",
+            )
+            for val, label in options
+        ],
+        class_name="seg",
+        style={"maxWidth": "320px"},
+    )
+
+
+def _appearance_section() -> rx.Component:
+    """Theme, density, and accent-intensity controls."""
+    return rx.vstack(
+        _section_heading("Appearance"),
+        rx.box(
+            rx.box("Theme", class_name="field-label"),
+            rx.el.button(
+                rx.color_mode_cond(light=rx.icon("moon", size=16), dark=rx.icon("sun", size=16)),
+                rx.color_mode_cond(light="Switch to dark", dark="Switch to light"),
+                class_name="btn btn-3 btn-soft",
+                on_click=rx.toggle_color_mode,
+                type="button",
+            ),
+            rx.box("Light-first; your choice persists across reloads.", class_name="field-help"),
+            class_name="tile",
+            style={"width": "100%"},
+        ),
+        rx.box(
+            rx.box("Density", class_name="field-label"),
+            _seg_control(
+                AppearanceState.density,
+                [("comfortable", "Comfortable"), ("compact", "Compact")],
+                AppearanceState.set_density,
+            ),
+            class_name="tile",
+            style={"width": "100%"},
+        ),
+        rx.box(
+            rx.box("Accent intensity", class_name="field-label"),
+            _seg_control(
+                AppearanceState.accent,
+                [("subtle", "Subtle"), ("balanced", "Balanced"), ("vivid", "Vivid")],
+                AppearanceState.set_accent,
+            ),
+            class_name="tile",
+            style={"width": "100%"},
+        ),
+        spacing="4",
+        width="100%",
+    )
+
+
 def _active_section() -> rx.Component:
     """Show the section matching active_tab."""
     return rx.box(
@@ -369,7 +431,11 @@ def _active_section() -> rx.Component:
                         rx.cond(
                             SettingsState.active_tab == "musicbrainz",
                             _musicbrainz_section(),
-                            _advanced_section(),
+                            rx.cond(
+                                SettingsState.active_tab == "advanced",
+                                _advanced_section(),
+                                _appearance_section(),
+                            ),
                         ),
                     ),
                 ),

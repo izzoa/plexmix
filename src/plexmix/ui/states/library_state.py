@@ -40,7 +40,6 @@ class LibraryState(AppState):
     audio_analysis_progress: int = 0
     audio_analysis_message: str = ""
     audio_analysis_eta: str = ""
-    show_audio_cancel_confirm: bool = False
 
     is_enriching_musicbrainz: bool = False
     musicbrainz_progress: int = 0
@@ -54,7 +53,6 @@ class LibraryState(AppState):
     show_bulk_tag_dialog: bool = False
     bulk_tag_input: str = ""
     show_delete_confirm: bool = False
-    show_cancel_confirm: bool = False
 
     def set_sort(self, column: str):
         """Toggle sort direction if same column, otherwise sort ascending by new column."""
@@ -143,6 +141,13 @@ class LibraryState(AppState):
                 msg = embed_entry.message or "Embedding generation failed"
                 task_store.clear("embedding")
                 return rx.toast.error(msg)
+            elif embed_entry.status == "cancelled":
+                self.is_embedding = False
+                self.embedding_message = ""
+                self.load_tracks()
+                self.load_library_stats()
+                task_store.clear("embedding")
+                return rx.toast.warning("Embedding generation cancelled")
 
         # -- MusicBrainz enrichment --
         mb_entry = task_store.get("musicbrainz")
@@ -165,6 +170,12 @@ class LibraryState(AppState):
                 msg = mb_entry.message or "MusicBrainz enrichment failed"
                 task_store.clear("musicbrainz")
                 return rx.toast.error(msg)
+            elif mb_entry.status == "cancelled":
+                self.is_enriching_musicbrainz = False
+                self.musicbrainz_message = ""
+                self.load_library_stats()
+                task_store.clear("musicbrainz")
+                return rx.toast.warning("MusicBrainz enrichment cancelled")
 
         # -- Audio analysis --
         audio_entry = task_store.get("audio")
@@ -602,17 +613,6 @@ class LibraryState(AppState):
         except Exception as e:
             task_store.complete("sync", status="failed", message=str(e))
 
-    def request_cancel_sync(self):
-        self.show_cancel_confirm = True
-
-    def dismiss_cancel_confirm(self, open: bool = False):
-        if not open:
-            self.show_cancel_confirm = False
-
-    def cancel_sync(self):
-        self.show_cancel_confirm = False
-        task_store.cancel("sync")
-
     @rx.event(background=True)
     async def generate_embeddings(self):
         async with self:
@@ -673,12 +673,16 @@ class LibraryState(AppState):
                     tracks,
                     batch_size=EMBEDDING_BATCH_SIZE,
                     progress_callback=on_progress,
+                    cancel_event=cancel_event,
                 ),
             )
 
             db.close()
 
-            task_store.complete("embedding")
+            if cancel_event.is_set():
+                task_store.complete("embedding", status="cancelled")
+            else:
+                task_store.complete("embedding")
 
         except Exception as e:
             task_store.complete("embedding", status="failed", message=str(e))
@@ -778,19 +782,6 @@ class LibraryState(AppState):
     def resume_audio_analysis(self):
         task_store.resume("audio")
         self.audio_analysis_paused = False
-
-    def request_cancel_audio(self):
-        self.show_audio_cancel_confirm = True
-
-    def dismiss_audio_cancel_confirm(self, open: bool = False):
-        if not open:
-            self.show_audio_cancel_confirm = False
-
-    def cancel_audio_analysis(self):
-        self.show_audio_cancel_confirm = False
-        task_store.cancel("audio")
-        # Unblock pause so the loop can exit
-        task_store.resume("audio")
 
     @rx.event(background=True)
     async def analyze_audio(self):

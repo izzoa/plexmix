@@ -54,6 +54,51 @@ class AppState(rx.State):
         """Set the page loading state."""
         self.is_page_loading = loading
 
+    @rx.var
+    def show_doctor_badge(self) -> bool:
+        """App-wide attention flag for the Doctor rail badge.
+
+        Derived from already-loaded config/stats (no extra diagnostics run):
+        true when a provider is unconfigured or embeddings need regenerating.
+        """
+        if self.embedding_dimension_warning:
+            return True
+        return not (
+            self.plex_configured
+            and self.ai_provider_configured
+            and self.embedding_provider_configured
+        )
+
+    # ── Shared job-cancel confirmation (shell-level: works from any page + palette) ──
+    pending_cancel_job: str = ""
+
+    @rx.event
+    def request_cancel(self, job_type: str):
+        """Open the shared confirm dialog for cancelling a job (``"__all__"`` = global)."""
+        self.pending_cancel_job = job_type
+
+    @rx.event
+    def dismiss_cancel(self):
+        self.pending_cancel_job = ""
+
+    @rx.event
+    def confirm_cancel(self):
+        """Confirm: cancel the pending job, or all running cancellable work."""
+        from plexmix.ui.job_manager import task_store
+
+        job = self.pending_cancel_job
+        self.pending_cancel_job = ""
+        if not job:
+            return None
+        if job == "__all__":
+            task_store.cancel_all_running()
+            # Playlist generation is not TaskStore-backed — signal its own event too.
+            from plexmix.ui.states.generator_state import GeneratorState
+
+            return GeneratorState.cancel_generation
+        task_store.cancel(job)
+        return None
+
     @rx.event
     def open_changelog(self):
         """Open the changelog modal, loading content on first access."""

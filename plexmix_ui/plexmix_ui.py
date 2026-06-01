@@ -17,12 +17,14 @@ from plexmix.ui.states.doctor_state import DoctorState
 
 app = rx.App(
     theme=rx.theme(
-        appearance="dark",
+        appearance="light",
         accent_color="orange",
         radius="medium",
     ),
     stylesheets=[
         "/styles.css",
+        "/colors_and_type.css",
+        "/redesign.css",
     ],
     style={
         "font_family": "'IBM Plex Sans', system-ui, -apple-system, sans-serif",
@@ -33,10 +35,14 @@ app = rx.App(
 )
 
 app.add_page(index, route="/", title="PlexMix")
-app.add_page(dashboard, route="/dashboard", title="PlexMix | Dashboard", on_load=DashboardState.on_load)
+app.add_page(
+    dashboard, route="/dashboard", title="PlexMix | Dashboard", on_load=DashboardState.on_load
+)
 app.add_page(settings, route="/settings", title="PlexMix | Settings", on_load=SettingsState.on_load)
 app.add_page(library, route="/library", title="PlexMix | Library", on_load=LibraryState.on_load)
-app.add_page(generator, route="/generator", title="PlexMix | Generator", on_load=GeneratorState.on_load)
+app.add_page(
+    generator, route="/generator", title="PlexMix | Generator", on_load=GeneratorState.on_load
+)
 app.add_page(history, route="/history", title="PlexMix | History", on_load=HistoryState.on_load)
 app.add_page(tagging, route="/tagging", title="PlexMix | Tagging", on_load=TaggingState.on_load)
 app.add_page(doctor, route="/doctor", title="PlexMix | Doctor", on_load=DoctorState.on_load)

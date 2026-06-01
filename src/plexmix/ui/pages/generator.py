@@ -1,806 +1,461 @@
+"""Generator — the showpiece: idle hero → AI-thinking stage → results.
+
+Bound entirely to the existing ``GeneratorState`` (no backend logic changes
+beyond the additive cancel/view-state). The thinking visuals are driven by the
+real ``generation_progress`` reported by ``generate_playlist``.
+"""
+
 import reflex as rx
 from plexmix.ui.components.navbar import layout
-from plexmix.ui.components.error import empty_state as shared_empty_state
 from plexmix.ui.states.generator_state import GeneratorState
 
 
-# ── Example mood pills ────────────────────────────────────────────────
+# Four phases, mapped to the real progress bands (0–10 / 10–40 / 40–70 / 70–100).
+_PHASES = [
+    ("Embed vibe", "brain"),
+    ("Vector search", "search"),
+    ("Diversity", "layers"),
+    ("Order set", "audio-waveform"),
+]
+
+_ORDERINGS = [
+    ("similarity", "Similarity"),
+    ("random", "Random"),
+    ("alternating_artists", "Alt. artists"),
+    ("energy_curve", "Energy curve"),
+]
+
+# Canvas particle vector-field. A body-level observer manages the canvas
+# lifecycle (start on mount, stop on unmount) so it survives Reflex re-renders;
+# phase comes from the .viz-wrap[data-phase] attribute, theme from <html>.
+_THINKVIZ_JS = """
+(function(){
+  if (window.__thinkviz__) return; window.__thinkviz__ = true;
+  var raf=0, parts=[], W=0, H=0, ro=null, po=null, cv=null, ctx=null;
+  function rand(a,b){return a+Math.random()*(b-a);}
+  function phase(){var w=document.querySelector('.viz-wrap');return w?parseInt(w.getAttribute('data-phase')||'0',10):0;}
+  function assign(){
+    var ph=phase(), cx=W/2, cy=H/2;
+    parts.forEach(function(p,i){
+      if(ph===0){var a=rand(0,Math.PI*2),r=rand(0,46);p.tx=cx+Math.cos(a)*r;p.ty=cy+Math.sin(a)*r;p.hl=i<26;p.dim=0.5;}
+      else if(ph===1){p.tx=rand(W*0.08,W*0.92);p.ty=rand(H*0.14,H*0.86);var d=Math.hypot(p.tx-cx,p.ty-cy);p.hl=d<Math.min(W,H)*0.34;p.dim=p.hl?1:0.28;}
+      else if(ph===2){p.hl=i%6===0;p.dim=p.hl?1:0.08;}
+      else {if(p.hl){var idx=Math.floor(i/6);p.tx=W*0.1+(idx/7)*W*0.8;p.ty=cy-Math.sin((idx/7)*Math.PI*1.6)*H*0.26;p.dim=1;}else{p.dim=0.05;}}
+    });
+  }
+  function size(){
+    if(!cv) return; var r=cv.getBoundingClientRect(); var dpr=Math.min(window.devicePixelRatio||1,2);
+    cv.width=r.width*dpr; cv.height=r.height*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); W=r.width; H=r.height;
+    if(!parts.length){parts=Array.from({length:300},function(){return {x:rand(0,W),y:rand(0,H),tx:rand(0,W),ty:rand(0,H),hl:false,dim:0.4,size:rand(1.1,2.4)};});}
+    assign();
+  }
+  function frame(){
+    if(!cv||!document.body.contains(cv)){stop();return;}
+    var reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    var dark=document.documentElement.classList.contains('dark');
+    var base=dark?'120,120,135':'150,150,160';
+    ctx.clearRect(0,0,W,H); ctx.lineWidth=1;
+    for(var i=0;i<parts.length;i++){var p=parts[i];var k=reduce?1:0.08;p.x+=(p.tx-p.x)*k;p.y+=(p.ty-p.y)*k;
+      if(p.hl){for(var j=i+1;j<parts.length;j++){var q=parts[j];if(!q.hl)continue;var d=Math.hypot(p.x-q.x,p.y-q.y);
+        if(d<74){ctx.strokeStyle='rgba(249,115,22,'+(0.12*(1-d/74))+')';ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);ctx.stroke();}}}}
+    for(var m=0;m<parts.length;m++){var pp=parts[m];ctx.beginPath();ctx.arc(pp.x,pp.y,pp.hl?pp.size+0.7:pp.size,0,Math.PI*2);
+      ctx.fillStyle=pp.hl?'rgba(249,115,22,'+pp.dim+')':'rgba('+base+','+pp.dim+')';ctx.fill();}
+    raf=requestAnimationFrame(frame);
+  }
+  function start(c){
+    cv=c; ctx=cv.getContext('2d'); parts=[]; size();
+    if(ro) ro.disconnect(); ro=new ResizeObserver(size); ro.observe(cv);
+    var w=document.querySelector('.viz-wrap');
+    if(po) po.disconnect();
+    if(w){po=new MutationObserver(assign); po.observe(w,{attributes:true,attributeFilter:['data-phase']});}
+    cancelAnimationFrame(raf); frame();
+  }
+  function stop(){cancelAnimationFrame(raf);raf=0;if(ro){ro.disconnect();ro=null;}if(po){po.disconnect();po=null;}cv=null;ctx=null;parts=[];}
+  var watch=new MutationObserver(function(){
+    var c=document.getElementById('thinkviz');
+    if(c && c!==cv){start(c);} else if(!c && cv){stop();}
+  });
+  watch.observe(document.body,{childList:true,subtree:true});
+  var c0=document.getElementById('thinkviz'); if(c0) start(c0);
+})();
+"""
+
+# Keep the streaming log scrolled to the newest line.
+_GENLOG_JS = """
+(function(){
+  if (window.__genlog_obs__) return; window.__genlog_obs__ = true;
+  var obs=new MutationObserver(function(){var g=document.querySelector('.genlog');if(g)g.scrollTop=g.scrollHeight;});
+  obs.observe(document.body,{subtree:true,childList:true,characterData:true});
+})();
+"""
 
 
-def _example_pills() -> rx.Component:
-    """Clickable pill badges showing example mood queries."""
-    return rx.hstack(
-        rx.foreach(
-            GeneratorState.mood_examples,
-            lambda example: rx.badge(
-                example,
-                on_click=lambda e=example: GeneratorState.use_example(e),
-                variant="surface",
-                color_scheme="orange",
-                cursor="pointer",
-                size="2",
-                style={
-                    "borderRadius": "var(--radius-xl)",
-                    "padding": "6px 14px",
-                    "transition": "background-color var(--duration-fast) var(--ease-default)",
-                },
-                _hover={"background_color": "accent.4"},
-            ),
-        ),
-        wrap="wrap",
-        spacing="2",
-        width="100%",
-    )
+# ── Idle hero ─────────────────────────────────────────────────────────
 
 
-# ── Template gallery ──────────────────────────────────────────────────
-
-
-def _template_card(template: dict) -> rx.Component:
-    """A single template card in the gallery."""
+def _adv_panel() -> rx.Component:
     return rx.box(
-        rx.vstack(
-            rx.hstack(
-                rx.cond(
-                    template["is_preset"] == "1",
-                    rx.icon("bookmark", size=14, color="orange.9"),
-                    rx.icon("file-text", size=14, color="gray.9"),
-                ),
-                rx.text(template["name"], size="2", weight="bold", no_of_lines=1),
-                rx.spacer(),
-                rx.cond(
-                    template["is_preset"] != "1",
-                    rx.icon_button(
-                        rx.icon("x", size=12),
-                        on_click=lambda t=template: GeneratorState.delete_template(t["id"]),
-                        variant="ghost",
-                        color_scheme="red",
-                        size="1",
-                    ),
-                    rx.fragment(),
-                ),
-                align="center",
-                width="100%",
-                spacing="2",
-            ),
-            rx.text(
-                template["mood_query"],
-                size="1",
-                color="gray.9",
-                no_of_lines=2,
-                style={"fontStyle": "italic"},
-            ),
-            spacing="2",
-            width="100%",
-        ),
-        on_click=lambda t=template: GeneratorState.apply_template(t["id"]),
-        cursor="pointer",
-        padding="12px",
-        border_radius="var(--radius-lg)",
-        background_color="gray.2",
-        border="1px solid var(--gray-4)",
-        width="200px",
-        min_height="80px",
-        _hover={"background_color": "accent.3", "border_color": "accent.7"},
-        style={"transition": "all var(--duration-fast) var(--ease-default)"},
-    )
-
-
-def _template_gallery() -> rx.Component:
-    """Horizontally scrollable template gallery."""
-    return rx.cond(
-        GeneratorState.templates.length() > 0,
-        rx.vstack(
-            rx.hstack(
-                rx.text("Templates", size="2", weight="medium", color="gray.11"),
-                rx.spacer(),
-                rx.button(
-                    rx.icon("plus", size=14),
-                    "Save Current",
-                    on_click=GeneratorState.open_save_template_dialog,
-                    variant="ghost",
-                    size="1",
-                    color_scheme="gray",
-                ),
-                align="center",
-                width="100%",
-            ),
+        rx.box(
             rx.box(
-                rx.hstack(
-                    rx.foreach(
-                        GeneratorState.templates,
-                        _template_card,
-                    ),
-                    spacing="3",
-                ),
-                style={
-                    "overflowX": "auto",
-                    "width": "100%",
-                    "paddingBottom": "4px",
-                },
+                "Tracks",
+                rx.el.span(GeneratorState.max_tracks, class_name="val"),
+                class_name="adv-label",
             ),
-            spacing="2",
-            width="100%",
+            rx.el.input(
+                type="range",
+                min="10",
+                max="100",
+                step="5",
+                value=GeneratorState.max_tracks,
+                on_change=GeneratorState.set_max_tracks,
+            ),
         ),
-        rx.fragment(),
+        rx.box(
+            rx.box(
+                "Candidate pool ×",
+                rx.el.span(GeneratorState.candidate_pool_multiplier, class_name="val"),
+                class_name="adv-label",
+            ),
+            rx.el.input(
+                type="range",
+                min="1",
+                max="100",
+                step="1",
+                value=GeneratorState.candidate_pool_multiplier,
+                on_change=GeneratorState.set_candidate_pool_multiplier,
+            ),
+        ),
+        rx.box(
+            rx.box("Genre focus", class_name="adv-label"),
+            rx.el.input(
+                class_name="input",
+                placeholder="Any genre",
+                value=GeneratorState.genre_filter,
+                on_change=GeneratorState.set_genre_filter,
+            ),
+        ),
+        rx.box(
+            rx.box("Track ordering", class_name="adv-label"),
+            rx.box(
+                *[
+                    rx.el.button(
+                        label,
+                        class_name=rx.cond(GeneratorState.shuffle_mode == value, "on", ""),
+                        on_click=GeneratorState.set_shuffle_mode(value),
+                        type="button",
+                    )
+                    for value, label in _ORDERINGS
+                ],
+                class_name="seg",
+            ),
+            class_name="adv-full",
+        ),
+        class_name="adv-panel",
     )
 
 
-def _save_template_dialog() -> rx.Component:
-    """Dialog for saving current config as a template."""
-    return rx.dialog.root(
-        rx.dialog.content(
-            rx.dialog.title("Save as Template"),
-            rx.dialog.description(
-                "Save the current generator settings as a reusable template.",
-                size="2",
-            ),
-            rx.input(
-                placeholder="Template name...",
-                value=GeneratorState.template_name_input,
-                on_change=GeneratorState.set_template_name_input,
-                width="100%",
-            ),
-            rx.hstack(
-                rx.dialog.close(
-                    rx.button(
-                        "Cancel",
-                        variant="soft",
-                        color_scheme="gray",
-                        on_click=GeneratorState.close_save_template_dialog,
-                    ),
-                ),
-                rx.dialog.close(
-                    rx.button(
-                        "Save",
-                        on_click=GeneratorState.save_current_as_template,
-                        disabled=GeneratorState.template_name_input == "",
-                        color_scheme="orange",
-                    ),
-                ),
-                spacing="3",
-                justify="end",
-                width="100%",
-                margin_top="16px",
-            ),
-            max_width="400px",
+def _prompt_box() -> rx.Component:
+    return rx.box(
+        rx.el.textarea(
+            placeholder="rainy day melancholy with a little hope…",
+            value=GeneratorState.mood_query,
+            on_change=GeneratorState.set_mood_query,
+            class_name="prompt-input",
+            rows="2",
         ),
-        open=GeneratorState.show_save_template_dialog,
-    )
-
-
-# ── Advanced options accordion ────────────────────────────────────────
-
-
-def _advanced_options() -> rx.Component:
-    """Collapsible advanced filters (general + audio)."""
-    return rx.accordion.root(
-        rx.accordion.item(
-            header=rx.hstack(
-                rx.icon("sliders-horizontal", size=16, color="gray.9"),
-                rx.text("Advanced Options", size="2", weight="medium"),
-                spacing="2",
-                align="center",
-            ),
-            content=rx.vstack(
-                # ── General filters ──
-                rx.text("General Filters", size="3", weight="bold"),
-                rx.hstack(
-                    rx.text("Max Tracks:", size="3", white_space="nowrap"),
-                    rx.slider(
-                        default_value=[GeneratorState.max_tracks],
-                        on_change=lambda val: GeneratorState.set_max_tracks(val[0]),
-                        min=10,
-                        max=100,
-                        step=5,
-                        style={"flex": "1", "minWidth": "120px"},
-                    ),
-                    rx.text(
-                        GeneratorState.max_tracks,
-                        size="3",
-                        weight="bold",
-                        style={"fontFamily": "var(--font-mono)"},
-                    ),
-                    spacing="3",
-                    align="center",
-                    wrap="wrap",
-                ),
-                rx.hstack(
-                    rx.text("Pool Multiplier:", size="3", white_space="nowrap"),
-                    rx.slider(
-                        default_value=[GeneratorState.candidate_pool_multiplier],
-                        on_change=lambda val: GeneratorState.set_candidate_pool_multiplier(val[0]),
-                        min=5,
-                        max=100,
-                        step=5,
-                        style={"flex": "1", "minWidth": "120px"},
-                    ),
-                    rx.text(
-                        f"{GeneratorState.candidate_pool_multiplier}x",
-                        size="3",
-                        weight="bold",
-                        style={"fontFamily": "var(--font-mono)"},
-                    ),
-                    rx.tooltip(
-                        rx.icon("info", size=16, color="gray.9"),
-                        content="Multiplier for the candidate pool size. Higher values search more tracks for better matches.",
-                    ),
-                    spacing="3",
-                    align="center",
-                    wrap="wrap",
-                ),
-                rx.input(
-                    placeholder="Genre filter (e.g., rock, jazz)",
-                    value=GeneratorState.genre_filter,
-                    on_change=GeneratorState.set_genre_filter,
-                    width="100%",
-                ),
-                rx.hstack(
-                    rx.text("Year Range:", size="3"),
-                    rx.input(
-                        placeholder="Min",
-                        type="number",
-                        value=GeneratorState.year_min,
-                        on_change=GeneratorState.set_year_min,
-                        width="100px",
-                    ),
-                    rx.text("-", size="3", color="gray.9"),
-                    rx.input(
-                        placeholder="Max",
-                        type="number",
-                        value=GeneratorState.year_max,
-                        on_change=GeneratorState.set_year_max,
-                        width="100px",
-                    ),
-                    spacing="2",
-                    align="center",
-                ),
-                rx.hstack(
-                    rx.text("Track Ordering:", size="3"),
-                    rx.select(
-                        ["similarity", "random", "alternating_artists", "energy_curve"],
-                        value=GeneratorState.shuffle_mode,
-                        on_change=GeneratorState.set_shuffle_mode,
-                        width="200px",
-                    ),
-                    rx.tooltip(
-                        rx.icon("info", size=16, color="gray.9"),
-                        content="How tracks are ordered: similarity (closest match first), random, alternating artists (maximize diversity), or energy curve (arc shape).",
-                    ),
-                    spacing="2",
-                    align="center",
-                ),
-                rx.hstack(
-                    rx.text("Avoid Recent:", size="3"),
-                    rx.input(
-                        placeholder="0",
-                        type="number",
-                        value=GeneratorState.avoid_recent.to(str),
-                        on_change=GeneratorState.set_avoid_recent,
-                        width="70px",
-                    ),
-                    rx.text("playlists", size="2", color="gray.9"),
-                    rx.tooltip(
-                        rx.icon("info", size=16, color="gray.9"),
-                        content="Exclude tracks used in the N most recent playlists to keep things fresh. 0 = no exclusion.",
-                    ),
-                    spacing="2",
-                    align="center",
-                ),
-                rx.separator(size="4", color_scheme="gray"),
-                # ── Audio filters ──
-                rx.text("Audio Filters", size="3", weight="bold"),
+        rx.box(
+            rx.el.button(
+                rx.icon("sliders-horizontal", size=15),
+                "Options",
                 rx.cond(
-                    GeneratorState.audio_analyzed_count > 0,
-                    rx.vstack(
-                        rx.text(
-                            GeneratorState.audio_analyzed_count.to(str)
-                            + " tracks with audio analysis",
-                            size="1",
-                            color="gray.9",
-                        ),
-                        rx.hstack(
-                            rx.text("Tempo (BPM):", size="3"),
-                            rx.input(
-                                placeholder="Min",
-                                type="number",
-                                value=GeneratorState.tempo_min,
-                                on_change=GeneratorState.set_tempo_min,
-                                width="100px",
-                            ),
-                            rx.text("-", size="3", color="gray.9"),
-                            rx.input(
-                                placeholder="Max",
-                                type="number",
-                                value=GeneratorState.tempo_max,
-                                on_change=GeneratorState.set_tempo_max,
-                                width="100px",
-                            ),
-                            spacing="2",
-                            align="center",
-                        ),
-                        rx.hstack(
-                            rx.text("Energy Level:", size="3"),
-                            rx.select(
-                                ["Any", "low", "medium", "high"],
-                                value=rx.cond(
-                                    GeneratorState.energy_level,
-                                    GeneratorState.energy_level,
-                                    "Any",
-                                ),
-                                on_change=GeneratorState.set_energy_level,
-                                width="150px",
-                            ),
-                            spacing="2",
-                            align="center",
-                        ),
-                        rx.hstack(
-                            rx.text("Musical Key:", size="3"),
-                            rx.select(
-                                [
-                                    "Any",
-                                    "C",
-                                    "C#",
-                                    "D",
-                                    "D#",
-                                    "E",
-                                    "F",
-                                    "F#",
-                                    "G",
-                                    "G#",
-                                    "A",
-                                    "A#",
-                                    "B",
-                                ],
-                                value=rx.cond(
-                                    GeneratorState.key_filter,
-                                    GeneratorState.key_filter,
-                                    "Any",
-                                ),
-                                on_change=GeneratorState.set_key_filter,
-                                width="150px",
-                            ),
-                            spacing="2",
-                            align="center",
-                        ),
-                        rx.hstack(
-                            rx.text("Min Danceability:", size="3"),
-                            rx.input(
-                                placeholder="0.0-1.0",
-                                type="number",
-                                value=GeneratorState.danceability_min,
-                                on_change=GeneratorState.set_danceability_min,
-                                width="100px",
-                            ),
-                            rx.tooltip(
-                                rx.icon("info", size=16, color="gray.9"),
-                                content="Minimum danceability score from 0.0 to 1.0",
-                            ),
-                            spacing="2",
-                            align="center",
-                        ),
-                        spacing="4",
-                        width="100%",
-                    ),
-                    rx.callout(
-                        "No tracks have been analyzed yet. Run audio analysis from the Library or Doctor page to enable tempo, energy, key, and danceability filters.",
-                        icon="info",
-                        color_scheme="gray",
-                        size="2",
-                    ),
+                    GeneratorState.show_advanced,
+                    rx.icon("chevron-up", size=14),
+                    rx.icon("chevron-down", size=14),
                 ),
-                spacing="4",
-                width="100%",
+                class_name=rx.cond(GeneratorState.show_advanced, "opt-btn on", "opt-btn"),
+                on_click=GeneratorState.toggle_advanced,
+                type="button",
             ),
-            value="advanced",
+            rx.el.span(GeneratorState.mood_query.length(), "/280", class_name="charcount"),
+            rx.box(class_name="spacer"),
+            rx.el.button(
+                rx.icon("sparkles", size=16),
+                "Generate",
+                class_name="btn btn-3 btn-primary glow",
+                on_click=GeneratorState.generate_playlist,
+                disabled=GeneratorState.mood_query == "",
+                type="button",
+            ),
+            class_name="prompt-foot",
         ),
-        width="100%",
-        type="single",
-        collapsible=True,
+        rx.cond(GeneratorState.show_advanced, _adv_panel(), rx.fragment()),
+        class_name="prompt-box",
     )
 
 
-# ── Generation progress (inline) ─────────────────────────────────────
-
-
-def _generation_progress() -> rx.Component:
-    """Inline progress card with bar, percentage, status, and scrollable log."""
-    return rx.cond(
-        GeneratorState.is_generating | (GeneratorState.generation_message != ""),
-        rx.vstack(
-            # Progress bar + percentage
-            rx.hstack(
-                rx.progress(
-                    value=GeneratorState.generation_progress,
-                    max=100,
-                    width="100%",
-                    color_scheme="orange",
-                ),
-                rx.text(
-                    f"{GeneratorState.generation_progress}%",
-                    size="2",
-                    weight="bold",
-                    style={"fontFamily": "var(--font-mono)", "minWidth": "40px"},
-                    text_align="right",
-                ),
-                align="center",
-                spacing="3",
-                width="100%",
+def _idle_hero() -> rx.Component:
+    return rx.box(
+        rx.box(class_name="gen-hero-glow"),
+        rx.box(
+            rx.box(
+                rx.icon("sparkles", size=14),
+                "AI Playlist Generator",
+                class_name="gen-kicker",
             ),
-            # Status message
-            rx.text(
-                GeneratorState.generation_message,
-                size="2",
-                color="gray.11",
-                weight="medium",
+            rx.el.h1(
+                "What should your ",
+                rx.el.span("library", class_name="accent"),
+                " sound like?",
+                class_name="gen-title",
             ),
-            # Scrollable log
+            rx.el.p(
+                "Describe a mood, a moment, or a memory. PlexMix searches every track "
+                "you own and curates a playlist that fits — just your music.",
+                class_name="gen-sub",
+            ),
+            _prompt_box(),
             rx.cond(
-                GeneratorState.generation_log.length() > 0,
+                GeneratorState.generation_message != "",
                 rx.box(
-                    rx.vstack(
-                        rx.foreach(
-                            GeneratorState.generation_log,
-                            lambda entry: rx.text(
-                                entry,
-                                size="1",
-                                color="gray.9",
-                                style={"fontFamily": "var(--font-mono)"},
-                            ),
-                        ),
-                        spacing="1",
-                        width="100%",
-                        padding="12px",
-                    ),
-                    style={
-                        "maxHeight": "180px",
-                        "overflowY": "auto",
-                        "width": "100%",
-                        "borderRadius": "var(--radius-md)",
-                        "backgroundColor": "var(--pm-gray-2)",
-                        "border": "1px solid var(--pm-gray-4)",
-                    },
+                    rx.box(rx.icon("circle-alert", size=16), class_name="c-ico"),
+                    rx.box(GeneratorState.generation_message, class_name="c-body"),
+                    class_name="callout callout-error",
+                    style={"marginTop": "16px", "textAlign": "left"},
                 ),
                 rx.fragment(),
             ),
-            spacing="3",
-            width="100%",
-            padding="16px",
-            border_radius="var(--radius-lg)",
-            background_color="gray.2",
-            class_name="animate-fade-in",
+            rx.box(
+                rx.foreach(
+                    GeneratorState.mood_examples,
+                    lambda v: rx.el.button(
+                        v,
+                        class_name="vibe-pill",
+                        on_click=[
+                            GeneratorState.set_mood_query(v),
+                            GeneratorState.generate_playlist,
+                        ],
+                        type="button",
+                    ),
+                ),
+                class_name="vibe-row",
+            ),
+            class_name="gen-hero-inner",
         ),
-        rx.fragment(),
+        class_name="gen-hero",
     )
 
 
-# ── Hero input section (centered, single column) ─────────────────────
+# ── Thinking stage ────────────────────────────────────────────────────
 
 
-def _hero_input() -> rx.Component:
-    """The main mood input section -- hero element of the page."""
-    return rx.vstack(
-        # Page header
-        rx.vstack(
-            rx.heading("Playlist Generator", size="8"),
-            rx.text("Describe a vibe and let AI curate the perfect mix", size="3", color="gray.9"),
-            spacing="1",
-            align="center",
+def _phase_node(idx: int, label: str, icon: str) -> rx.Component:
+    ap = GeneratorState.active_phase
+    return rx.box(
+        rx.box(
+            rx.box(
+                class_name="fill",
+                style={"width": rx.cond(ap > idx, "100%", "0%")},
+            ),
+            class_name="phase-line",
         ),
-        # Hero text area
-        rx.text_area(
-            placeholder="What's the vibe?",
-            value=GeneratorState.mood_query,
-            on_change=GeneratorState.set_mood_query,
-            rows="5",
-            width="100%",
-            size="3",
+        rx.box(
+            rx.cond(ap > idx, rx.icon("check", size=16), rx.icon(icon, size=16)),
+            class_name="phase-dot",
+        ),
+        rx.box(label, class_name="phase-label"),
+        class_name=rx.cond(
+            ap > idx,
+            "phase-node done",
+            rx.cond(ap == idx, "phase-node active", "phase-node"),
+        ),
+    )
+
+
+def _thinking_stage() -> rx.Component:
+    return rx.box(
+        rx.box(
+            rx.box(
+                rx.box(
+                    rx.icon("sparkles", size=15, color="var(--brand-9)"),
+                    "Curating ",
+                    rx.el.b('"', GeneratorState.mood_query, '"'),
+                    class_name="think-query",
+                ),
+                class_name="think-head",
+            ),
+            rx.box(
+                rx.el.canvas(id="thinkviz"),
+                rx.box(GeneratorState.generation_message, class_name="viz-phase-label"),
+                class_name="viz-wrap",
+                custom_attrs={"data-phase": GeneratorState.active_phase.to_string()},
+            ),
+            rx.box(
+                *[_phase_node(i, label, icon) for i, (label, icon) in enumerate(_PHASES)],
+                class_name="phase-track",
+            ),
+            rx.box(
+                rx.box(
+                    rx.box(
+                        class_name="pfill",
+                        style={"width": GeneratorState.generation_progress.to_string() + "%"},
+                    ),
+                    class_name="pbar",
+                ),
+                rx.el.span(GeneratorState.generation_progress.to_string() + "%", class_name="pct"),
+                rx.el.button(
+                    rx.icon("x", size=14),
+                    "Cancel",
+                    class_name="btn btn-sm btn-ghost",
+                    on_click=GeneratorState.cancel_generation,
+                    type="button",
+                ),
+                class_name="gen-progress",
+            ),
+            rx.box(
+                rx.foreach(
+                    GeneratorState.generation_log,
+                    lambda ln: rx.box(rx.el.span(ln), class_name="ln"),
+                ),
+                class_name="genlog",
+            ),
+            class_name="think-inner fade-up",
+        ),
+        class_name="think",
+    )
+
+
+# ── Results ───────────────────────────────────────────────────────────
+
+_COVER_GRADIENTS = [
+    "linear-gradient(135deg, #F97316, #EA580C)",
+    "linear-gradient(135deg, #e94560, #f39c12)",
+    "linear-gradient(135deg, #d68034, #5c2d0f)",
+    "linear-gradient(135deg, #f3c9a8, #b55f18)",
+]
+
+
+def _trk_row(track: rx.Var, index: rx.Var) -> rx.Component:
+    return rx.box(
+        rx.el.span(index + 1, class_name="tnum"),
+        rx.box(
             style={
-                "fontSize": "16px",
-                "padding": "16px",
-                "borderRadius": "var(--radius-lg)",
+                "width": "38px",
+                "height": "38px",
+                "borderRadius": "var(--radius-sm)",
+                "background": "linear-gradient(135deg, var(--brand-7), var(--brand-10))",
+                "flexShrink": "0",
             },
         ),
-        # Example mood pills
-        rx.vstack(
-            rx.text("Try:", size="1", color="gray.9", weight="medium"),
-            _example_pills(),
-            spacing="2",
-            width="100%",
-        ),
-        # Template gallery
-        _template_gallery(),
-        # Advanced options
-        _advanced_options(),
-        # Generate button
-        rx.button(
-            rx.icon("sparkles", size=18),
-            "Generate Playlist",
-            on_click=GeneratorState.generate_playlist,
-            disabled=GeneratorState.is_generating | (GeneratorState.mood_query == ""),
-            loading=GeneratorState.is_generating,
-            color_scheme="orange",
-            size="4",
-            width="100%",
-            title=rx.cond(GeneratorState.mood_query == "", "Enter a mood description", ""),
-            class_name="pm-button pm-glow",
-        ),
-        # Generation progress (inline)
-        _generation_progress(),
-        spacing="5",
-        width="100%",
-        max_width="680px",
-        margin_x="auto",
-        align="center",
-    )
-
-
-# ── Compact mood summary (shown after generation) ────────────────────
-
-
-def _compact_mood_summary() -> rx.Component:
-    """Collapsed summary of the mood input, shown above results."""
-    return rx.hstack(
         rx.box(
-            rx.icon("sparkles", size=16, color="accent.9"),
-            padding="8px",
-            border_radius="var(--radius-md)",
-            background_color="accent.3",
-            flex_shrink="0",
+            rx.box(track["title"], class_name="ttitle"),
+            rx.box(track["artist"], class_name="tartist"),
+            class_name="tinfo",
         ),
-        rx.vstack(
-            rx.text(
-                GeneratorState.mood_query,
-                size="3",
-                weight="medium",
-                style={"fontStyle": "italic"},
-                no_of_lines=1,
+        rx.el.span(track["album"], class_name="talbum"),
+        rx.el.span(track["duration_formatted"], class_name="tdur"),
+        rx.el.button(
+            rx.icon("x", size=15),
+            class_name="icon-btn trm",
+            title="Remove",
+            on_click=GeneratorState.remove_track(track["id"]),
+            type="button",
+        ),
+        class_name="trk",
+    )
+
+
+def _results_stage() -> rx.Component:
+    return rx.box(
+        rx.box(
+            rx.box(
+                *[rx.box(style={"background": g}) for g in _COVER_GRADIENTS],
+                class_name="result-cover",
             ),
-            rx.hstack(
-                rx.text(
-                    f"{GeneratorState.generated_playlist.length()} tracks",
-                    size="1",
-                    color="gray.9",
+            rx.box(
+                rx.box("Generated playlist", class_name="rk"),
+                rx.el.h1(GeneratorState.mood_query),
+                rx.box(
+                    rx.el.span(
+                        GeneratorState.generated_playlist.length(),
+                        " tracks",
+                        class_name="mono",
+                    ),
+                    " · ",
+                    rx.el.span(GeneratorState.total_duration_label, class_name="mono"),
+                    " · ordered by ",
+                    rx.el.span(GeneratorState.ordering_label, class_name="badge badge-orange"),
+                    class_name="result-stats",
                 ),
-                rx.text(
-                    f"{GeneratorState.total_duration_ms // 60000} min",
-                    size="1",
-                    color="gray.9",
-                    style={"fontFamily": "var(--font-mono)"},
+                rx.box(
+                    rx.el.button(
+                        rx.icon("server", size=16),
+                        "Save to Plex",
+                        class_name="btn btn-3 btn-blue",
+                        on_click=GeneratorState.save_to_plex,
+                        type="button",
+                    ),
+                    rx.el.button(
+                        rx.icon("hard-drive", size=16),
+                        "Save Locally",
+                        class_name="btn btn-3 btn-green",
+                        on_click=GeneratorState.save_locally,
+                        type="button",
+                    ),
+                    rx.el.button(
+                        rx.icon("download", size=16),
+                        "Export M3U",
+                        class_name="btn btn-3 btn-soft",
+                        on_click=GeneratorState.export_m3u,
+                        type="button",
+                    ),
+                    rx.el.button(
+                        rx.icon("refresh-cw", size=16),
+                        "Regenerate",
+                        class_name="btn btn-3 btn-outline",
+                        on_click=GeneratorState.regenerate,
+                        type="button",
+                    ),
+                    class_name="result-actions",
                 ),
-                spacing="3",
+                class_name="result-meta",
             ),
-            spacing="0",
-            align="start",
+            class_name="result-head",
         ),
-        rx.spacer(),
-        rx.button(
-            rx.icon("pencil", size=14),
-            "New Query",
-            on_click=GeneratorState.regenerate,
-            variant="soft",
-            size="2",
-            color_scheme="gray",
+        rx.box(
+            rx.foreach(GeneratorState.generated_playlist, _trk_row),
+            class_name="tbl-wrap",
+            style={"padding": "6px"},
         ),
-        spacing="3",
-        align="center",
-        width="100%",
-        padding="12px 16px",
-        border_radius="var(--radius-lg)",
-        background_color="gray.2",
+        rx.box(
+            rx.el.button(
+                rx.icon("plus", size=16),
+                "New playlist",
+                class_name="btn btn-3 btn-ghost",
+                on_click=GeneratorState.new_playlist,
+                type="button",
+            ),
+            style={"marginTop": "18px", "textAlign": "center"},
+        ),
+        class_name="gen-results fade-up",
     )
 
 
-# ── Playlist metadata heading ────────────────────────────────────────
-
-
-def _playlist_metadata() -> rx.Component:
-    total_minutes = GeneratorState.total_duration_ms // 60000
-    return rx.vstack(
-        rx.heading("Generated Playlist", size="6"),
-        rx.hstack(
-            rx.badge(
-                f"{GeneratorState.generated_playlist.length()} tracks",
-                variant="surface",
-                color_scheme="gray",
-                size="1",
-            ),
-            rx.badge(
-                f"{total_minutes} min",
-                variant="surface",
-                color_scheme="gray",
-                size="1",
-            ),
-            rx.badge(
-                GeneratorState.mood_query,
-                variant="surface",
-                color_scheme="orange",
-                size="1",
-                max_width="300px",
-                style={"overflow": "hidden", "textOverflow": "ellipsis"},
-            ),
-            spacing="2",
-            wrap="wrap",
-        ),
-        spacing="2",
-        width="100%",
-    )
-
-
-# ── Playlist track table ─────────────────────────────────────────────
-
-
-def _playlist_table() -> rx.Component:
-    return rx.table.root(
-        rx.table.header(
-            rx.table.row(
-                rx.table.column_header_cell("#", style={"width": "48px"}),
-                rx.table.column_header_cell("Title"),
-                rx.table.column_header_cell("Artist"),
-                rx.table.column_header_cell("Album", class_name="hide-mobile"),
-                rx.table.column_header_cell(
-                    "Duration", style={"width": "80px", "textAlign": "right"}
-                ),
-                rx.table.column_header_cell("", style={"width": "80px"}),
-            )
-        ),
-        rx.table.body(
-            rx.foreach(
-                GeneratorState.generated_playlist,
-                lambda track, index: rx.table.row(
-                    rx.table.cell(
-                        rx.text(
-                            index + 1,
-                            size="2",
-                            color="gray.9",
-                            style={"fontFamily": "var(--font-mono)"},
-                        ),
-                    ),
-                    rx.table.cell(
-                        rx.text(track["title"], size="2", weight="medium"),
-                    ),
-                    rx.table.cell(
-                        rx.text(track["artist"], size="2", color="gray.11"),
-                    ),
-                    rx.table.cell(
-                        rx.text(track["album"], size="2", color="gray.9"),
-                        class_name="hide-mobile",
-                    ),
-                    rx.table.cell(
-                        rx.text(
-                            track["duration_formatted"],
-                            size="2",
-                            color="gray.9",
-                            text_align="right",
-                            style={"fontFamily": "var(--font-mono)"},
-                        ),
-                    ),
-                    rx.table.cell(
-                        rx.button(
-                            rx.icon("x", size=14),
-                            on_click=lambda t=track: GeneratorState.remove_track(t["id"]),
-                            variant="ghost",
-                            color_scheme="red",
-                            size="1",
-                        ),
-                    ),
-                ),
-            )
-        ),
-        variant="surface",
-        size="2",
-        width="100%",
-    )
-
-
-# ── Playlist action bar ──────────────────────────────────────────────
-
-
-def _playlist_actions() -> rx.Component:
-    return rx.vstack(
-        # Primary row: name input + save buttons
-        rx.hstack(
-            rx.input(
-                placeholder="Enter playlist name...",
-                value=GeneratorState.playlist_name,
-                on_change=GeneratorState.set_playlist_name,
-                style={"flex": "1", "minWidth": "140px"},
-            ),
-            rx.button(
-                rx.icon("server", size=16),
-                rx.text("Save to Plex", class_name="hide-mobile"),
-                on_click=GeneratorState.save_to_plex,
-                disabled=GeneratorState.playlist_name == "",
-                color_scheme="blue",
-                size="3",
-                title="Save to Plex",
-                class_name="pm-button",
-            ),
-            rx.button(
-                rx.icon("hard-drive", size=16),
-                rx.text("Save Locally", class_name="hide-mobile"),
-                on_click=GeneratorState.save_locally,
-                disabled=GeneratorState.playlist_name == "",
-                color_scheme="green",
-                size="3",
-                title="Save Locally",
-                class_name="pm-button",
-            ),
-            spacing="3",
-            align="center",
-            width="100%",
-            wrap="wrap",
-        ),
-        # Secondary row: regenerate + export
-        rx.hstack(
-            rx.button(
-                rx.icon("refresh-cw", size=16),
-                "Regenerate",
-                on_click=GeneratorState.regenerate,
-                variant="soft",
-                size="3",
-            ),
-            rx.button(
-                rx.icon("download", size=16),
-                "Export M3U",
-                on_click=GeneratorState.export_m3u,
-                variant="soft",
-                size="3",
-            ),
-            spacing="3",
-        ),
-        spacing="4",
-        width="100%",
-    )
-
-
-# ── Results section (full width) ─────────────────────────────────────
-
-
-def _results_section() -> rx.Component:
-    """Full-width results with compact summary, table, and actions."""
-    return rx.vstack(
-        _compact_mood_summary(),
-        _playlist_metadata(),
-        _playlist_table(),
-        _playlist_actions(),
-        # Generation progress (also shown here during regeneration)
-        _generation_progress(),
-        spacing="5",
-        width="100%",
-        class_name="animate-fade-in-up",
-    )
-
-
-# ── Empty state ──────────────────────────────────────────────────────
-
-
-def _empty_state() -> rx.Component:
-    return shared_empty_state(
-        icon="sparkles",
-        title="No playlist generated yet",
-        description="Enter a mood query and click 'Generate Playlist' to get started.",
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Generator Page
-# ══════════════════════════════════════════════════════════════════════
+# ── Page ──────────────────────────────────────────────────────────────
 
 
 def generator() -> rx.Component:
-    content = rx.vstack(
+    stage = rx.box(
+        rx.script(_THINKVIZ_JS),
+        rx.script(_GENLOG_JS),
         rx.cond(
-            # Has a generated playlist -> full-width results mode
-            GeneratorState.generated_playlist.length() > 0,
-            _results_section(),
-            # No playlist yet (fresh, generating, or error) -> centered hero input
-            _hero_input(),
+            GeneratorState.is_generating,
+            _thinking_stage(),
+            rx.cond(
+                GeneratorState.generated_playlist.length() > 0,
+                _results_stage(),
+                _idle_hero(),
+            ),
         ),
-        _save_template_dialog(),
-        spacing="6",
-        width="100%",
-        class_name="animate-fade-in-up",
+        class_name="gen-stage",
     )
-
-    return layout(content)
+    return layout(stage, full_bleed=True)

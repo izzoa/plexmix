@@ -100,7 +100,7 @@ async def test_ai_provider_impl(state: Any) -> None:
 
                 client = genai.Client(api_key=api_key)
                 response = client.models.generate_content(
-                    model=state.ai_model or "gemini-2.5-flash",
+                    model=state.ai_model or "gemini-3.5-flash",
                     contents="Say 'test successful' in exactly two words.",
                 )
                 return response.text
@@ -114,11 +114,21 @@ async def test_ai_provider_impl(state: Any) -> None:
             def test_openai():
                 from openai import OpenAI
 
+                from plexmix.ai.openai_provider import is_openai_reasoning_model
+
                 client = OpenAI(api_key=api_key)
+                model = state.ai_model or "gpt-5.4-mini"
+                # GPT-5 reasoning models reject max_tokens/custom temperature;
+                # use max_completion_tokens with low effort instead.
+                token_kwargs: dict[str, Any] = (
+                    {"max_completion_tokens": 64, "reasoning_effort": "low"}
+                    if is_openai_reasoning_model(model)
+                    else {"max_tokens": 10}
+                )
                 response = client.chat.completions.create(
-                    model=state.ai_model or "gpt-5-mini",
+                    model=model,
                     messages=[{"role": "user", "content": "Say 'test' in one word."}],
-                    max_tokens=10,
+                    **token_kwargs,
                 )
                 return response.choices[0].message.content
 
@@ -133,7 +143,7 @@ async def test_ai_provider_impl(state: Any) -> None:
 
                 client = anthropic.Anthropic(api_key=api_key)
                 response = client.messages.create(
-                    model=state.ai_model or "claude-sonnet-4-5",
+                    model=state.ai_model or "claude-sonnet-4-6",
                     max_tokens=10,
                     messages=[{"role": "user", "content": "Say 'test' in one word."}],
                 )
@@ -150,7 +160,7 @@ async def test_ai_provider_impl(state: Any) -> None:
 
                 client = cohere.ClientV2(api_key=api_key)
                 response = client.chat(
-                    model=state.ai_model or "command-r7b-12-2024",
+                    model=state.ai_model or "command-a-03-2025",
                     messages=[{"role": "user", "content": "Say 'test' in one word."}],
                     max_tokens=10,
                 )

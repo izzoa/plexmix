@@ -183,7 +183,10 @@ class DoctorState(AppState):
                     "result_msg": f"Deleted {deleted} orphaned embeddings",
                 },
             )
-            task_store.complete("doctor_fix")
+            task_store.complete(
+                "doctor_fix",
+                status="cancelled" if cancel_event and cancel_event.is_set() else "completed",
+            )
 
         except FatalProviderError as e:
             task_store.complete("doctor_fix", status="failed", message=e.user_message)
@@ -250,7 +253,10 @@ class DoctorState(AppState):
                 "doctor_fix",
                 extra={"fix_target": "embeddings_incremental", "result_msg": result_msg},
             )
-            task_store.complete("doctor_fix")
+            task_store.complete(
+                "doctor_fix",
+                status="cancelled" if cancel_event and cancel_event.is_set() else "completed",
+            )
 
         except FatalProviderError as e:
             task_store.complete("doctor_fix", status="failed", message=e.user_message)
@@ -326,7 +332,10 @@ class DoctorState(AppState):
                 "doctor_fix",
                 extra={"fix_target": "embeddings_full", "result_msg": result_msg},
             )
-            task_store.complete("doctor_fix")
+            task_store.complete(
+                "doctor_fix",
+                status="cancelled" if cancel_event and cancel_event.is_set() else "completed",
+            )
 
         except FatalProviderError as e:
             task_store.complete("doctor_fix", status="failed", message=e.user_message)
@@ -399,7 +408,12 @@ class DoctorState(AppState):
                             "result_msg": "No tracks in database.",
                         },
                     )
-                    task_store.complete("doctor_fix")
+                    task_store.complete(
+                        "doctor_fix",
+                        status="cancelled"
+                        if cancel_event and cancel_event.is_set()
+                        else "completed",
+                    )
                     return
 
                 total_tracks = len(all_tracks)
@@ -423,6 +437,7 @@ class DoctorState(AppState):
                             all_tracks,
                             batch_size=20,
                             progress_callback=progress_callback,
+                            cancel_event=cancel_event,
                         )
                     except FatalProviderError as e:
                         results = e.partial_results
@@ -456,7 +471,10 @@ class DoctorState(AppState):
                     "result_msg": f"Regenerated tags for {updated} tracks",
                 },
             )
-            task_store.complete("doctor_fix")
+            task_store.complete(
+                "doctor_fix",
+                status="cancelled" if cancel_event and cancel_event.is_set() else "completed",
+            )
 
         except FatalProviderError as e:
             task_store.complete("doctor_fix", status="failed", message=e.user_message)
@@ -517,7 +535,12 @@ class DoctorState(AppState):
                             "result_msg": "All tracks already have AI-generated tags.",
                         },
                     )
-                    task_store.complete("doctor_fix")
+                    task_store.complete(
+                        "doctor_fix",
+                        status="cancelled"
+                        if cancel_event and cancel_event.is_set()
+                        else "completed",
+                    )
                     return
 
                 total_untagged = len(untagged_tracks)
@@ -541,6 +564,7 @@ class DoctorState(AppState):
                             untagged_tracks,
                             batch_size=20,
                             progress_callback=progress_callback,
+                            cancel_event=cancel_event,
                         )
                     except FatalProviderError as e:
                         results = e.partial_results
@@ -574,7 +598,10 @@ class DoctorState(AppState):
                     "result_msg": f"Regenerated tags for {updated} tracks",
                 },
             )
-            task_store.complete("doctor_fix")
+            task_store.complete(
+                "doctor_fix",
+                status="cancelled" if cancel_event and cancel_event.is_set() else "completed",
+            )
 
         except FatalProviderError as e:
             task_store.complete("doctor_fix", status="failed", message=e.user_message)
@@ -636,7 +663,12 @@ class DoctorState(AppState):
                             "result_msg": "All tracks already have audio features.",
                         },
                     )
-                    task_store.complete("doctor_fix")
+                    task_store.complete(
+                        "doctor_fix",
+                        status="cancelled"
+                        if cancel_event and cancel_event.is_set()
+                        else "completed",
+                    )
                     return
 
                 total = len(pending_tracks)
@@ -651,6 +683,8 @@ class DoctorState(AppState):
                 in_flight: dict[asyncio.Future, object] = {}
 
                 def _submit():
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
                     t = next(track_iter, None)
                     if t is None:
                         return
@@ -699,7 +733,10 @@ class DoctorState(AppState):
                     "result_msg": f"Analyzed audio features for {analyzed} tracks",
                 },
             )
-            task_store.complete("doctor_fix")
+            task_store.complete(
+                "doctor_fix",
+                status="cancelled" if cancel_event and cancel_event.is_set() else "completed",
+            )
 
         except FatalProviderError as e:
             task_store.complete("doctor_fix", status="failed", message=e.user_message)
@@ -818,6 +855,15 @@ class DoctorState(AppState):
             msg = entry.message or "Fix failed"
             task_store.clear("doctor_fix")
             return rx.toast.error(msg)
+        elif entry.status == "cancelled":
+            self.is_fixing = False
+            self.fix_message = ""
+            self.fix_progress = 0
+            self.fix_total = 0
+            self.current_fix_target = ""
+            self._refresh_health_stats()
+            task_store.clear("doctor_fix")
+            return rx.toast.warning("Fix cancelled")
 
     @rx.var(cache=True)
     def orphaned_embeddings_label(self) -> str:
@@ -951,7 +997,10 @@ class DoctorState(AppState):
                     "result_msg": f"Enriched {enriched} tracks, {cached} cached ({errors} errors)",
                 },
             )
-            task_store.complete("doctor_fix")
+            task_store.complete(
+                "doctor_fix",
+                status="cancelled" if cancel_event and cancel_event.is_set() else "completed",
+            )
 
         except FatalProviderError as e:
             task_store.complete("doctor_fix", status="failed", message=e.user_message)

@@ -148,41 +148,42 @@ PLEXMIX_UI_PASSWORD=mysecret plexmix ui --host 0.0.0.0
 
 <img src="docs/screenshots/hero-dashboard-light.png" alt="Dashboard - Light Mode" width="48%"/> <img src="docs/screenshots/hero-dashboard-dark.png" alt="Dashboard - Dark Mode" width="48%"/>
 
+*Dashboard — glass icon rail, ⌘K command palette, and a working light/dark theme*
+
 <img src="docs/screenshots/hero-generator.png" alt="Playlist Generator" width="90%"/>
 
-*AI-powered playlist generator with mood-based queries*
+*The Generator showpiece — describe a vibe and an animated AI-thinking pipeline curates a playlist from your own library*
 
 <img src="docs/screenshots/hero-library.png" alt="Library Manager" width="90%"/>
 
-*Browse and manage your music library with advanced filtering*
+*Library — search, filter, sync, and bulk-manage thousands of tracks*
 
 <img src="docs/screenshots/hero-settings.png" alt="Settings" width="90%"/>
 
-*Configure Plex, AI providers, and embeddings*
+*Settings — connections, providers, embeddings, and the new Appearance controls (theme, density, accent)*
 
 </div>
 
 #### Web UI Features
 
-The web interface provides a modern, intuitive way to interact with PlexMix:
+The web interface is built around a slim glass **icon rail** and a **⌘K command palette**:
 
-- **📊 Dashboard** - Overview of library stats, configuration status, and quick actions
-- **⚙️ Settings** - Configure Plex, AI providers, and embeddings with real-time validation and model auto-discovery
+- **📊 Dashboard** - Library stats, configuration status, quick actions, and recent playlists at a glance
+- **🎵 Playlist Generator** - The showpiece: describe a vibe and watch an animated AI-thinking pipeline (embed → vector search → diversity → order) curate a playlist, then reorder/save the result (4 ordering modes, advanced audio filters, cancellable)
 - **📚 Library Manager** - Browse, search, filter by tag/genre/audio, sync with live progress, bulk tag/delete operations
-- **🎵 Playlist Generator** - Create mood-based playlists with template gallery, 4 ordering modes, and advanced audio filters
-- **🏷️ AI Tagging** - Batch generate tags with stale tag detection and retag support
-- **📜 Playlist History** - View, reorder, rerun, export (JSON/M3U/Plex), and import playlists
-- **🩺 Doctor** - Database health dashboard with automated repair
+- **🏷️ AI Tagging** - Batch generate tags with stale tag detection, retag support, and inline tag editing
+- **📜 Playlist History** - Album-mosaic cards; view, rerun, export (JSON/M3U/Plex), and import playlists
+- **🩺 Doctor** - Database health checks with one-click fixes
+- **⚙️ Settings** - Configure Plex, AI providers, and embeddings (with model auto-discovery), plus theme / density / accent under **Appearance**
 
 #### Key UI Features
 
-- **🌓 Dark/Light Mode** - Toggle between themes with automatic logo switching
-- **⌨️ Keyboard Shortcuts** - Vim-style `g+key` navigation, `/` for search, `Esc` to blur
+- **🧭 Glass icon rail + ⌘K command palette** - A slim navigation rail with hover tooltips and `g+key` hints, plus a command palette (⌘K or `/`) to jump to any page, run an action, or fire a quick vibe
+- **🎬 Generator showpiece** - An animated "AI-thinking" pipeline with a live particle vector-field, a four-phase tracker bound to the real generation pipeline, and a streaming terminal log
+- **🌓 Light-first theme + appearance controls** - Light by default with a dark toggle (auto logo switching), plus Density (comfortable/compact) and Accent-intensity (subtle/balanced/vivid) preferences in Settings → Appearance
+- **⌨️ Keyboard-driven** - Vim-style `g+key` navigation, ⌘K / `/` to open the palette, ↑↓ + Enter to pick a command, `Esc` to close
 - **Real-time Progress** - Live updates for sync, tagging, and generation operations
-- **Form Validation** - Instant feedback on configuration settings
-- **Loading States** - Skeleton screens and spinners for smooth UX
-- **Error Handling** - User-friendly error messages with recovery options
-- **Responsive Design** - Mobile-optimized with icon-only buttons, hidden columns, and adaptive layouts
+- **Resilient UX** - Form validation, empty/loading states, and user-friendly error messages with recovery options
 
 ## Installation
 
@@ -660,13 +661,13 @@ PlexMix stores all music metadata locally:
 
 | Provider | Model | Context Window | Default Temp | Speed | Quality | Cost | Best For |
 |----------|-------|----------------|--------------|-------|---------|------|----------|
-| OpenAI | gpt-5-mini | 400K tokens | 0.7 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰 Medium | High-quality responses, reasoning |
-| Anthropic | claude-sonnet-4-5 | 200K tokens | 0.7 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰💰 High | Advanced reasoning, analysis |
-| Cohere | command-r-plus-08-2024 | 128K tokens | 0.3 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰 Medium | Multilingual, complex tasks |
-| **Google Gemini** ⭐ | gemini-2.5-flash | 1M tokens | 0.7 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | General use, RAG, large contexts |
-| OpenAI | gpt-5-nano | 400K tokens | 0.7 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Speed-optimized, efficient |
-| Cohere | command-r7b-12-2024 | 128K tokens | 0.3 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | RAG, tool use, agents |
-| Cohere | command-r-08-2024 | 128K tokens | 0.3 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Balanced performance |
+| **Google Gemini** ⭐ | gemini-3.5-flash | 1M tokens | n/a¹ | ⚡⚡⚡ Fast | ⭐⭐⭐⭐⭐ Outstanding | 💰 Low | General use, RAG, large contexts (default) |
+| OpenAI | gpt-5.4-mini | 400K tokens | n/a¹ | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰 Medium | High-quality reasoning |
+| Anthropic | claude-sonnet-4-6 | 200K tokens | 0.7 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰💰 High | Advanced reasoning, analysis |
+| OpenAI | gpt-5.5 | 400K tokens | n/a¹ | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Frontier | 💰💰💰 High | Most complex tasks |
+| Anthropic | claude-opus-4-8 | 1M tokens | n/a¹ | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Frontier | 💰💰💰 High | Highest-capability reasoning |
+| Cohere | command-a-03-2025 | 256K tokens | 0.3 | ⚡⚡ Moderate | ⭐⭐⭐⭐⭐ Outstanding | 💰💰 Medium | Multilingual, agentic, RAG |
+| OpenAI | gpt-5.4-nano | 400K tokens | n/a¹ | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Speed-optimized, efficient |
 | Anthropic | claude-haiku-4-5 | 200K tokens | 0.7 | ⚡⚡⚡ Fast | ⭐⭐⭐⭐ Excellent | 💰 Low | Fast responses, efficiency |
 
 **Legend:**
@@ -674,6 +675,7 @@ PlexMix stores all music metadata locally:
 - Speed: ⚡ Slow, ⚡⚡ Moderate, ⚡⚡⚡ Fast
 - Quality: ⭐ Basic → ⭐⭐⭐⭐⭐ Outstanding
 - Cost: 💰 Low, 💰💰 Medium, 💰💰💰 High
+- ¹ Reasoning models (GPT-5, Gemini 3, Claude Opus 4.7+) ignore the temperature setting
 
 ## Embedding Provider Comparison
 
@@ -745,13 +747,13 @@ If you ever want to nuke cached weights, delete the relevant directories under `
 
 ### Online (Best Latency & Reasoning)
 
-- **AI Provider:** `gemini-2.5-flash` (default). For more advanced reasoning, upgrade to `gpt-5-mini` or `claude-sonnet-4-5` if you have the budget.
+- **AI Provider:** `gemini-3.5-flash` (default). For more advanced reasoning, upgrade to `claude-sonnet-4-6`, `gpt-5.5`, or `claude-opus-4-8` if you have the budget.
 - **Embeddings:** `gemini-embedding-001` for maximum semantic precision, or `text-embedding-3-small` if you want faster generation with a slightly smaller vector size.
 - **Network Tips:** Keep API keys in `~/.plexmix/credentials` and run `plexmix config init` to verify connectivity. Use `plexmix ui --reload` during development to check the status cards.
 
 ### Hybrid (Cloud AI + Local Embeddings)
 
-- **AI Provider:** Keep using `gemini-2.5-flash` (or `gpt-5-mini`) for playlist prompts so you get the latest reasoning updates.
+- **AI Provider:** Keep using `gemini-3.5-flash` (or `gpt-5.4-mini`) for playlist prompts so you get the latest reasoning updates.
 - **Embeddings:** Run `mixedbread-ai/mxbai-embed-large-v1` locally so FAISS never leaves your machine while still benefiting from high-quality vectors.
 - **Workflow Tips:** Regenerate embeddings locally after every sync, but keep the AI provider online. This gives you the best of both worlds—fast semantic search without exposing track metadata, plus cloud-scale LLM quality.
 

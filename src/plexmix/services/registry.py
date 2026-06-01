@@ -58,22 +58,27 @@ AI_PROVIDERS: Dict[str, CloudAIProvider] = {
     "gemini": CloudAIProvider(
         id="gemini",
         display_name="Gemini",
-        default_model="gemini-2.5-flash",
-        models=["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash-001"],
+        default_model="gemini-3.5-flash",
+        models=[
+            "gemini-3.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.1-pro-preview",
+            "gemini-2.5-flash",
+        ],
     ),
     "openai": CloudAIProvider(
         id="openai",
         display_name="OpenAI",
-        default_model="gpt-5-mini",
-        models=["gpt-5", "gpt-5-mini", "gpt-5-nano"],
+        default_model="gpt-5.4-mini",
+        models=["gpt-5.5", "gpt-5.4-mini", "gpt-5.4-nano"],
     ),
     "claude": CloudAIProvider(
         id="claude",
         display_name="Claude",
-        default_model="claude-sonnet-4-5-20250929",
+        default_model="claude-sonnet-4-6",
         models=[
-            "claude-sonnet-4-5-20250929",
-            "claude-opus-4-1-20250414",
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
             "claude-haiku-4-5-20251001",
         ],
         aliases=["anthropic"],
@@ -81,8 +86,14 @@ AI_PROVIDERS: Dict[str, CloudAIProvider] = {
     "cohere": CloudAIProvider(
         id="cohere",
         display_name="Cohere",
-        default_model="command-r7b-12-2024",
-        models=["command-r7b-12-2024", "command-r-plus", "command-r", "command-a-03-2025"],
+        default_model="command-a-03-2025",
+        models=[
+            "command-a-03-2025",
+            "command-a-plus-05-2026",
+            "command-r-plus-08-2024",
+            "command-r-08-2024",
+            "command-r7b-12-2024",
+        ],
     ),
     "custom": CloudAIProvider(
         id="custom",
@@ -199,6 +210,20 @@ def get_default_ai_model(provider: str) -> str:
         return LOCAL_LLM_DEFAULT_MODEL
     entry = AI_PROVIDERS.get(provider)
     return entry.default_model if entry else ""
+
+
+def get_default_ai_model_display(provider: str) -> str:
+    """Return the default AI model in the form shown by ``get_ai_models_display``.
+
+    Resolves the ``anthropic`` UI alias and strips the date suffix from Claude
+    IDs so the result matches an entry in ``get_ai_models_display(provider)``.
+    """
+    if provider == "anthropic":
+        provider = "claude"
+    default = get_default_ai_model(provider)
+    if provider == "claude":
+        return _short_claude_name(default)
+    return default
 
 
 def get_embedding_models(provider: str) -> List[str]:

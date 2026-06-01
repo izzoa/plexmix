@@ -19,7 +19,7 @@ def test_cohere_provider_initialization(mock_cohere_module):
     provider = CohereProvider(api_key="test-key")
 
     assert provider.api_key == "test-key"
-    assert provider.model == "command-r7b-12-2024"
+    assert provider.model == "command-a-03-2025"
     assert provider.temperature == 0.3
 
 
@@ -170,7 +170,7 @@ def test_get_ai_provider_cohere(mock_cohere_module):
 
     provider = get_ai_provider("cohere", api_key="test-key")
 
-    assert provider.model == "command-r7b-12-2024"
+    assert provider.model == "command-a-03-2025"
     assert provider.temperature == 0.7
 
 

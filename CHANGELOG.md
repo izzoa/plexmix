@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Redesign the web UI around a glass icon-rail and a ⌘K command palette (search pages, run actions, fire a quick vibe; `g`+key navigation). The Generator is reimagined as an "AI-thinking" showpiece: a live particle vector-field, a four-phase progress tracker bound to the real generation pipeline, a streaming terminal log, and a results playlist with removable tracks.
+- Add a Settings → Appearance section with a theme toggle plus Density (comfortable/compact) and Accent-intensity (subtle/balanced/vivid) preferences, persisted across reloads.
+- Allow cancelling an in-progress playlist generation from the Generator.
+- Cancel any running long-running job from the UI — library sync, embedding generation, MusicBrainz enrichment, audio analysis, Doctor fixes, and tagging — each behind a confirmation, with the work actually stopping and a "cancelled" outcome shown. Adds a global **"Cancel running task"** command (⌘K) that stops everything in flight.
+
+### Changed
+- **The web UI now defaults to light mode** (previously dark). Your choice is remembered and can be toggled from the rail, the top bar, or Settings → Appearance.
+- Refresh default AI models to the current generation in a balanced, cost-aware tier: Gemini `gemini-3.5-flash`, OpenAI `gpt-5.4-mini`, Claude `claude-sonnet-4-6`, Cohere `command-a-03-2025`. Newer flagship options (`gpt-5.5`, `claude-opus-4-8`, `gemini-3.1-pro-preview`, `command-a-plus-05-2026`) are also selectable. Embedding models are unchanged, so existing FAISS indexes do not need to be regenerated.
+- The configured `temperature` setting now has no effect for OpenAI GPT-5, Gemini 3, and Claude Opus 4.7+ models — those families don't accept a custom temperature. It still applies to Claude Sonnet/Haiku, Cohere, custom, and local providers.
+
+### Fixed
+- OpenAI GPT-5 requests now use `max_completion_tokens` and omit the unsupported `temperature` (GPT-5/o-series reject the old `max_tokens` + custom-temperature combination), so OpenAI playlist generation and the Settings "Test OpenAI" button no longer fail with a 400.
+- Gemini 3 requests now constrain thinking (`thinking_level=low`) and use the model's default temperature, so responses aren't starved of output tokens or pushed into low-temperature loops.
+- Claude Opus 4.7+/4.8 requests now omit sampling parameters (`temperature`/`top_p`/`top_k`), which those models reject with a 400; Sonnet and Haiku continue to honor `temperature`.
+
+### Removed
+- The end-of-life `gemini-2.0-flash-001` model (Google shutdown 2026-06-01) and the invalid `claude-opus-4-1-20250414` model ID.
+
 ## [0.10.0] - 2026-05-28
 
 ### Added
