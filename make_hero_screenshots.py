@@ -52,34 +52,34 @@ GRADIENTS = {
         "dark": True,
     },
     "generator": {
-        "colors": [(20, 30, 55), (45, 20, 55)],  # dark blue → purple
-        "titlebar": (58, 58, 58),
-        "titlebar_bottom": (42, 42, 42),
-        "border": (68, 68, 68),
-        "url_bar": URL_BAR_COLOR_DARK,
-        "url_text_color": URL_TEXT_COLOR_DARK,
+        "colors": [(255, 236, 219), (255, 224, 234)],  # warm peach → soft rose (brand)
+        "titlebar": (228, 228, 228),
+        "titlebar_bottom": (210, 210, 210),
+        "border": (192, 192, 192),
+        "url_bar": URL_BAR_COLOR_LIGHT,
+        "url_text_color": URL_TEXT_COLOR_LIGHT,
         "url": "localhost:3000/generator",
-        "dark": True,
+        "dark": False,
     },
     "library": {
-        "colors": [(20, 40, 40), (15, 30, 50)],  # dark teal → navy
-        "titlebar": (58, 58, 58),
-        "titlebar_bottom": (42, 42, 42),
-        "border": (68, 68, 68),
-        "url_bar": URL_BAR_COLOR_DARK,
-        "url_text_color": URL_TEXT_COLOR_DARK,
+        "colors": [(222, 240, 255), (228, 248, 240)],  # sky → mint
+        "titlebar": (228, 228, 228),
+        "titlebar_bottom": (210, 210, 210),
+        "border": (192, 192, 192),
+        "url_bar": URL_BAR_COLOR_LIGHT,
+        "url_text_color": URL_TEXT_COLOR_LIGHT,
         "url": "localhost:3000/library",
-        "dark": True,
+        "dark": False,
     },
     "settings": {
-        "colors": [(35, 25, 50), (20, 35, 55)],  # plum → slate blue
-        "titlebar": (58, 58, 58),
-        "titlebar_bottom": (42, 42, 42),
-        "border": (68, 68, 68),
-        "url_bar": URL_BAR_COLOR_DARK,
-        "url_text_color": URL_TEXT_COLOR_DARK,
+        "colors": [(236, 232, 250), (224, 236, 250)],  # soft lavender → light blue
+        "titlebar": (228, 228, 228),
+        "titlebar_bottom": (210, 210, 210),
+        "border": (192, 192, 192),
+        "url_bar": URL_BAR_COLOR_LIGHT,
+        "url_text_color": URL_TEXT_COLOR_LIGHT,
         "url": "localhost:3000/settings",
-        "dark": True,
+        "dark": False,
     },
 }
 

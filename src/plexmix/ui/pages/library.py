@@ -1,716 +1,278 @@
+"""Library — synced tracks: filters, table, sync/embed/enrich jobs, bulk actions."""
+
 import reflex as rx
 from plexmix.ui.components.navbar import layout
-from plexmix.ui.components.track_table import track_table
-from plexmix.ui.components.progress_modal import progress_modal
-from plexmix.ui.components.loading import skeleton_table
-from plexmix.ui.components.error import empty_state
+from plexmix.ui.states.app_state import AppState
 from plexmix.ui.states.library_state import LibraryState
 
 
-# ── Page header ──────────────────────────────────────────────────────
-
-
-def _page_header() -> rx.Component:
-    """Page title with muted track count."""
-    return rx.vstack(
-        rx.heading("Library", size="8"),
-        rx.text(
-            f"{LibraryState.total_filtered_tracks} tracks",
-            size="3",
-            color="gray.9",
-        ),
-        spacing="1",
-        align="start",
-        class_name="animate-fade-in-up",
-    )
-
-
-# ── Command bar (sync controls + filter toggle) ─────────────────────
-
-
-def _command_bar() -> rx.Component:
-    """Top command bar: sync mode + sync button on left, select-page on right."""
-    return rx.hstack(
-        # Left: sync controls
-        rx.hstack(
-            rx.select(
-                ["incremental", "regenerate"],
-                value=LibraryState.sync_mode,
-                on_change=LibraryState.set_sync_mode,
-                placeholder="Sync Mode",
-                size="2",
-            ),
-            rx.cond(
-                LibraryState.sync_mode == "regenerate",
-                rx.button(
-                    rx.icon("triangle-alert", size=14),
-                    rx.text("Regenerate", class_name="hide-mobile"),
-                    on_click=LibraryState.confirm_regenerate_sync,
-                    disabled=LibraryState.is_syncing | ~LibraryState.plex_configured,
-                    loading=LibraryState.is_syncing,
-                    color_scheme="red",
-                    size="2",
-                    title=rx.cond(~LibraryState.plex_configured, "Configure Plex first", ""),
-                ),
-                rx.button(
-                    rx.icon("refresh-cw", size=14),
-                    rx.text("Sync Library", class_name="hide-mobile"),
-                    on_click=LibraryState.start_sync,
-                    disabled=LibraryState.is_syncing | ~LibraryState.plex_configured,
-                    loading=LibraryState.is_syncing,
-                    color_scheme="blue",
-                    size="2",
-                    title=rx.cond(~LibraryState.plex_configured, "Configure Plex first", ""),
-                ),
-            ),
-            spacing="2",
-            align="center",
-        ),
-        rx.spacer(),
-        # Right: select page button
-        rx.button(
-            "Select Page",
-            on_click=LibraryState.select_all_tracks,
-            variant="soft",
-            size="2",
-        ),
-        align="center",
-        width="100%",
-        wrap="wrap",
-        class_name="animate-fade-in-up stagger-1",
-    )
-
-
-# ── Search and filter row ────────────────────────────────────────────
-
-
-def _filter_row() -> rx.Component:
-    """Horizontal search and filter controls."""
-    return rx.hstack(
-        rx.el.div(
-            rx.input(
-                placeholder="Search tracks, artists, albums...",
-                value=LibraryState.search_query,
-                on_change=LibraryState.set_search_query,
-                size="2",
-                width="100%",
-            ),
-            style={"flex": "1", "minWidth": "160px"},
-        ),
-        rx.input(
-            placeholder="Genre",
-            value=LibraryState.genre_filter,
-            on_change=LibraryState.set_genre_filter,
-            size="2",
-            width="100px",
-        ),
-        rx.input(
-            placeholder="Tag",
-            value=LibraryState.tag_filter,
-            on_change=LibraryState.set_tag_filter,
-            size="2",
-            width="100px",
-        ),
-        rx.hstack(
-            rx.checkbox(
-                checked=LibraryState.has_audio,
-                on_change=LibraryState.toggle_has_audio,
-            ),
-            rx.text("Audio", size="2", color="gray.9", white_space="nowrap"),
-            spacing="1",
-            align="center",
-        ),
-        rx.hstack(
-            rx.text("Year:", size="2", color="gray.9", white_space="nowrap"),
-            rx.input(
-                placeholder="Min",
-                type="number",
-                value=LibraryState.year_min,
-                on_change=LibraryState.set_year_min,
-                size="2",
-                width="80px",
-            ),
-            rx.text("-", size="2", color="gray.9"),
-            rx.input(
-                placeholder="Max",
-                type="number",
-                value=LibraryState.year_max,
-                on_change=LibraryState.set_year_max,
-                size="2",
-                width="80px",
-            ),
-            spacing="2",
-            align="center",
-            class_name="hide-mobile",
-        ),
-        rx.button(
-            rx.icon("x", size=14),
-            "Clear",
-            on_click=LibraryState.clear_filters,
-            variant="ghost",
-            size="2",
-            color_scheme="gray",
-        ),
-        spacing="3",
-        align="center",
-        width="100%",
-        wrap="wrap",
-        padding_y="12px",
-        padding_x="16px",
-        border_radius="var(--radius-lg)",
-        background_color="gray.2",
-        class_name="animate-fade-in-up stagger-2",
-    )
-
-
-# ── Pagination controls ──────────────────────────────────────────────
-
-
-def _pagination_controls() -> rx.Component:
-    """Previous / page indicator / Next with showing-count text."""
-    total_pages = rx.cond(
-        LibraryState.total_filtered_tracks > 0,
-        (LibraryState.total_filtered_tracks - 1) // LibraryState.page_size + 1,
-        1,
-    )
-
-    # Calculate the range being shown
-    range_start = (LibraryState.current_page - 1) * LibraryState.page_size + 1
-    range_end = rx.cond(
-        LibraryState.current_page * LibraryState.page_size < LibraryState.total_filtered_tracks,
-        LibraryState.current_page * LibraryState.page_size,
-        LibraryState.total_filtered_tracks,
-    )
-
-    return rx.hstack(
-        rx.button(
-            rx.icon("chevron-left", size=14),
-            "Previous",
-            on_click=LibraryState.previous_page,
-            disabled=LibraryState.current_page == 1,
-            variant="soft",
-            size="2",
-        ),
-        rx.vstack(
-            rx.text(
-                f"Page {LibraryState.current_page} of {total_pages}",
-                size="2",
-                weight="medium",
-            ),
-            rx.text(
-                f"Showing {range_start}\u2013{range_end} of {LibraryState.total_filtered_tracks} tracks",
-                size="1",
-                color="gray.9",
-            ),
-            spacing="0",
-            align="center",
-        ),
-        rx.button(
-            "Next",
-            rx.icon("chevron-right", size=14),
-            on_click=LibraryState.next_page,
-            disabled=LibraryState.current_page >= total_pages,
-            variant="soft",
-            size="2",
-        ),
-        justify="center",
-        align="center",
-        spacing="4",
-        width="100%",
-        padding_y="8px",
-    )
-
-
-# ── Floating bulk actions bar ────────────────────────────────────────
-
-
-def _floating_actions_bar() -> rx.Component:
-    """Glass-morphism floating bar at the bottom when tracks are selected."""
+def _job_bar(active, message, progress, job_type: str) -> rx.Component:
     return rx.cond(
-        LibraryState.selected_tracks.length() > 0,
+        active,
         rx.box(
-            rx.hstack(
-                rx.text(
-                    LibraryState.selected_tracks.length().to(str) + " selected",
-                    size="2",
-                    weight="bold",
-                    color="gray.12",
-                    white_space="nowrap",
+            rx.box(
+                rx.el.span(message, style={"fontSize": "13px", "fontWeight": "500"}),
+                rx.spacer(),
+                rx.el.span(
+                    progress.to_string() + "%",
+                    class_name="mono fg3",
+                    style={"fontSize": "13px"},
                 ),
-                rx.separator(orientation="vertical", size="1", style={"height": "20px"}),
-                rx.button(
-                    rx.icon("cpu", size=14),
-                    rx.text("Embeddings", class_name="hide-mobile"),
-                    on_click=LibraryState.generate_embeddings,
-                    disabled=LibraryState.selected_tracks.length() == 0,
-                    loading=LibraryState.is_embedding,
-                    color_scheme="orange",
-                    size="2",
-                    title="Generate Embeddings",
-                ),
-                rx.button(
-                    rx.icon("audio-waveform", size=14),
-                    rx.text("Audio", class_name="hide-mobile"),
-                    on_click=LibraryState.analyze_audio,
-                    disabled=LibraryState.is_analyzing_audio,
-                    loading=LibraryState.is_analyzing_audio,
-                    color_scheme="purple",
-                    size="2",
-                    title="Analyze Audio",
-                ),
-                rx.button(
-                    rx.icon("disc", size=14),
-                    rx.text("MusicBrainz", class_name="hide-mobile"),
-                    on_click=LibraryState.enrich_musicbrainz,
-                    disabled=LibraryState.is_enriching_musicbrainz,
-                    loading=LibraryState.is_enriching_musicbrainz,
-                    color_scheme="teal",
-                    size="2",
-                    title="Enrich with MusicBrainz",
-                ),
-                rx.button(
-                    rx.icon("tags", size=14),
-                    rx.text("Tags", class_name="hide-mobile"),
-                    on_click=LibraryState.open_bulk_tag_dialog,
-                    color_scheme="blue",
-                    size="2",
-                    title="Apply Tags",
-                ),
-                rx.button(
-                    rx.icon("trash-2", size=14),
-                    rx.text("Delete", class_name="hide-mobile"),
-                    on_click=LibraryState.open_delete_confirm,
-                    color_scheme="red",
-                    variant="soft",
-                    size="2",
-                    title="Delete Selected",
-                ),
-                rx.button(
+                rx.el.button(
                     rx.icon("x", size=14),
-                    rx.text("Clear", class_name="hide-mobile"),
-                    on_click=LibraryState.clear_selection,
-                    variant="ghost",
-                    size="2",
-                    title="Clear Selection",
+                    "Cancel",
+                    class_name="btn btn-sm btn-ghost",
+                    on_click=AppState.request_cancel(job_type),
+                    type="button",
                 ),
-                spacing="3",
-                align="center",
-                wrap="wrap",
-                justify="center",
+                style={
+                    "display": "flex",
+                    "alignItems": "center",
+                    "gap": "12px",
+                    "marginBottom": "8px",
+                },
             ),
-            class_name="glass animate-slide-up",
-            position="fixed",
-            bottom="24px",
-            left="50%",
-            transform="translateX(-50%)",
-            z_index="50",
-            padding_x="24px",
-            padding_y="14px",
-            border_radius="var(--radius-xl)",
-            box_shadow="var(--shadow-lg)",
-            max_width="90vw",
+            rx.box(
+                rx.box(class_name="pfill", style={"width": progress.to_string() + "%"}),
+                class_name="pbar",
+            ),
+            class_name="card",
+            style={"padding": "14px 16px", "width": "100%"},
         ),
         rx.fragment(),
     )
 
 
-# ── Modals (preserved exactly) ───────────────────────────────────────
-
-
-def _sync_modal() -> rx.Component:
-    return progress_modal(
-        is_open=LibraryState.is_syncing,
-        progress=LibraryState.sync_progress,
-        message=LibraryState.sync_message,
-        on_cancel=LibraryState.request_cancel_sync,
-    )
-
-
-def _cancel_confirm_dialog() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Cancel Sync?"),
-            rx.alert_dialog.description("Progress will be lost. Are you sure you want to cancel?"),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button("Continue Sync", variant="soft"),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Yes, Cancel",
-                        on_click=LibraryState.cancel_sync,
-                        color_scheme="red",
-                    ),
-                ),
-                spacing="3",
-                justify="end",
-            ),
+def _action_bar() -> rx.Component:
+    return rx.box(
+        rx.el.select(
+            rx.el.option("Incremental sync", value="incremental"),
+            rx.el.option("Full sync", value="full"),
+            value=LibraryState.sync_mode,
+            on_change=LibraryState.set_sync_mode,
+            class_name="minisel",
         ),
-        open=LibraryState.show_cancel_confirm,
-        on_open_change=LibraryState.dismiss_cancel_confirm,
-    )
-
-
-def _embedding_modal() -> rx.Component:
-    return progress_modal(
-        is_open=LibraryState.is_embedding,
-        progress=LibraryState.embedding_progress,
-        message=LibraryState.embedding_message,
-        on_cancel=None,
-    )
-
-
-def _audio_modal() -> rx.Component:
-    return rx.dialog.root(
-        rx.dialog.content(
-            rx.vstack(
-                rx.dialog.title(
-                    "Audio Analysis",
-                    size="5",
-                    weight="bold",
-                ),
-                rx.text(
-                    LibraryState.audio_analysis_message,
-                    size="3",
-                    color="var(--pm-gray-11)",
-                ),
-                rx.vstack(
-                    rx.progress(
-                        value=LibraryState.audio_analysis_progress,
-                        max=100,
-                        width="100%",
-                    ),
-                    rx.hstack(
-                        rx.text(
-                            f"{LibraryState.audio_analysis_progress}%",
-                            size="3",
-                            weight="medium",
-                            font_family="var(--font-mono)",
-                            color="var(--pm-gray-11)",
-                        ),
-                        rx.spacer(),
-                        rx.text(
-                            LibraryState.audio_analysis_eta,
-                            size="2",
-                            color="gray.9",
-                        ),
-                        width="100%",
-                    ),
-                    spacing="2",
-                    width="100%",
-                ),
-                rx.hstack(
-                    rx.cond(
-                        LibraryState.audio_analysis_paused,
-                        rx.button(
-                            rx.icon("play", size=14),
-                            "Resume",
-                            on_click=LibraryState.resume_audio_analysis,
-                            color_scheme="green",
-                            variant="soft",
-                            size="2",
-                        ),
-                        rx.button(
-                            rx.icon("pause", size=14),
-                            "Pause",
-                            on_click=LibraryState.pause_audio_analysis,
-                            color_scheme="yellow",
-                            variant="soft",
-                            size="2",
-                        ),
-                    ),
-                    rx.button(
-                        rx.icon("square", size=14),
-                        "Stop",
-                        on_click=LibraryState.request_cancel_audio,
-                        color_scheme="red",
-                        variant="soft",
-                        size="2",
-                    ),
-                    spacing="3",
-                    justify="end",
-                    width="100%",
-                ),
-                spacing="4",
-                width=rx.breakpoints(initial="90vw", sm="420px"),
-                padding="4",
-            ),
-            class_name="animate-scale-in",
+        rx.el.button(
+            rx.icon("refresh-cw", size=16),
+            "Sync",
+            class_name="btn btn-3 btn-primary",
+            on_click=LibraryState.start_sync,
+            disabled=LibraryState.is_syncing,
+            type="button",
         ),
-        open=LibraryState.is_analyzing_audio,
-    )
-
-
-def _audio_cancel_confirm_dialog() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Stop Audio Analysis?"),
-            rx.alert_dialog.description(
-                "Progress so far will be saved. You can resume analysis later."
-            ),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button("Continue", variant="soft"),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Yes, Stop",
-                        on_click=LibraryState.cancel_audio_analysis,
-                        color_scheme="red",
-                    ),
-                ),
-                spacing="3",
-                justify="end",
-            ),
+        rx.el.button(
+            rx.icon("cpu", size=16),
+            "Generate embeddings",
+            class_name="btn btn-3 btn-soft",
+            on_click=LibraryState.generate_embeddings,
+            disabled=LibraryState.is_embedding,
+            type="button",
         ),
-        open=LibraryState.show_audio_cancel_confirm,
-        on_open_change=LibraryState.dismiss_audio_cancel_confirm,
+        rx.el.button(
+            rx.icon("disc", size=16),
+            "Enrich MusicBrainz",
+            class_name="btn btn-3 btn-soft",
+            on_click=LibraryState.enrich_musicbrainz,
+            disabled=LibraryState.is_enriching_musicbrainz,
+            type="button",
+        ),
+        class_name="card",
+        style={
+            "display": "flex",
+            "alignItems": "center",
+            "gap": "10px",
+            "padding": "14px 16px",
+            "width": "100%",
+            "flexWrap": "wrap",
+        },
     )
 
 
-def _musicbrainz_modal() -> rx.Component:
-    return progress_modal(
-        is_open=LibraryState.is_enriching_musicbrainz,
-        progress=LibraryState.musicbrainz_progress,
-        message=LibraryState.musicbrainz_message,
-        on_cancel=None,
+def _filter_bar() -> rx.Component:
+    return rx.box(
+        rx.box(
+            rx.icon("search", size=15, color="var(--fg-3)"),
+            rx.el.input(
+                placeholder="Search tracks…",
+                value=LibraryState.search_query,
+                on_change=LibraryState.set_search_query,
+            ),
+            class_name="search",
+        ),
+        rx.el.input(
+            placeholder="Genre",
+            value=LibraryState.genre_filter,
+            on_change=LibraryState.set_genre_filter,
+            class_name="minisel",
+            style={"maxWidth": "160px"},
+        ),
+        rx.el.button(
+            "Clear",
+            class_name="btn btn-3 btn-ghost",
+            on_click=LibraryState.clear_filters,
+            type="button",
+        ),
+        class_name="filterbar",
     )
 
 
-def _confirm_regenerate_dialog() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Confirm Regenerate Sync"),
-            rx.alert_dialog.description(
-                rx.vstack(
-                    rx.text(
-                        "This will DELETE ALL existing tags and embeddings!",
-                        color="red",
-                        weight="bold",
+def _bulk_bar() -> rx.Component:
+    return rx.cond(
+        LibraryState.selected_tracks.length() > 0,
+        rx.box(
+            rx.el.span(
+                LibraryState.selected_tracks.length(),
+                " selected",
+                style={"fontWeight": "600", "fontSize": "14px"},
+            ),
+            rx.spacer(),
+            rx.el.button(
+                rx.icon("tags", size=15),
+                "Tag",
+                class_name="btn btn-sm btn-soft",
+                on_click=LibraryState.open_bulk_tag_dialog,
+                type="button",
+            ),
+            rx.el.button(
+                rx.icon("trash-2", size=15),
+                "Delete",
+                class_name="btn btn-sm btn-soft",
+                on_click=LibraryState.open_delete_confirm,
+                type="button",
+            ),
+            rx.el.button(
+                "Clear",
+                class_name="btn btn-sm btn-ghost",
+                on_click=LibraryState.clear_selection,
+                type="button",
+            ),
+            class_name="card",
+            style={
+                "display": "flex",
+                "alignItems": "center",
+                "gap": "10px",
+                "padding": "10px 16px",
+                "width": "100%",
+            },
+        ),
+        rx.fragment(),
+    )
+
+
+def _track_row(track: rx.Var) -> rx.Component:
+    tid = track["id"]
+    return rx.el.tr(
+        rx.el.td(
+            rx.checkbox(
+                checked=LibraryState.selected_tracks.contains(tid),
+                on_change=lambda _v: LibraryState.toggle_track_selection(tid),
+            ),
+            style={"width": "40px"},
+        ),
+        rx.el.td(track["title"], style={"fontWeight": "500"}),
+        rx.el.td(track["artist_name"], class_name="fg2"),
+        rx.el.td(track["album_title"], class_name="fg3"),
+    )
+
+
+def _track_table() -> rx.Component:
+    return rx.box(
+        rx.el.table(
+            rx.el.thead(
+                rx.el.tr(
+                    rx.el.th(
+                        rx.checkbox(
+                            checked=LibraryState.all_page_selected,
+                            on_change=LibraryState.toggle_select_all,
+                        ),
                     ),
-                    rx.text("This operation will:"),
-                    rx.unordered_list(
-                        rx.list_item("Clear all AI-generated tags"),
-                        rx.list_item("Delete all embeddings"),
-                        rx.list_item("Regenerate everything from scratch"),
-                    ),
-                    rx.text("Are you sure you want to continue?", weight="bold"),
-                    spacing="2",
-                    align_items="start",
+                    rx.el.th("Title"),
+                    rx.el.th("Artist"),
+                    rx.el.th("Album"),
                 )
             ),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button(
-                        "Cancel",
-                        variant="soft",
-                        on_click=LibraryState.cancel_regenerate_confirm,
-                    ),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Yes, Regenerate",
-                        on_click=LibraryState.start_sync,
-                        color_scheme="red",
-                    ),
-                ),
-                spacing="3",
-                justify="end",
-            ),
+            rx.el.tbody(rx.foreach(LibraryState.tracks, _track_row)),
+            class_name="tbl",
         ),
-        open=LibraryState.show_regenerate_confirm,
+        class_name="tbl-wrap",
+        style={"width": "100%"},
     )
 
 
-# ══════════════════════════════════════════════════════════════════════
-#  Library Page
-# ══════════════════════════════════════════════════════════════════════
-
-
-def _bulk_tag_dialog() -> rx.Component:
-    """Dialog for applying tags to selected tracks."""
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Apply Tags"),
-            rx.alert_dialog.description(
-                rx.vstack(
-                    rx.text(
-                        "Enter comma-separated tags to apply to "
-                        + LibraryState.selected_tracks.length().to(str)
-                        + " selected tracks.",
-                        size="2",
-                    ),
-                    rx.input(
-                        placeholder="e.g., rock, upbeat, summer",
-                        value=LibraryState.bulk_tag_input,
-                        on_change=LibraryState.set_bulk_tag_input,
-                        width="100%",
-                    ),
-                    rx.text(
-                        "This will overwrite existing tags on the selected tracks.",
-                        size="1",
-                        color="red.9",
-                    ),
-                    spacing="3",
-                ),
-            ),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button("Cancel", variant="soft", color_scheme="gray"),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Apply Tags",
-                        on_click=LibraryState.apply_bulk_tags,
-                        color_scheme="blue",
-                    ),
-                ),
-                spacing="3",
-                margin_top="4",
-                justify="end",
-            ),
+def _pagination() -> rx.Component:
+    return rx.box(
+        rx.el.span(
+            LibraryState.total_filtered_tracks,
+            " tracks",
+            class_name="fg3",
+            style={"fontSize": "13px"},
         ),
-        open=LibraryState.show_bulk_tag_dialog,
-        on_open_change=LibraryState.set_bulk_tag_dialog_open,
-    )
-
-
-def _delete_confirm_dialog() -> rx.Component:
-    """Confirmation dialog for deleting selected tracks."""
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Delete Selected Tracks?"),
-            rx.alert_dialog.description(
-                rx.text(
-                    "This will permanently delete "
-                    + LibraryState.selected_tracks.length().to(str)
-                    + " tracks from your local database. Tracks will be re-added on next sync.",
-                ),
-            ),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button(
-                        "Cancel",
-                        variant="soft",
-                        color_scheme="gray",
-                        on_click=LibraryState.close_delete_confirm,
-                    ),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Delete",
-                        on_click=LibraryState.delete_selected_tracks,
-                        color_scheme="red",
-                    ),
-                ),
-                spacing="3",
-                margin_top="4",
-                justify="end",
-            ),
+        rx.spacer(),
+        rx.el.button(
+            rx.icon("chevron-left", size=16),
+            class_name="btn btn-sm btn-soft",
+            on_click=LibraryState.previous_page,
+            type="button",
         ),
-        open=LibraryState.show_delete_confirm,
-        on_open_change=LibraryState.set_delete_confirm_open,
+        rx.el.span(
+            "Page ",
+            LibraryState.current_page,
+            class_name="mono",
+            style={"fontSize": "13px", "padding": "0 8px"},
+        ),
+        rx.el.button(
+            rx.icon("chevron-right", size=16),
+            class_name="btn btn-sm btn-soft",
+            on_click=LibraryState.next_page,
+            type="button",
+        ),
+        style={"display": "flex", "alignItems": "center", "gap": "6px", "width": "100%"},
     )
 
 
 def library() -> rx.Component:
     content = rx.vstack(
-        # ── Page header ──────────────────────────────────────────
-        _page_header(),
-        # ── Command bar (sync + select) ──────────────────────────
-        _command_bar(),
-        # ── Search / filters ─────────────────────────────────────
-        _filter_row(),
-        # ── Separator ────────────────────────────────────────────
-        rx.separator(size="4", color_scheme="gray"),
-        # ── Table or loading/empty states ────────────────────────
+        _action_bar(),
+        _job_bar(
+            LibraryState.is_syncing,
+            LibraryState.sync_message,
+            LibraryState.sync_progress,
+            "sync",
+        ),
+        _job_bar(
+            LibraryState.is_embedding,
+            LibraryState.embedding_message,
+            LibraryState.embedding_progress,
+            "embedding",
+        ),
+        _job_bar(
+            LibraryState.is_enriching_musicbrainz,
+            LibraryState.musicbrainz_message,
+            LibraryState.musicbrainz_progress,
+            "musicbrainz",
+        ),
+        _job_bar(
+            LibraryState.is_analyzing_audio,
+            LibraryState.audio_analysis_message,
+            LibraryState.audio_analysis_progress,
+            "audio",
+        ),
+        _filter_bar(),
+        _bulk_bar(),
         rx.cond(
-            LibraryState.is_page_loading,
-            skeleton_table(rows=10),
-            rx.cond(
-                LibraryState.tracks.length() > 0,
-                rx.vstack(
-                    track_table(
-                        LibraryState.tracks,
-                        LibraryState.selected_tracks,
-                        LibraryState.toggle_track_selection,
-                        sort_column=LibraryState.sort_column,
-                        sort_ascending=LibraryState.sort_ascending,
-                        on_sort=LibraryState.set_sort,
-                        all_selected=LibraryState.all_page_selected,
-                        on_toggle_all=LibraryState.toggle_select_all,
-                    ),
-                    _pagination_controls(),
-                    spacing="4",
-                    width="100%",
-                    class_name="animate-fade-in-up stagger-3",
-                ),
-                empty_state(
-                    icon="library",
-                    title="No tracks found",
-                    description="Sync your library from Plex, or adjust your search filters.",
-                    action_text="Go to Settings",
-                    on_action=lambda: rx.redirect("/settings"),
-                ),
+            LibraryState.tracks.length() > 0,
+            _track_table(),
+            rx.box(
+                rx.box(rx.icon("music", size=22, color="var(--fg-3)"), class_name="e-ico"),
+                rx.box("No tracks", class_name="e-title"),
+                rx.box("Sync your Plex library to populate tracks.", class_name="e-desc"),
+                class_name="empty",
+                style={"width": "100%"},
             ),
         ),
-        # ── Floating selection bar ───────────────────────────────
-        _floating_actions_bar(),
-        spacing="6",
+        _pagination(),
+        spacing="4",
         width="100%",
-        # Add bottom padding so table content isn't hidden behind floating bar
-        padding_bottom="80px",
+        on_mount=LibraryState.on_load,
     )
-
-    return layout(
-        rx.fragment(
-            content,
-            _sync_modal(),
-            _cancel_confirm_dialog(),
-            _embedding_modal(),
-            _musicbrainz_modal(),
-            _audio_modal(),
-            _audio_cancel_confirm_dialog(),
-            _confirm_regenerate_dialog(),
-            _bulk_tag_dialog(),
-            _delete_confirm_dialog(),
-            _task_polling_trigger(),
-        )
-    )
-
-
-def _task_polling_trigger() -> rx.Component:
-    """Hidden button + JS interval for client-initiated TaskStore polling.
-
-    The interval clicks a hidden button every 1.5s, which triggers
-    ``LibraryState.poll_task_progress``.  Because the event is initiated
-    by the client, the response always travels over a live WebSocket —
-    no risk of pushing to a disconnected session.
-    """
-    return rx.fragment(
-        rx.el.button(
-            id="plexmix-poll-lib",
-            on_click=LibraryState.poll_task_progress,
-            display="none",
-        ),
-        rx.cond(
-            LibraryState.is_syncing
-            | LibraryState.is_embedding
-            | LibraryState.is_analyzing_audio
-            | LibraryState.is_enriching_musicbrainz,
-            rx.script(
-                "if (!window._pm_poll_lib) {"
-                "  window._pm_poll_lib = setInterval(function() {"
-                "    var b = document.getElementById('plexmix-poll-lib');"
-                "    if (b) b.click();"
-                "  }, 1500);"
-                "}"
-            ),
-            rx.script(
-                "if (window._pm_poll_lib) {"
-                "  clearInterval(window._pm_poll_lib);"
-                "  window._pm_poll_lib = null;"
-                "}"
-            ),
-        ),
-    )
+    return layout(content)

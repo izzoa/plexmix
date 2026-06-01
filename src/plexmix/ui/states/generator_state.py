@@ -1,6 +1,8 @@
 import reflex as rx
 import asyncio
 import logging
+import threading
+from typing import Any
 from plexmix.config.constants import GENERATION_LOG_MAX
 from plexmix.ui.states.app_state import AppState
 
@@ -40,6 +42,10 @@ class GeneratorState(AppState):
     total_duration_ms: int = 0
 
     _generation_id: int = 0
+    _cancel_event: Any = None
+
+    # View state for the showpiece
+    show_advanced: bool = False
 
     # Templates
     templates: list[dict[str, str]] = []
@@ -368,6 +374,7 @@ class GeneratorState(AppState):
                 return
 
             self._generation_id += 1
+            self._cancel_event = threading.Event()
             self.is_generating = True
             self.generation_progress = 0
             self.generation_message = "Starting playlist generation..."
@@ -376,6 +383,7 @@ class GeneratorState(AppState):
             self.total_duration_ms = 0
 
         current_gen = self._generation_id
+        cancel_event = self._cancel_event
 
         try:
             from plexmix.config.settings import Settings
@@ -491,6 +499,7 @@ class GeneratorState(AppState):
                         progress_callback=progress_callback,
                         shuffle_mode=shuffle,
                         avoid_recent=avoid_recent_val,
+                        cancel_event=cancel_event,
                     )
 
                     total_duration = sum(track.get("duration_ms", 0) for track in tracks)
@@ -504,6 +513,11 @@ class GeneratorState(AppState):
                     local_db.close()
 
             generation_result = await loop.run_in_executor(None, run_generation)
+
+            if cancel_event.is_set() or self._generation_id != current_gen:
+                async with self:
+                    self.is_generating = False
+                return
 
             if generation_result.get("error"):
                 error_message = generation_result["error"]
@@ -536,6 +550,8 @@ class GeneratorState(AppState):
                 self.total_duration_ms = total_duration
                 self.is_generating = False
                 self.generation_progress = 100
+                if not self.playlist_name.strip() and playlist_tracks:
+                    self.playlist_name = self.mood_query[:60]
                 if len(playlist_tracks) > 0:
                     final_msg = f"Generated {len(playlist_tracks)} tracks!"
                 else:
@@ -572,6 +588,60 @@ class GeneratorState(AppState):
         self.total_duration_ms = sum(
             int(track.get("duration_ms", "0") or "0") for track in self.generated_playlist
         )
+
+    @rx.event
+    def cancel_generation(self):
+        """Signal the in-flight generation to stop (coarse-grained, between stages)."""
+        if self._cancel_event is not None:
+            self._cancel_event.set()
+        self._generation_id += 1
+        self.is_generating = False
+        self.generation_progress = 0
+        self.generation_message = ""
+        self.generation_log = []
+
+    @rx.event
+    def toggle_advanced(self):
+        self.show_advanced = not self.show_advanced
+
+    @rx.event
+    def new_playlist(self):
+        """Clear results and return the showpiece to the idle hero."""
+        self.generated_playlist = []
+        self.total_duration_ms = 0
+        self.generation_progress = 0
+        self.generation_message = ""
+        self.generation_log = []
+
+    @rx.var
+    def active_phase(self) -> int:
+        """Active thinking-stage phase from real progress bands (0/10/40/70)."""
+        p = self.generation_progress
+        if p < 10:
+            return 0
+        if p < 40:
+            return 1
+        if p < 70:
+            return 2
+        return 3
+
+    @rx.var
+    def total_duration_label(self) -> str:
+        total_seconds = self.total_duration_ms // 1000
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        if hours > 0:
+            return f"{hours} hr {minutes} min"
+        return f"{minutes} min"
+
+    @rx.var
+    def ordering_label(self) -> str:
+        return {
+            "similarity": "similarity",
+            "random": "random",
+            "alternating_artists": "alternating artists",
+            "energy_curve": "energy curve",
+        }.get(self.shuffle_mode, self.shuffle_mode)
 
     @rx.event(background=True)
     async def save_to_plex(self):

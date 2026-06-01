@@ -40,6 +40,7 @@ def generate_embeddings_for_tracks(
     tracks: List[Any],
     batch_size: int = EMBEDDING_BATCH_SIZE,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    cancel_event: Optional[Any] = None,
 ) -> int:
     """Generate and save embeddings for a list of Track objects.
 
@@ -49,6 +50,8 @@ def generate_embeddings_for_tracks(
         tracks: List of Track model objects.
         batch_size: Number of tracks per embedding batch.
         progress_callback: Optional ``callback(generated_count, total_count)``.
+        cancel_event: Optional ``threading.Event`` checked between batches for
+            cooperative cancellation.
 
     Returns the number of embeddings generated.
     """
@@ -56,6 +59,8 @@ def generate_embeddings_for_tracks(
     generated = 0
 
     for i in range(0, total, batch_size):
+        if cancel_event is not None and cancel_event.is_set():
+            break
         batch_tracks = tracks[i : i + batch_size]
 
         track_data_list = [build_track_embedding_data(db, t) for t in batch_tracks]

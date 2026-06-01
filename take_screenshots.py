@@ -1,4 +1,9 @@
-"""Capture screenshots of the PlexMix UI for README documentation."""
+"""Capture screenshots of the PlexMix UI for README documentation.
+
+The UI is light-first; theme is forced per-shot via localStorage('theme', ...)
+before load (Reflex/next-themes reads it on init).
+"""
+
 import time
 from playwright.sync_api import sync_playwright
 
@@ -7,82 +12,52 @@ OUT = "docs/screenshots"
 WIDTH = 1440
 HEIGHT = 900
 
+# (filename, theme, route)
+SHOTS = [
+    ("dashboard-light", "light", "/dashboard"),
+    ("dashboard-dark", "dark", "/dashboard"),
+    ("generator", "light", "/generator"),
+    ("library", "light", "/library"),
+    ("settings", "light", "/settings"),
+]
 
-def wait_for_app(page, timeout=10):
-    """Wait until the Reflex app hydrates and renders content."""
-    # Wait for any heading or main content to appear
+
+def wait_for_shell(page, timeout=30):
+    # Wait for the authenticated shell (.rail) — avoids the brief login flash
+    # before on_load flips is_authenticated. Then settle for on_load data
+    # (dashboard stats, library tracks) to populate.
     try:
-        page.wait_for_selector("h1, h2, h3, .rt-Heading", timeout=timeout * 1000)
+        page.wait_for_selector(".rail", state="visible", timeout=timeout * 1000)
     except Exception:
-        pass
-    # Extra settle time for animations
-    time.sleep(2)
+        time.sleep(5)
+    time.sleep(4)
 
 
 def main():
     with sync_playwright() as p:
         browser = p.chromium.launch()
-
-        # ── Dark mode screenshots ──────────────────────────────────
-        ctx_dark = browser.new_context(
-            viewport={"width": WIDTH, "height": HEIGHT},
-            device_scale_factor=2,
-            color_scheme="dark",
-        )
-        page = ctx_dark.new_page()
-
-        # Dashboard (dark)
-        print("Capturing dashboard (dark)...")
-        page.goto(f"{BASE}/dashboard", wait_until="networkidle")
-        wait_for_app(page)
-        page.screenshot(path=f"{OUT}/dashboard-dark.png", full_page=False)
-
-        # Generator
-        print("Capturing generator...")
-        page.goto(f"{BASE}/generator", wait_until="networkidle")
-        wait_for_app(page)
-        page.screenshot(path=f"{OUT}/generator.png", full_page=False)
-
-        # Library
-        print("Capturing library...")
-        page.goto(f"{BASE}/library", wait_until="networkidle")
-        wait_for_app(page)
-        page.screenshot(path=f"{OUT}/library.png", full_page=False)
-
-        # Settings
-        print("Capturing settings...")
-        page.goto(f"{BASE}/settings", wait_until="networkidle")
-        wait_for_app(page)
-        page.screenshot(path=f"{OUT}/settings.png", full_page=False)
-
-        ctx_dark.close()
-
-        # ── Light mode screenshot ──────────────────────────────────
-        # Reflex reads theme from localStorage("theme") on init, not CSS prefers-color-scheme.
-        # Set localStorage before page JS hydrates by using addInitScript.
-        ctx_light = browser.new_context(
-            viewport={"width": WIDTH, "height": HEIGHT},
-            device_scale_factor=2,
-            color_scheme="light",
-        )
-        page = ctx_light.new_page()
-        # This script runs before every page load in this context
-        page.add_init_script("""
-            localStorage.setItem('theme', 'light');
-        """)
-
-        # Dashboard (light)
-        print("Capturing dashboard (light)...")
-        # First navigate to set the origin for localStorage, then reload so the
-        # init script's localStorage write is available when Reflex hydrates.
-        page.goto(f"{BASE}/dashboard", wait_until="networkidle")
-        page.reload(wait_until="networkidle")
-        wait_for_app(page)
-        page.screenshot(path=f"{OUT}/dashboard-light.png", full_page=False)
-
-        ctx_light.close()
+        for name, theme, route in SHOTS:
+            ctx = browser.new_context(
+                viewport={"width": WIDTH, "height": HEIGHT},
+                device_scale_factor=2,
+            )
+            ctx.add_init_script(
+                "try{localStorage.setItem('theme','%s');}catch(e){}" % theme
+            )
+            page = ctx.new_page()
+            print(f"Capturing {name} ({theme}) {route} ...")
+            page.goto(f"{BASE}{route}", wait_until="networkidle")
+            page.reload(wait_until="networkidle")  # apply theme from localStorage
+            wait_for_shell(page)
+            if route == "/settings":
+                try:
+                    page.get_by_text("Appearance", exact=True).first.click(timeout=3000)
+                    time.sleep(1.5)
+                except Exception:
+                    pass
+            page.screenshot(path=f"{OUT}/{name}.png", full_page=False)
+            ctx.close()
         browser.close()
-
     print(f"Done! Screenshots saved to {OUT}/")
 
 

@@ -1,508 +1,225 @@
+"""Tagging — batch AI tagging with preview, progress, and inline tag editing."""
+
 import reflex as rx
 from plexmix.ui.components.navbar import layout
-from plexmix.ui.components.track_table import tag_badges
-from plexmix.ui.components.error import empty_state
 from plexmix.ui.states.tagging_state import TaggingState
-from plexmix.ui.utils.form_utils import form_field, year_range_field
 
 
-# ── Filter accordion (expandable) ────────────────────────────────────
-
-
-def _filter_section() -> rx.Component:
-    """Expandable filter inputs inside an accordion."""
-    return rx.accordion.root(
-        rx.accordion.item(
-            header="Or filter tracks",
-            content=rx.vstack(
-                # Row 1: genre + artist
-                rx.grid(
-                    form_field(
-                        "Genre",
-                        rx.input(
-                            placeholder="e.g., rock, jazz",
-                            value=TaggingState.genre_filter,
-                            on_change=TaggingState.set_genre_filter,
-                            width="100%",
-                        ),
-                    ),
-                    form_field(
-                        "Artist",
-                        rx.input(
-                            placeholder="Filter by artist",
-                            value=TaggingState.artist_filter,
-                            on_change=TaggingState.set_artist_filter,
-                            width="100%",
-                        ),
-                    ),
-                    columns=rx.breakpoints(initial="1", sm="2"),
-                    spacing="4",
-                    width="100%",
-                ),
-                # Row 2: year range + untagged switch
-                rx.grid(
-                    year_range_field(
-                        "Year Range",
-                        min_value=TaggingState.year_min,
-                        on_min_change=TaggingState.set_year_min,
-                        max_value=TaggingState.year_max,
-                        on_max_change=TaggingState.set_year_max,
-                    ),
-                    rx.vstack(
-                        rx.text("Options", size="2", weight="medium", color="gray.11"),
-                        rx.hstack(
-                            rx.checkbox(
-                                checked=TaggingState.has_no_tags,
-                                on_change=TaggingState.toggle_has_no_tags,
-                            ),
-                            rx.text("Untagged only", size="2"),
-                            spacing="2",
-                            align="center",
-                        ),
-                        rx.hstack(
-                            rx.text("Retag stale", size="2"),
-                            rx.input(
-                                placeholder="days",
-                                type="number",
-                                value=TaggingState.stale_days,
-                                on_change=TaggingState.set_stale_days,
-                                width="70px",
-                                size="1",
-                            ),
-                            rx.cond(
-                                TaggingState.stale_track_count > 0,
-                                rx.badge(
-                                    TaggingState.stale_track_count.to(str) + " stale",
-                                    color_scheme="amber",
-                                    variant="soft",
-                                    size="1",
-                                ),
-                                rx.fragment(),
-                            ),
-                            spacing="2",
-                            align="center",
-                        ),
-                        spacing="2",
-                        width="100%",
-                    ),
-                    columns=rx.breakpoints(initial="1", sm="2"),
-                    spacing="4",
-                    width="100%",
-                ),
-                # Preview + Start
-                rx.hstack(
-                    rx.button(
-                        "Preview Selection",
-                        on_click=TaggingState.preview_selection,
-                        variant="soft",
-                        size="2",
-                    ),
-                    rx.cond(
-                        TaggingState.preview_count > 0,
-                        rx.badge(
-                            f"{TaggingState.preview_count} tracks match",
-                            color_scheme="green",
-                            variant="soft",
-                            size="2",
-                        ),
-                        rx.fragment(),
-                    ),
-                    spacing="3",
-                    align="center",
-                ),
-                rx.cond(
-                    TaggingState.preview_count > 0,
-                    rx.button(
-                        "Start Tagging",
-                        on_click=TaggingState.start_tagging,
-                        disabled=TaggingState.is_tagging,
-                        loading=TaggingState.is_tagging,
-                        color_scheme="blue",
-                        size="3",
-                        width="100%",
-                    ),
-                    rx.fragment(),
-                ),
-                spacing="4",
-                width="100%",
+def _filter_bar() -> rx.Component:
+    return rx.box(
+        rx.box(
+            rx.icon("search", size=15, color="var(--fg-3)"),
+            rx.el.input(
+                placeholder="Filter by artist…",
+                value=TaggingState.artist_filter,
+                on_change=TaggingState.set_artist_filter,
             ),
-            value="filters",
+            class_name="search",
         ),
-        width="100%",
-        type="single",
-        collapsible=True,
+        rx.el.input(
+            placeholder="Genre",
+            value=TaggingState.genre_filter,
+            on_change=TaggingState.set_genre_filter,
+            class_name="minisel",
+            style={"maxWidth": "160px"},
+        ),
+        rx.el.input(
+            placeholder="Stale days",
+            value=TaggingState.stale_days,
+            on_change=TaggingState.set_stale_days,
+            class_name="minisel",
+            style={"maxWidth": "120px"},
+        ),
+        rx.el.label(
+            rx.el.input(
+                type="checkbox",
+                checked=TaggingState.has_no_tags,
+                on_change=lambda _v: TaggingState.toggle_has_no_tags(),
+            ),
+            "Untagged only",
+            style={"display": "flex", "alignItems": "center", "gap": "7px", "fontSize": "13px"},
+        ),
+        rx.el.button(
+            rx.icon("scan-search", size=15),
+            "Preview",
+            class_name="btn btn-3 btn-soft",
+            on_click=TaggingState.preview_selection,
+            type="button",
+        ),
+        class_name="filterbar",
     )
 
 
-# ── Tag Generator card ───────────────────────────────────────────────
-
-
-def _tag_generator_card() -> rx.Component:
-    """Primary CTA + expandable filter accordion."""
-    return rx.card(
-        rx.vstack(
-            rx.hstack(
-                rx.box(
-                    rx.icon("wand-sparkles", size=20, color="accent.9"),
-                    padding="8px",
-                    border_radius="var(--radius-md)",
-                    background_color="accent.3",
-                    flex_shrink="0",
+def _tagged_row(track: rx.Var) -> rx.Component:
+    editing = TaggingState.editing_track_id == track["id"]
+    return rx.box(
+        rx.cond(
+            editing,
+            rx.box(
+                rx.el.input(
+                    value=TaggingState.edit_tags,
+                    on_change=TaggingState.set_edit_tags,
+                    class_name="input",
+                    placeholder="moods (comma-separated)",
                 ),
-                rx.text("Tag Generator", size="5", weight="bold"),
-                spacing="3",
-                align="center",
-            ),
-            rx.text(
-                "Generate AI tags for your music library",
-                size="2",
-                color="gray.9",
-            ),
-            # Primary CTA
-            rx.button(
-                "Tag All Untagged Tracks",
-                on_click=TaggingState.show_tag_all_confirmation,
-                color_scheme="orange",
-                size="3",
-                width="100%",
-                disabled=TaggingState.is_tagging,
-                loading=TaggingState.is_tagging,
-                class_name="pm-glow",
-            ),
-            # Expandable filters
-            _filter_section(),
-            spacing="4",
-            width="100%",
-        ),
-        width="100%",
-        class_name="animate-fade-in-up",
-    )
-
-
-# ── Progress section (inline, shown when tagging) ────────────────────
-
-
-def _progress_section() -> rx.Component:
-    """Thin progress bar + mono stats + cancel button."""
-    return rx.cond(
-        TaggingState.is_tagging,
-        rx.card(
-            rx.vstack(
-                # Thin progress bar
-                rx.progress(
-                    value=TaggingState.tagging_progress,
-                    width="100%",
-                    color_scheme="orange",
-                    size="1",
+                rx.el.input(
+                    value=TaggingState.edit_environments,
+                    on_change=TaggingState.set_edit_environments,
+                    class_name="input",
+                    placeholder="environments",
                 ),
-                # Stats row in mono font
-                rx.hstack(
-                    rx.text(
-                        f"Batch {TaggingState.current_batch}/{TaggingState.total_batches}",
-                        size="2",
-                        style={"fontFamily": "var(--font-mono)"},
-                    ),
-                    rx.separator(orientation="vertical", size="1", style={"height": "14px"}),
-                    rx.text(
-                        f"{TaggingState.tags_generated_count} tagged",
-                        size="2",
-                        style={"fontFamily": "var(--font-mono)"},
-                    ),
-                    rx.cond(
-                        TaggingState.estimated_time_remaining > 0,
-                        rx.hstack(
-                            rx.separator(
-                                orientation="vertical",
-                                size="1",
-                                style={"height": "14px"},
-                            ),
-                            rx.text(
-                                f"~{TaggingState.estimated_time_remaining}s left",
-                                size="2",
-                                style={"fontFamily": "var(--font-mono)"},
-                            ),
-                            spacing="3",
-                            align="center",
-                        ),
-                        rx.fragment(),
-                    ),
-                    spacing="3",
-                    align="center",
-                    wrap="wrap",
+                rx.el.input(
+                    value=TaggingState.edit_instruments,
+                    on_change=TaggingState.set_edit_instruments,
+                    class_name="input",
+                    placeholder="instruments",
                 ),
-                # Status message
-                rx.text(
-                    TaggingState.tagging_message,
-                    size="2",
-                    color="gray.9",
+                rx.el.button(
+                    "Save",
+                    class_name="btn btn-sm btn-primary",
+                    on_click=TaggingState.save_tag_edit,
+                    type="button",
                 ),
-                # Cancel button
-                rx.button(
+                rx.el.button(
                     "Cancel",
-                    on_click=TaggingState.cancel_tagging,
-                    variant="outline",
-                    color_scheme="red",
-                    size="2",
+                    class_name="btn btn-sm btn-ghost",
+                    on_click=TaggingState.cancel_edit,
+                    type="button",
                 ),
-                spacing="3",
-                width="100%",
+                style={
+                    "display": "flex",
+                    "gap": "8px",
+                    "flexWrap": "wrap",
+                    "alignItems": "center",
+                    "width": "100%",
+                },
             ),
-            width="100%",
-            class_name="animate-fade-in-up",
-        ),
-        rx.fragment(),
-    )
-
-
-# ── Recently Tagged table ────────────────────────────────────────────
-
-
-def _recent_tags_table() -> rx.Component:
-    """Table of recently tagged tracks with inline edit support."""
-    return rx.card(
-        rx.vstack(
-            rx.hstack(
+            rx.box(
                 rx.box(
-                    rx.icon("tags", size=20, color="accent.9"),
-                    padding="8px",
-                    border_radius="var(--radius-md)",
-                    background_color="accent.3",
-                    flex_shrink="0",
+                    rx.box(track["title"], style={"fontWeight": "500", "fontSize": "14px"}),
+                    rx.box(track["artist"], class_name="fg3", style={"fontSize": "13px"}),
+                    style={"flex": "1", "minWidth": "0"},
                 ),
-                rx.text("Recently Tagged", size="5", weight="bold"),
-                spacing="3",
-                align="center",
-            ),
-            rx.cond(
-                TaggingState.recently_tagged_tracks.length() > 0,
-                rx.box(
-                    rx.table.root(
-                        rx.table.header(
-                            rx.table.row(
-                                rx.table.column_header_cell("Title"),
-                                rx.table.column_header_cell("Artist"),
-                                rx.table.column_header_cell("Tags"),
-                                rx.table.column_header_cell(
-                                    "Environments", class_name="hide-mobile"
-                                ),
-                                rx.table.column_header_cell(
-                                    "Instruments", class_name="hide-mobile"
-                                ),
-                                rx.table.column_header_cell("Actions"),
-                            )
-                        ),
-                        rx.table.body(
-                            rx.foreach(
-                                TaggingState.recently_tagged_tracks,
-                                lambda track: rx.cond(
-                                    TaggingState.editing_track_id == track["id"],
-                                    # Edit mode
-                                    rx.table.row(
-                                        rx.table.cell(track["title"]),
-                                        rx.table.cell(track["artist"]),
-                                        rx.table.cell(
-                                            rx.input(
-                                                value=TaggingState.edit_tags,
-                                                on_change=TaggingState.set_edit_tags,
-                                                size="1",
-                                                width="150px",
-                                            )
-                                        ),
-                                        rx.table.cell(
-                                            rx.input(
-                                                value=TaggingState.edit_environments,
-                                                on_change=TaggingState.set_edit_environments,
-                                                size="1",
-                                                width="150px",
-                                            ),
-                                            class_name="hide-mobile",
-                                        ),
-                                        rx.table.cell(
-                                            rx.input(
-                                                value=TaggingState.edit_instruments,
-                                                on_change=TaggingState.set_edit_instruments,
-                                                size="1",
-                                                width="150px",
-                                            ),
-                                            class_name="hide-mobile",
-                                        ),
-                                        rx.table.cell(
-                                            rx.hstack(
-                                                rx.button(
-                                                    "Save",
-                                                    on_click=TaggingState.save_tag_edit,
-                                                    variant="soft",
-                                                    color_scheme="green",
-                                                    size="1",
-                                                ),
-                                                rx.button(
-                                                    "Cancel",
-                                                    on_click=TaggingState.cancel_edit,
-                                                    variant="soft",
-                                                    size="1",
-                                                ),
-                                                spacing="1",
-                                            )
-                                        ),
-                                    ),
-                                    # View mode
-                                    rx.table.row(
-                                        rx.table.cell(track["title"]),
-                                        rx.table.cell(track["artist"]),
-                                        rx.table.cell(tag_badges(track["tags"])),
-                                        rx.table.cell(
-                                            tag_badges(track["environments"]),
-                                            class_name="hide-mobile",
-                                        ),
-                                        rx.table.cell(
-                                            tag_badges(track["instruments"]),
-                                            class_name="hide-mobile",
-                                        ),
-                                        rx.table.cell(
-                                            rx.button(
-                                                "Edit",
-                                                on_click=lambda t=track: TaggingState.start_edit_tag(
-                                                    t["id"],
-                                                    t["tags"],
-                                                    t["environments"],
-                                                    t["instruments"],
-                                                ),
-                                                variant="soft",
-                                                size="1",
-                                            )
-                                        ),
-                                    ),
-                                ),
-                            )
-                        ),
-                        variant="surface",
-                        size="2",
-                        width="100%",
+                rx.el.span(track["tags"], class_name="fg2", style={"fontSize": "13px"}),
+                rx.el.button(
+                    rx.icon("pencil", size=14),
+                    "Edit",
+                    class_name="btn btn-sm btn-soft",
+                    on_click=TaggingState.start_edit_tag(
+                        track["id"],
+                        track["tags"],
+                        track["environments"],
+                        track["instruments"],
                     ),
-                    overflow_x="auto",
-                    width="100%",
+                    type="button",
                 ),
-                empty_state(
-                    icon="tags",
-                    title="No recently tagged tracks",
-                    description="Use the Tag Generator above to select tracks and generate AI tags.",
-                ),
-            ),
-            spacing="4",
-            width="100%",
-        ),
-        width="100%",
-        class_name="animate-fade-in-up stagger-2",
-    )
-
-
-# ── Tag All confirmation dialog ──────────────────────────────────────
-
-
-def tag_all_confirm_dialog() -> rx.Component:
-    return rx.alert_dialog.root(
-        rx.alert_dialog.content(
-            rx.alert_dialog.title("Tag All Untagged Tracks"),
-            rx.alert_dialog.description(
-                rx.vstack(
-                    rx.text(
-                        rx.cond(
-                            TaggingState.untagged_track_count > 0,
-                            f"This will generate AI tags for {TaggingState.untagged_track_count} untagged tracks. "
-                            "Depending on library size, this may take a while and consume API credits.",
-                            "There are no untagged tracks in your library.",
-                        ),
-                    ),
-                    rx.cond(
-                        TaggingState.untagged_track_count > 0,
-                        rx.text("Are you sure you want to continue?", weight="bold"),
-                        rx.box(),
-                    ),
-                    spacing="2",
-                    align_items="start",
-                ),
-            ),
-            rx.hstack(
-                rx.alert_dialog.cancel(
-                    rx.button(
-                        "Cancel",
-                        variant="soft",
-                        color_scheme="gray",
-                        on_click=TaggingState.cancel_tag_all_confirm,
-                    ),
-                ),
-                rx.alert_dialog.action(
-                    rx.button(
-                        "Yes, Start Tagging",
-                        on_click=TaggingState.tag_all_untagged,
-                        color_scheme="orange",
-                        disabled=TaggingState.untagged_track_count == 0,
-                    ),
-                ),
-                spacing="3",
-                margin_top="4",
-                justify="end",
+                style={"display": "flex", "gap": "14px", "alignItems": "center", "width": "100%"},
             ),
         ),
-        open=TaggingState.show_tag_all_confirm,
-        on_open_change=TaggingState.set_tag_all_confirm_open,
+        style={"padding": "12px 14px", "borderBottom": "1px solid var(--border-subtle)"},
     )
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Tagging Page
-# ══════════════════════════════════════════════════════════════════════
 
 
 def tagging() -> rx.Component:
     content = rx.vstack(
-        # ── Page header ───────────────────────────────────────────
-        rx.vstack(
-            rx.heading("AI Tagging", size="8"),
-            rx.text(
-                "Generate and manage AI-powered tags for your music library",
-                size="3",
-                color="gray.9",
+        _filter_bar(),
+        # Preview + start
+        rx.box(
+            rx.icon("sparkles", size=18, color="var(--brand-9)"),
+            rx.box(
+                rx.el.span(
+                    TaggingState.preview_count,
+                    style={"fontWeight": "700", "fontFamily": "var(--font-mono)"},
+                ),
+                " tracks match the current filter",
+                style={"flex": "1", "fontSize": "14px"},
             ),
-            spacing="1",
-            align="start",
+            rx.el.button(
+                rx.icon("tags", size=16),
+                "Tag tracks",
+                class_name="btn btn-3 btn-primary glow",
+                on_click=TaggingState.start_tagging,
+                disabled=TaggingState.is_tagging,
+                type="button",
+            ),
+            class_name="card",
+            style={
+                "display": "flex",
+                "alignItems": "center",
+                "gap": "14px",
+                "padding": "16px 18px",
+                "width": "100%",
+            },
         ),
-        # ── Tag Generator (top section) ───────────────────────────
-        _tag_generator_card(),
-        # ── Progress (inline, when active) ────────────────────────
-        _progress_section(),
-        # ── Recently Tagged (bottom section) ──────────────────────
-        _recent_tags_table(),
-        spacing="6",
-        width="100%",
-    )
-
-    return layout(rx.fragment(content, tag_all_confirm_dialog(), _task_polling_trigger()))
-
-
-def _task_polling_trigger() -> rx.Component:
-    """Hidden button + JS interval for client-initiated TaskStore polling."""
-    return rx.fragment(
-        rx.el.button(
-            id="plexmix-poll-tag",
-            on_click=TaggingState.poll_task_progress,
-            display="none",
-        ),
+        # Batch progress
         rx.cond(
             TaggingState.is_tagging,
-            rx.script(
-                "if (!window._pm_poll_tag) {"
-                "  window._pm_poll_tag = setInterval(function() {"
-                "    var b = document.getElementById('plexmix-poll-tag');"
-                "    if (b) b.click();"
-                "  }, 1500);"
-                "}"
+            rx.box(
+                rx.box(
+                    rx.el.span(
+                        TaggingState.tagging_message,
+                        style={"fontSize": "14px", "fontWeight": "500"},
+                    ),
+                    rx.spacer(),
+                    rx.el.span(
+                        "Batch ",
+                        TaggingState.current_batch,
+                        "/",
+                        TaggingState.total_batches,
+                        class_name="mono fg3",
+                        style={"fontSize": "13px"},
+                    ),
+                    style={"display": "flex", "alignItems": "center", "marginBottom": "10px"},
+                ),
+                rx.box(
+                    rx.box(
+                        class_name="pfill",
+                        style={"width": TaggingState.tagging_progress.to_string() + "%"},
+                    ),
+                    class_name="pbar",
+                ),
+                rx.box(
+                    rx.el.span(
+                        TaggingState.tags_generated_count, " tags generated", class_name="fg3"
+                    ),
+                    rx.spacer(),
+                    rx.el.button(
+                        "Cancel",
+                        class_name="btn btn-sm btn-ghost",
+                        on_click=TaggingState.cancel_tagging,
+                        type="button",
+                    ),
+                    style={
+                        "display": "flex",
+                        "alignItems": "center",
+                        "marginTop": "10px",
+                        "fontSize": "13px",
+                    },
+                ),
+                class_name="card",
+                style={"padding": "16px 18px", "width": "100%"},
             ),
-            rx.script(
-                "if (window._pm_poll_tag) {"
-                "  clearInterval(window._pm_poll_tag);"
-                "  window._pm_poll_tag = null;"
-                "}"
-            ),
+            rx.fragment(),
         ),
+        # Recently tagged
+        rx.cond(
+            TaggingState.recently_tagged_tracks.length() > 0,
+            rx.box(
+                rx.box(
+                    rx.el.h2("Recently tagged", style={"fontSize": "17px", "fontWeight": "700"}),
+                    class_name="section-head",
+                ),
+                rx.box(
+                    rx.foreach(TaggingState.recently_tagged_tracks, _tagged_row),
+                    class_name="card",
+                    style={"width": "100%", "overflow": "hidden"},
+                ),
+                style={"width": "100%"},
+            ),
+            rx.fragment(),
+        ),
+        spacing="4",
+        width="100%",
+        on_mount=TaggingState.on_load,
     )
+    return layout(content)

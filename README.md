@@ -148,41 +148,42 @@ PLEXMIX_UI_PASSWORD=mysecret plexmix ui --host 0.0.0.0
 
 <img src="docs/screenshots/hero-dashboard-light.png" alt="Dashboard - Light Mode" width="48%"/> <img src="docs/screenshots/hero-dashboard-dark.png" alt="Dashboard - Dark Mode" width="48%"/>
 
+*Dashboard — glass icon rail, ⌘K command palette, and a working light/dark theme*
+
 <img src="docs/screenshots/hero-generator.png" alt="Playlist Generator" width="90%"/>
 
-*AI-powered playlist generator with mood-based queries*
+*The Generator showpiece — describe a vibe and an animated AI-thinking pipeline curates a playlist from your own library*
 
 <img src="docs/screenshots/hero-library.png" alt="Library Manager" width="90%"/>
 
-*Browse and manage your music library with advanced filtering*
+*Library — search, filter, sync, and bulk-manage thousands of tracks*
 
 <img src="docs/screenshots/hero-settings.png" alt="Settings" width="90%"/>
 
-*Configure Plex, AI providers, and embeddings*
+*Settings — connections, providers, embeddings, and the new Appearance controls (theme, density, accent)*
 
 </div>
 
 #### Web UI Features
 
-The web interface provides a modern, intuitive way to interact with PlexMix:
+The web interface is built around a slim glass **icon rail** and a **⌘K command palette**:
 
-- **📊 Dashboard** - Overview of library stats, configuration status, and quick actions
-- **⚙️ Settings** - Configure Plex, AI providers, and embeddings with real-time validation and model auto-discovery
+- **📊 Dashboard** - Library stats, configuration status, quick actions, and recent playlists at a glance
+- **🎵 Playlist Generator** - The showpiece: describe a vibe and watch an animated AI-thinking pipeline (embed → vector search → diversity → order) curate a playlist, then reorder/save the result (4 ordering modes, advanced audio filters, cancellable)
 - **📚 Library Manager** - Browse, search, filter by tag/genre/audio, sync with live progress, bulk tag/delete operations
-- **🎵 Playlist Generator** - Create mood-based playlists with template gallery, 4 ordering modes, and advanced audio filters
-- **🏷️ AI Tagging** - Batch generate tags with stale tag detection and retag support
-- **📜 Playlist History** - View, reorder, rerun, export (JSON/M3U/Plex), and import playlists
-- **🩺 Doctor** - Database health dashboard with automated repair
+- **🏷️ AI Tagging** - Batch generate tags with stale tag detection, retag support, and inline tag editing
+- **📜 Playlist History** - Album-mosaic cards; view, rerun, export (JSON/M3U/Plex), and import playlists
+- **🩺 Doctor** - Database health checks with one-click fixes
+- **⚙️ Settings** - Configure Plex, AI providers, and embeddings (with model auto-discovery), plus theme / density / accent under **Appearance**
 
 #### Key UI Features
 
-- **🌓 Dark/Light Mode** - Toggle between themes with automatic logo switching
-- **⌨️ Keyboard Shortcuts** - Vim-style `g+key` navigation, `/` for search, `Esc` to blur
+- **🧭 Glass icon rail + ⌘K command palette** - A slim navigation rail with hover tooltips and `g+key` hints, plus a command palette (⌘K or `/`) to jump to any page, run an action, or fire a quick vibe
+- **🎬 Generator showpiece** - An animated "AI-thinking" pipeline with a live particle vector-field, a four-phase tracker bound to the real generation pipeline, and a streaming terminal log
+- **🌓 Light-first theme + appearance controls** - Light by default with a dark toggle (auto logo switching), plus Density (comfortable/compact) and Accent-intensity (subtle/balanced/vivid) preferences in Settings → Appearance
+- **⌨️ Keyboard-driven** - Vim-style `g+key` navigation, ⌘K / `/` to open the palette, ↑↓ + Enter to pick a command, `Esc` to close
 - **Real-time Progress** - Live updates for sync, tagging, and generation operations
-- **Form Validation** - Instant feedback on configuration settings
-- **Loading States** - Skeleton screens and spinners for smooth UX
-- **Error Handling** - User-friendly error messages with recovery options
-- **Responsive Design** - Mobile-optimized with icon-only buttons, hidden columns, and adaptive layouts
+- **Resilient UX** - Form validation, empty/loading states, and user-friendly error messages with recovery options
 
 ## Installation
 

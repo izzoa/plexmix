@@ -60,6 +60,8 @@ dmypy.json
 .idea/
 .vscode/
 .cursor/
+.agents/
+.codex/
 *.code-workspace
 
 .early.coverage

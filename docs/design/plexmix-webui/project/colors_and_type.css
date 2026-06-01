@@ -1,0 +1,270 @@
+/* ================================================================
+   PlexMix Design System — colors_and_type.css
+   ----------------------------------------------------------------
+   Single source of truth for color + type tokens, lifted directly
+   from the product's assets/styles.css (Reflex/Radix theme).
+   LIGHT MODE IS THE DEFAULT (:root). Add class="dark" to <html>
+   for the dark variant — every token has a dark override below.
+   ================================================================ */
+
+/* ----------------------------------------------------------------
+   0. Self-hosted fonts (latin subset, from the repo)
+   ---------------------------------------------------------------- */
+@font-face {
+  font-family: 'Space Grotesk';
+  font-style: normal;
+  font-weight: 400 700;        /* variable */
+  font-display: swap;
+  src: url('assets/fonts/SpaceGrotesk-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Sans';
+  font-style: normal;
+  font-weight: 400 700;        /* variable */
+  font-display: swap;
+  src: url('assets/fonts/IBMPlexSans-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('assets/fonts/IBMPlexMono-Regular-latin.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'IBM Plex Mono';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('assets/fonts/IBMPlexMono-Medium-latin.woff2') format('woff2');
+}
+
+/* ================================================================
+   1. LIGHT MODE — the product's default appearance (:root).
+   Dark mode is opt-in via .dark / [data-theme="dark"] (see below).
+   ================================================================ */
+:root {
+  /* --- Brand Orange — 12-step scale (light) --- */
+  --brand-1:  #fef8f4;
+  --brand-2:  #fdf3ec;
+  --brand-3:  #fceadd;
+  --brand-4:  #f9dcc9;
+  --brand-5:  #f3c9a8;
+  --brand-6:  #eab382;
+  --brand-7:  #e09b5e;
+  --brand-8:  #d68034;
+  --brand-9:  #F97316;   /* primary brand orange */
+  --brand-10: #EA580C;   /* hover / pressed */
+  --brand-11: #b55f18;   /* accent text on light */
+  --brand-12: #5c2d0f;
+  --brand-glow: rgba(249, 115, 22, 0.15);
+
+  /* --- Legacy vinyl palette (retired; decorative album-art swatches only) --- */
+  --logo-crimson: #e94560;
+  --logo-amber:   #f39c12;
+
+  /* --- Gray scale (light) --- */
+  --pm-gray-1:  #fcfcfc;
+  --pm-gray-2:  #f9f9f9;
+  --pm-gray-3:  #f0f0f0;
+  --pm-gray-4:  #e8e8e8;
+  --pm-gray-5:  #e0e0e0;
+  --pm-gray-6:  #d9d9d9;
+  --pm-gray-7:  #cecece;
+  --pm-gray-8:  #bbbbbb;
+  --pm-gray-9:  #8d8d8d;
+  --pm-gray-10: #838383;
+  --pm-gray-11: #646464;
+  --pm-gray-12: #202020;
+
+  /* --- Semantic --- */
+  --pm-success: #22C55E;
+  --pm-warning: #EAB308;
+  --pm-error:   #EF4444;
+  --pm-info:    #3B82F6;
+  --pm-purple:  #A855F7;   /* accent-only (e.g. MusicBrainz stat) */
+
+  /* --- Ink: text that sits on a saturated fill (theme-independent) --- */
+  --brand-ink:   #1f1208;  /* on orange (--brand-9) buttons */
+  --success-ink: #06240f;  /* on green (--pm-success) buttons */
+  --on-solid:    #ffffff;  /* on blue / error / info fills */
+
+  /* --- Tints: soft icon-chip / callout backgrounds (light) --- */
+  --brand-bg:   var(--brand-3);
+  --success-bg: rgba(34, 197, 94, 0.14);
+  --warning-bg: rgba(234, 179, 8, 0.16);
+  --error-bg:   rgba(239, 68, 68, 0.12);
+  --info-bg:    rgba(59, 130, 246, 0.12);
+  --purple-bg:  rgba(168, 85, 247, 0.14);
+
+  /* --- Legacy aliases --- */
+  --plexmix-orange:       var(--brand-9);
+  --plexmix-orange-hover: var(--brand-10);
+  --plexmix-orange-light: var(--brand-glow);
+
+  /* --- Layout --- */
+  --navbar-width: 220px;
+  --content-max-width: 1200px;
+
+  /* --- Spacing (4px grid) --- */
+  --space-1: 4px;   --space-2: 8px;   --space-3: 12px;  --space-4: 16px;
+  --space-5: 20px;  --space-6: 24px;  --space-8: 32px;  --space-10: 40px;
+  --space-12: 48px; --space-16: 64px;
+
+  /* --- Border radius --- */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* --- Shadows --- */
+  --shadow-sm:   0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-md:   0 4px 12px rgba(0, 0, 0, 0.08);
+  --shadow-lg:   0 8px 24px rgba(0, 0, 0, 0.12);
+  --shadow-glow: 0 0 20px var(--brand-glow);
+
+  /* --- Motion --- */
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-out:     cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring:  cubic-bezier(0.175, 0.885, 0.32, 1.275);
+  --duration-fast:   150ms;
+  --duration-normal: 250ms;
+  --duration-slow:   400ms;
+
+  /* --- Typography stacks --- */
+  --font-display: 'Space Grotesk', system-ui, -apple-system, sans-serif;
+  --font-body:    'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-mono:    'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+
+  /* --- Surface aliases (resolve light/dark) --- */
+  --surface-app:    var(--pm-gray-1);   /* page background */
+  --surface-raised: var(--pm-gray-2);   /* cards, tiles, bars */
+  --surface-sunken: var(--pm-gray-3);   /* code blocks, hover rows */
+  --border-subtle:  var(--pm-gray-4);
+  --border-strong:  var(--pm-gray-6);
+  --fg-1: var(--pm-gray-12);            /* primary text */
+  --fg-2: var(--pm-gray-11);            /* secondary text */
+  --fg-3: var(--pm-gray-9);             /* muted / meta text */
+  --accent-fg: var(--brand-11);         /* orange text that reads on bg */
+
+  /* --- Glass chrome (sidebar / bars) --- */
+  --glass-bg: rgba(255, 255, 255, 0.8);
+  --glass-border: rgba(0, 0, 0, 0.08);
+}
+
+/* ================================================================
+   2. DARK MODE (product default)
+   ================================================================ */
+.dark,
+[data-theme="dark"] {
+  --brand-1:  #1f1208;
+  --brand-2:  #2a180d;
+  --brand-3:  #3d2212;
+  --brand-4:  #522e18;
+  --brand-5:  #6b3d20;
+  --brand-6:  #8c522d;
+  --brand-7:  #b06b3d;
+  --brand-8:  #d68034;
+  --brand-9:  #F97316;
+  --brand-10: #f5933d;
+  --brand-11: #ffb366;
+  --brand-12: #ffdfc7;
+
+  --pm-gray-1:  #09090B;
+  --pm-gray-2:  #18181B;
+  --pm-gray-3:  #27272A;
+  --pm-gray-4:  #3F3F46;
+  --pm-gray-5:  #52525B;
+  --pm-gray-6:  #71717A;
+  --pm-gray-7:  #A1A1AA;
+  --pm-gray-8:  #D4D4D8;
+  --pm-gray-9:  #6e6e6e;
+  --pm-gray-10: #7a7a7a;
+  --pm-gray-11: #b0b0b0;
+  --pm-gray-12: #FAFAFA;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.3);
+
+  --accent-fg: var(--brand-11);
+
+  /* --- Glass chrome (dark) --- */
+  --glass-bg: rgba(24, 24, 27, 0.8);
+  --glass-border: rgba(63, 63, 70, 0.5);
+
+  /* --- Tints (dark — slightly stronger for visibility) --- */
+  --success-bg: rgba(34, 197, 94, 0.18);
+  --warning-bg: rgba(234, 179, 8, 0.20);
+  --error-bg:   rgba(239, 68, 68, 0.18);
+  --info-bg:    rgba(59, 130, 246, 0.18);
+  --purple-bg:  rgba(168, 85, 247, 0.18);
+}
+
+/* ================================================================
+   3. SEMANTIC TYPE SCALE
+   ----------------------------------------------------------------
+   Mirrors the Radix "size" steps the product uses. Headings use
+   Space Grotesk; body uses IBM Plex Sans; numbers/code use Mono.
+   ================================================================ */
+:root {
+  /* Display / headings (Space Grotesk) */
+  --h1-size: 39px;  --h1-weight: 700;  --h1-line: 1.15;   /* Radix heading size 8 — page titles */
+  --h2-size: 30px;  --h2-weight: 700;  --h2-line: 1.2;    /* size 6 — section heads */
+  --h3-size: 23px;  --h3-weight: 600;  --h3-line: 1.25;   /* size 5 */
+  --h4-size: 18px;  --h4-weight: 600;  --h4-line: 1.3;    /* size 4 — card titles */
+
+  /* Body (IBM Plex Sans) */
+  --body-lg-size:  16px; --body-lg-line: 1.6;   /* size 3 — hero inputs, intros */
+  --body-size:     14px; --body-line:    1.55;  /* size 2 — default UI text */
+  --body-sm-size:  13px; --body-sm-line: 1.5;   /* size 1 — meta, labels */
+  --caption-size:  11px; --caption-line: 1.4;   /* badges, eyebrow labels */
+
+  /* Mono (IBM Plex Mono) — stats, durations, timestamps, code */
+  --mono-size: 14px;
+}
+
+/* ----------------------------------------------------------------
+   3a. Element defaults (opt-in by importing this file)
+   ---------------------------------------------------------------- */
+body {
+  font-family: var(--font-body);
+  font-size: var(--body-size);
+  line-height: var(--body-line);
+  color: var(--fg-1);
+  background-color: var(--surface-app);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 { font-family: var(--font-display); margin: 0; }
+h1 { font-size: var(--h1-size); font-weight: var(--h1-weight); line-height: var(--h1-line); letter-spacing: -0.02em; }
+h2 { font-size: var(--h2-size); font-weight: var(--h2-weight); line-height: var(--h2-line); letter-spacing: -0.01em; }
+h3 { font-size: var(--h3-size); font-weight: var(--h3-weight); line-height: var(--h3-line); }
+h4 { font-size: var(--h4-size); font-weight: var(--h4-weight); line-height: var(--h4-line); }
+
+p { margin: 0; }
+
+code, pre, kbd, samp {
+  font-family: var(--font-mono);
+  font-size: var(--mono-size);
+}
+
+/* Eyebrow / section label — uppercase muted, used in the sidebar */
+.eyebrow {
+  font-family: var(--font-body);
+  font-size: var(--caption-size);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-3);
+}
+
+/* The "stat number" treatment — large mono numerals */
+.stat-number {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 30px;
+  line-height: 1;
+  color: var(--fg-1);
+}

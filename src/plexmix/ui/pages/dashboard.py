@@ -1,317 +1,197 @@
+"""Dashboard — library at a glance: stat tiles, config status, quick actions, recent."""
+
 import reflex as rx
 from plexmix.ui.components.navbar import layout
-from plexmix.ui.components.stat_tile import stat_tile as _stat_tile
 from plexmix.ui.states.dashboard_state import DashboardState
 
 
-# ── Config status bar ────────────────────────────────────────────────
-
-
-def _status_item(label: str, configured, detail, icon_name: str) -> rx.Component:
-    """Inline config status: dot + icon + label + detail or 'Not configured' link."""
-    return rx.hstack(
+def _stat_tile(label: str, value, icon: str, color: str, bg: str) -> rx.Component:
+    return rx.box(
         rx.box(
-            class_name=rx.cond(
-                configured,
-                "status-dot status-dot-success",
-                "status-dot status-dot-error status-dot-pulse",
-            ),
+            rx.icon(icon, size=20, color=color),
+            class_name="ico",
+            style={"background": bg},
         ),
-        rx.icon(icon_name, size=14, color="gray.9"),
-        rx.cond(
-            configured,
-            rx.text(
-                rx.text(label + ": ", weight="medium", as_="span"),
-                rx.text(detail, as_="span"),
-                size="2",
-                color="gray.11",
-            ),
-            rx.link(
-                rx.text(label + ": Configure →", size="2", color="accent.11"),
-                href="/settings",
-                underline="none",
-                _hover={"opacity": 0.8},
-            ),
+        rx.box(
+            rx.box(value, class_name="num"),
+            rx.box(label, class_name="lab"),
         ),
-        spacing="2",
-        align="center",
+        class_name="tile stat-tile",
     )
 
 
-def _config_status_bar() -> rx.Component:
-    """Compact horizontal status bar for Plex / AI / Embeddings."""
-    return rx.hstack(
-        _status_item(
-            "Plex",
-            DashboardState.plex_configured,
-            DashboardState.plex_library_name,
-            "server",
+def _status_item(label: str, configured, detail, icon: str) -> rx.Component:
+    return rx.box(
+        rx.box(
+            class_name=rx.cond(configured, "dot dot-success", "dot dot-error pulse"),
         ),
-        rx.separator(orientation="vertical", size="1", style={"height": "20px"}),
-        _status_item(
-            "AI",
-            DashboardState.ai_provider_configured,
-            DashboardState.ai_provider_name,
-            "brain",
+        rx.icon(icon, size=14, color="var(--fg-3)"),
+        rx.cond(
+            configured,
+            rx.el.span(
+                rx.el.span(label + ": ", style={"color": "var(--fg-3)"}),
+                detail,
+                style={"fontSize": "13px"},
+            ),
+            rx.link(
+                label + ": Configure →",
+                href="/settings",
+                style={"fontSize": "13px", "color": "var(--accent-fg)"},
+                underline="none",
+            ),
         ),
-        rx.separator(orientation="vertical", size="1", style={"height": "20px"}),
+        class_name="item",
+    )
+
+
+def _status_bar() -> rx.Component:
+    return rx.box(
+        _status_item(
+            "Plex", DashboardState.plex_configured, DashboardState.plex_library_name, "server"
+        ),
+        rx.box(class_name="vsep"),
+        _status_item(
+            "AI", DashboardState.ai_provider_configured, DashboardState.ai_provider_name, "brain"
+        ),
+        rx.box(class_name="vsep"),
         _status_item(
             "Embeddings",
             DashboardState.embedding_provider_configured,
             DashboardState.embedding_provider_name,
             "layers",
         ),
-        spacing="4",
-        align="center",
-        wrap="wrap",
-        padding_y="12px",
-        padding_x="16px",
-        border_radius="var(--radius-lg)",
-        background_color="gray.2",
-        width="100%",
-        class_name="animate-fade-in-up stagger-2",
+        class_name="card statusbar",
     )
 
 
-# ── Dimension warning banner ─────────────────────────────────────────
-
-
-def _dimension_warning() -> rx.Component:
-    return rx.cond(
-        DashboardState.embedding_dimension_warning != "",
-        rx.hstack(
-            rx.icon("triangle-alert", size=14, color="yellow.9"),
-            rx.text(
-                DashboardState.embedding_dimension_warning,
-                size="2",
-                color="yellow.11",
-            ),
-            spacing="2",
-            align="center",
-            padding_x="16px",
-            padding_y="10px",
-            border_radius="var(--radius-md)",
-            background_color="yellow.3",
-            width="100%",
-        ),
-        rx.fragment(),
-    )
-
-
-# ── Quick action card ────────────────────────────────────────────────
-
-
-def _action_card(
-    title: str,
-    description: str,
-    icon_name: str,
-    href: str,
-    disabled,
-    disabled_tooltip: str,
-    accent: bool = False,
+def _quick_action(
+    title: str, desc: str, icon: str, href: str, color: str, bg: str, primary: bool
 ) -> rx.Component:
-    """Clickable action card with icon, description, left accent border, and hover lift."""
-    border_color = "accent.9" if accent else "gray.6"
-    icon_color = "accent.9" if accent else "gray.9"
-
-    card = rx.link(
-        rx.card(
-            rx.hstack(
-                rx.box(
-                    rx.icon(icon_name, size=22, color=icon_color),
-                    padding="10px",
-                    border_radius="var(--radius-md)",
-                    background_color="accent.3" if accent else "gray.3",
-                    flex_shrink="0",
-                ),
-                rx.vstack(
-                    rx.text(title, size="3", weight="bold"),
-                    rx.text(description, size="2", color="gray.9"),
-                    spacing="1",
-                    align="start",
-                ),
-                spacing="4",
-                align="center",
-                width="100%",
+    return rx.link(
+        rx.box(
+            rx.box(rx.icon(icon, size=22, color=color), class_name="ico", style={"background": bg}),
+            rx.box(
+                rx.box(title, class_name="qt"),
+                rx.box(desc, class_name="qd"),
+                style={"flex": "1"},
             ),
-            width="100%",
-            style={
-                "borderLeft": f"3px solid var(--{border_color.replace('.', '-')})"
-                if not accent
-                else "3px solid var(--accent-9)",
-                "cursor": "pointer",
-            },
-            class_name="hover-lift",
+            rx.icon("arrow-right", size=18, class_name="arrow"),
+            class_name="card qa primary hover-lift" if primary else "card qa hover-lift",
         ),
         href=href,
         underline="none",
-        width="100%",
+    )
+
+
+def _recent_row(playlist: rx.Var) -> rx.Component:
+    return rx.box(
+        rx.icon("list-music", size=14, color="var(--fg-3)"),
+        rx.el.span(playlist["name"], style={"flex": "1", "fontWeight": "500", "fontSize": "14px"}),
+        rx.el.span(
+            playlist["track_count"], " tracks", class_name="fg3", style={"fontSize": "13px"}
+        ),
+        rx.el.span(playlist["created_at"], class_name="mono fg3", style={"fontSize": "12px"}),
         style={
-            "opacity": rx.cond(disabled, "0.5", "1"),
-            "pointerEvents": rx.cond(disabled, "none", "auto"),
+            "display": "flex",
+            "alignItems": "center",
+            "gap": "12px",
+            "padding": "10px 12px",
+            "borderRadius": "var(--radius-sm)",
         },
-        title=rx.cond(disabled, disabled_tooltip, ""),
+        class_name="hover-row",
     )
-    return card
-
-
-# ── Recent playlists ─────────────────────────────────────────────────
-
-
-def _recent_playlist_row(playlist: dict) -> rx.Component:
-    return rx.hstack(
-        rx.icon("list-music", size=14, color="gray.9"),
-        rx.text(playlist["name"], size="2", weight="medium", flex="1"),
-        rx.text(
-            playlist["track_count"] + " tracks",
-            size="1",
-            color="gray.9",
-        ),
-        rx.text(
-            playlist["created_at"],
-            size="1",
-            color="gray.9",
-            style={"fontFamily": "var(--font-mono)"},
-        ),
-        spacing="3",
-        align="center",
-        width="100%",
-        padding_y="6px",
-        padding_x="8px",
-        border_radius="var(--radius-sm)",
-        _hover={"background_color": "gray.3"},
-        transition="background-color 150ms ease",
-    )
-
-
-def _recent_playlists_section() -> rx.Component:
-    return rx.cond(
-        DashboardState.recent_playlists.length() > 0,
-        rx.vstack(
-            rx.hstack(
-                rx.text("Recent Playlists", size="4", weight="bold"),
-                rx.spacer(),
-                rx.link(
-                    rx.text("View all →", size="2", color="accent.11"),
-                    href="/history",
-                    underline="none",
-                    _hover={"opacity": 0.8},
-                ),
-                width="100%",
-                align="center",
-            ),
-            rx.vstack(
-                rx.foreach(
-                    DashboardState.recent_playlists[:5],
-                    _recent_playlist_row,
-                ),
-                spacing="0",
-                width="100%",
-            ),
-            spacing="3",
-            width="100%",
-            class_name="animate-fade-in-up stagger-4",
-        ),
-        rx.fragment(),
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Dashboard Page
-# ══════════════════════════════════════════════════════════════════════
 
 
 def dashboard() -> rx.Component:
     content = rx.vstack(
-        # ── Page header ───────────────────────────────────────────
-        rx.vstack(
-            rx.heading("Dashboard", size="8"),
-            rx.text("Your library at a glance", size="3", color="gray.9"),
-            spacing="1",
-            align="start",
-        ),
-        # ── Stats row ─────────────────────────────────────────────
-        rx.grid(
+        rx.box(
             _stat_tile(
                 "Total Tracks",
                 DashboardState.total_tracks,
                 "music",
-                icon_color="accent.9",
-                icon_bg="accent.3",
-                stagger="stagger-1",
+                "var(--brand-9)",
+                "var(--brand-3)",
             ),
             _stat_tile(
                 "Embedded",
                 DashboardState.embedded_tracks,
                 "cpu",
-                icon_color="blue.9",
-                icon_bg="blue.3",
-                stagger="stagger-2",
+                "var(--pm-info)",
+                "var(--info-bg)",
             ),
             _stat_tile(
                 "Audio Analyzed",
                 DashboardState.audio_analyzed_tracks,
                 "audio-waveform",
-                icon_color="green.9",
-                icon_bg="green.3",
-                stagger="stagger-3",
+                "var(--pm-success)",
+                "var(--success-bg)",
             ),
             _stat_tile(
                 "MB Enriched",
                 DashboardState.musicbrainz_enriched_tracks,
                 "disc",
-                icon_color="purple.9",
-                icon_bg="purple.3",
-                stagger="stagger-4",
+                "var(--pm-purple)",
+                "var(--purple-bg)",
             ),
-            _stat_tile(
-                "Last Sync",
-                rx.cond(DashboardState.last_sync, DashboardState.last_sync, "Never"),
-                "clock",
-                icon_color="gray.9",
-                icon_bg="gray.3",
-                stagger="stagger-5",
-            ),
-            columns=rx.breakpoints(initial="2", md="5"),
-            spacing="6",
-            width="100%",
+            class_name="stat-grid",
+            style={"width": "100%"},
         ),
-        # ── Divider ──────────────────────────────────────────────
-        rx.separator(size="4", color_scheme="gray"),
-        # ── Config status bar ────────────────────────────────────
-        _config_status_bar(),
-        # ── Dimension warning ────────────────────────────────────
-        _dimension_warning(),
-        # ── Quick actions ────────────────────────────────────────
-        rx.text("Quick Actions", size="4", weight="bold"),
-        rx.grid(
-            _action_card(
+        _status_bar(),
+        rx.cond(
+            DashboardState.embedding_dimension_warning != "",
+            rx.box(
+                rx.box(rx.icon("triangle-alert", size=16), class_name="c-ico"),
+                rx.box(DashboardState.embedding_dimension_warning, class_name="c-body"),
+                class_name="callout callout-warning",
+            ),
+            rx.fragment(),
+        ),
+        rx.box(
+            rx.el.h2("Quick Actions", style={"fontSize": "17px", "fontWeight": "700"}),
+            class_name="section-head",
+            style={"width": "100%"},
+        ),
+        rx.box(
+            _quick_action(
                 "Generate Playlist",
                 "Create an AI-powered playlist from a mood",
                 "sparkles",
                 "/generator",
-                disabled=~(DashboardState.plex_configured & DashboardState.ai_provider_configured),
-                disabled_tooltip="Configure Plex and AI provider first",
-                accent=True,
+                "var(--brand-9)",
+                "var(--brand-3)",
+                True,
             ),
-            _action_card(
+            _quick_action(
                 "Sync Library",
                 "Pull latest tracks from your Plex server",
                 "refresh-cw",
                 "/library",
-                disabled=~DashboardState.plex_configured,
-                disabled_tooltip="Configure Plex first",
-                accent=False,
+                "var(--fg-2)",
+                "var(--surface-sunken)",
+                False,
             ),
-            columns=rx.breakpoints(initial="1", md="2"),
-            spacing="4",
-            width="100%",
-            class_name="animate-fade-in-up stagger-3",
+            class_name="qa-grid",
+            style={"width": "100%"},
         ),
-        # ── Recent playlists ─────────────────────────────────────
-        _recent_playlists_section(),
-        on_mount=DashboardState.on_load,
-        spacing="6",
+        rx.cond(
+            DashboardState.recent_playlists.length() > 0,
+            rx.box(
+                rx.box(
+                    rx.el.h2("Recent Playlists", style={"fontSize": "17px", "fontWeight": "700"}),
+                    rx.link("View all →", href="/history", class_name="more", underline="none"),
+                    class_name="section-head",
+                ),
+                rx.box(
+                    rx.foreach(DashboardState.recent_playlists[:5], _recent_row),
+                    class_name="card",
+                    style={"padding": "6px"},
+                ),
+                style={"width": "100%"},
+            ),
+            rx.fragment(),
+        ),
+        spacing="5",
         width="100%",
+        on_mount=DashboardState.on_load,
     )
     return layout(content)

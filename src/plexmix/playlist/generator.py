@@ -33,8 +33,15 @@ class PlaylistGenerator:
         progress_callback: Optional[Callable[[float, str], None]] = None,
         shuffle_mode: str = "similarity",
         avoid_recent: int = 0,
+        cancel_event: Optional[Any] = None,
     ) -> List[Dict[str, Any]]:
         logger.info(f"Generating playlist for mood: {mood_query}")
+
+        def _cancelled() -> bool:
+            return cancel_event is not None and cancel_event.is_set()
+
+        if _cancelled():
+            return []
 
         if progress_callback:
             progress_callback(0.0, "Starting playlist generation...")
@@ -73,6 +80,9 @@ class PlaylistGenerator:
         if progress_callback:
             progress_callback(0.1, "Searching for candidate tracks...")
 
+        if _cancelled():
+            return []
+
         candidates = self._get_candidates(mood_query, candidate_pool_size, filtered_track_ids)
 
         if not candidates:
@@ -85,6 +95,9 @@ class PlaylistGenerator:
             progress_callback(
                 0.4, f"Found {len(candidates)} candidates, selecting tracks with diversity..."
             )
+
+        if _cancelled():
+            return []
 
         selected_ids = self._select_diverse_tracks(candidates, max_tracks)
 

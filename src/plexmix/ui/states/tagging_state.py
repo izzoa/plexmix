@@ -334,7 +334,10 @@ class TaggingState(AppState):
             saved_count = await loop.run_in_executor(None, run_tagging)
 
             task_store.update("tagging", extra={"tags_generated_count": saved_count})
-            task_store.complete("tagging")
+            if cancel_event is not None and cancel_event.is_set():
+                task_store.complete("tagging", status="cancelled")
+            else:
+                task_store.complete("tagging")
 
         except FatalProviderError as e:
             task_store.complete("tagging", status="failed", message=e.user_message)

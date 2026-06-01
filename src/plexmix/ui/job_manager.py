@@ -397,6 +397,27 @@ class TaskStore:
         """Return the cancel event for a running task."""
         return self._cancel_events.get(job_type)
 
+    def running_job_types(self) -> list:
+        """Job types with a live (unset) cancel event, snapshotted under the lock."""
+        with self._lock:
+            return [jt for jt, ev in self._cancel_events.items() if not ev.is_set()]
+
+    def cancel_all_running(self) -> list:
+        """Cancel every running task.
+
+        Snapshots the cancel events under the lock, then sets them outside it —
+        avoids "dictionary changed size during iteration" if a worker completes
+        concurrently. Returns the list of job types that were signalled.
+        """
+        with self._lock:
+            events = list(self._cancel_events.items())
+        cancelled = []
+        for job_type, event in events:
+            if not event.is_set():
+                event.set()
+                cancelled.append(job_type)
+        return cancelled
+
     def pause(self, job_type: str) -> None:
         """Pause a task (clear the asyncio.Event so the worker loop blocks)."""
         event = self._pause_events.get(job_type)

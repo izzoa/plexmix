@@ -1,159 +1,297 @@
+"""Application shell — glass icon rail, top-bar breadcrumb, and ⌘K command palette.
+
+A single shared shell renders on every route (the rail and top bar appear
+consistently across all pages); navigation uses real route redirects so
+URL deep-links, refresh, and per-page ``on_load`` are preserved.
+"""
+
 import reflex as rx
-from plexmix import __version__
 from plexmix.ui.states.app_state import AppState
+from plexmix.ui.states.command_palette_state import CommandPaletteState
 from plexmix.ui.components.login import login_page
 
 
-# ── Navigation structure ──────────────────────────────────────────────
-# Grouped with section labels per the revamp plan.
-
-_MAIN_LINKS = [
-    ("Dashboard", "/dashboard", "layout-dashboard"),
-    ("Generate", "/generator", "sparkles"),
-    ("Library", "/library", "library"),
+# ── Navigation structure (grouped, with vim g+key hints) ──────────────
+# (label, route, icon, key, badge-capable)
+_NAV_GROUPS: list[list[tuple[str, str, str, str, bool]]] = [
+    [
+        ("Dashboard", "/dashboard", "layout-dashboard", "d", False),
+        ("Generator", "/generator", "sparkles", "g", False),
+        ("Library", "/library", "library", "l", False),
+    ],
+    [
+        ("Tagging", "/tagging", "tags", "t", False),
+        ("History", "/history", "history", "h", False),
+    ],
+    [
+        ("Doctor", "/doctor", "stethoscope", "x", True),
+        ("Settings", "/settings", "settings", "s", False),
+    ],
 ]
 
-_TOOLS_LINKS = [
-    ("Tagging", "/tagging", "tags"),
-    ("History", "/history", "history"),
-    ("Doctor", "/doctor", "stethoscope"),
+# Per-route breadcrumb metadata for the top bar.
+_PAGE_TITLES: list[tuple[str, str]] = [
+    ("/dashboard", "Dashboard"),
+    ("/generator", "Generator"),
+    ("/library", "Library"),
+    ("/tagging", "AI Tagging"),
+    ("/history", "History"),
+    ("/doctor", "Doctor"),
+    ("/settings", "Settings"),
+]
+_PAGE_SUBS: list[tuple[str, str]] = [
+    ("/dashboard", "Your library at a glance"),
+    ("/generator", "Describe a vibe, let AI curate the mix"),
+    ("/library", "Tracks synced from Plex"),
+    ("/tagging", "Mood, environment & instrument tags"),
+    ("/history", "Saved & generated playlists"),
+    ("/doctor", "Diagnostics & system health"),
+    ("/settings", "Connections, providers & advanced"),
 ]
 
-_SYSTEM_LINKS = [
-    ("Settings", "/settings", "settings"),
-]
+
+# ── Icon rail ─────────────────────────────────────────────────────────
 
 
-def _nav_links() -> list:
-    """Return the flat list of all navigation links (backward compat)."""
-    return _MAIN_LINKS + _TOOLS_LINKS + _SYSTEM_LINKS
-
-
-# ── Section label ─────────────────────────────────────────────────────
-
-
-def _section_label(text: str) -> rx.Component:
-    """Uppercase muted section label for nav grouping."""
-    return rx.text(
-        text,
-        size="1",
-        weight="medium",
-        color="gray.9",
-        style={
-            "textTransform": "uppercase",
-            "letterSpacing": "0.05em",
-            "fontSize": "11px",
-        },
-        padding_left="12px",
-        margin_top="16px",
-        margin_bottom="4px",
-    )
-
-
-# ── Nav link (desktop) ────────────────────────────────────────────────
-
-
-def navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
-    """Create a navbar link with icon, active highlight, and left accent bar."""
-    is_active = AppState.router.page.path == href
-
+def _rail_logo() -> rx.Component:
+    """Theme-aware rail logo → Generator."""
     return rx.link(
-        rx.hstack(
-            # Left accent bar (2px orange, only on active item)
-            rx.box(
-                width="2px",
-                height="20px",
-                border_radius="1px",
-                background_color=rx.cond(is_active, "accent.9", "transparent"),
-                transition="background-color 200ms ease",
-                flex_shrink="0",
-            ),
-            rx.icon(icon_name, size=18),
-            rx.text(text, size="2", weight="medium"),
-            spacing="3",
-            align="center",
-            width="100%",
+        rx.color_mode_cond(
+            light=rx.image(src="/logo-light.svg", alt="PlexMix", class_name="rail-logo"),
+            dark=rx.image(src="/logo-dark.svg", alt="PlexMix", class_name="rail-logo"),
         ),
-        href=href,
-        on_click=AppState.set_page_loading(True),
-        underline="none",
-        padding_y="8px",
-        padding_x="8px",
-        border_radius="var(--radius-md)",
-        width="100%",
-        background_color=rx.cond(is_active, "accent.3", "transparent"),
-        color=rx.cond(is_active, "accent.11", "gray.11"),
-        _hover={
-            "background_color": rx.cond(is_active, "accent.4", "gray.3"),
-            "color": rx.cond(is_active, "accent.11", "gray.12"),
-        },
-        transition="all 150ms ease",
+        href="/generator",
+        title="PlexMix",
     )
 
 
-# ── Nav link (mobile) ────────────────────────────────────────────────
-
-
-def mobile_navbar_link(text: str, href: str, icon_name: str) -> rx.Component:
-    """Create a mobile navbar link that closes the nav on click."""
+def _rail_item(label: str, href: str, icon: str, key: str, badge: bool) -> rx.Component:
+    """One rail navigation item with active indicator + hover tooltip."""
     is_active = AppState.router.page.path == href
+    children: list[rx.Component] = [rx.icon(icon, size=20)]
+    if badge:
+        children.append(
+            rx.cond(
+                AppState.show_doctor_badge & ~is_active,
+                rx.box(class_name="rail-badge"),
+                rx.fragment(),
+            )
+        )
+    children.append(
+        rx.el.span(
+            label,
+            rx.el.span(f"g {key}", class_name="k"),
+            class_name="rail-tip",
+        )
+    )
+    return rx.box(
+        *children,
+        class_name=rx.cond(is_active, "rail-item active", "rail-item"),
+        on_click=rx.redirect(href),
+    )
 
-    return rx.link(
-        rx.hstack(
+
+def _icon_rail() -> rx.Component:
+    items: list[rx.Component] = [_rail_logo(), rx.box(class_name="rail-sep")]
+    for gi, group in enumerate(_NAV_GROUPS):
+        if gi > 0:
+            items.append(rx.box(class_name="rail-sep"))
+        items.append(rx.box(*[_rail_item(*it) for it in group], class_name="rail-group"))
+    items.append(rx.box(class_name="rail-spacer"))
+
+    bottom: list[rx.Component] = [
+        rx.cond(
+            AppState.auth_required,
             rx.box(
-                width="2px",
-                height="20px",
-                border_radius="1px",
-                background_color=rx.cond(is_active, "accent.9", "transparent"),
-                transition="background-color 200ms ease",
-                flex_shrink="0",
+                rx.icon("log-out", size=19),
+                rx.el.span("Log out", class_name="rail-tip"),
+                class_name="rail-item",
+                on_click=AppState.logout,
             ),
-            rx.icon(icon_name, size=18),
-            rx.text(text, size="2", weight="medium"),
-            spacing="3",
-            align="center",
-            width="100%",
+            rx.fragment(),
         ),
-        href=href,
-        on_click=[AppState.set_page_loading(True), AppState.close_mobile_nav],
-        underline="none",
-        padding_y="8px",
-        padding_x="8px",
-        border_radius="var(--radius-md)",
-        width="100%",
-        background_color=rx.cond(is_active, "accent.3", "transparent"),
-        color=rx.cond(is_active, "accent.11", "gray.11"),
-        _hover={
-            "background_color": rx.cond(is_active, "accent.4", "gray.3"),
-            "color": rx.cond(is_active, "accent.11", "gray.12"),
-        },
-        transition="all 150ms ease",
+        rx.box(
+            rx.color_mode_cond(
+                light=rx.icon("moon", size=19),
+                dark=rx.icon("sun", size=19),
+            ),
+            rx.el.span(
+                rx.color_mode_cond(light="Dark mode", dark="Light mode"),
+                class_name="rail-tip",
+            ),
+            class_name="rail-item",
+            on_click=rx.toggle_color_mode,
+        ),
+    ]
+    items.append(rx.box(*bottom, class_name="rail-group"))
+    return rx.el.nav(*items, class_name="rail")
+
+
+# ── Top bar ───────────────────────────────────────────────────────────
+
+
+def _top_bar() -> rx.Component:
+    path = AppState.router.page.path
+    return rx.el.header(
+        rx.box(
+            rx.el.span("PlexMix", class_name="brand"),
+            rx.el.span("/", class_name="crumb-sep"),
+            rx.el.span(rx.match(path, *_PAGE_TITLES, "PlexMix"), class_name="t"),
+            rx.el.span(rx.match(path, *_PAGE_SUBS, ""), class_name="s"),
+            class_name="topbar-title",
+        ),
+        rx.box(class_name="topbar-spacer"),
+        rx.box(
+            rx.icon("search", size=15),
+            rx.el.span("Search or jump to…"),
+            rx.el.span("⌘K", class_name="kbd"),
+            class_name="cmd-trigger",
+            on_click=CommandPaletteState.open_palette,
+        ),
+        rx.el.button(
+            rx.color_mode_cond(
+                light=rx.icon("moon", size=18),
+                dark=rx.icon("sun", size=18),
+            ),
+            class_name="icon-btn",
+            on_click=rx.toggle_color_mode,
+            title="Toggle theme",
+            type="button",
+        ),
+        rx.box(
+            "iz",
+            class_name="avatar",
+            title="izzo · Plex",
+            on_click=rx.redirect("/settings"),
+        ),
+        class_name="topbar",
     )
 
 
-# ── Theme toggle ─────────────────────────────────────────────────────
+# ── Command palette ───────────────────────────────────────────────────
 
 
-def _theme_toggle() -> rx.Component:
-    """Segmented-style theme toggle (sun / switch / moon)."""
-    return rx.hstack(
-        rx.icon("sun", size=14, color="gray.9"),
-        rx.switch(
-            on_change=rx.toggle_color_mode,
-            size="1",
+def _cmd_item(icon: str, title, sub: str, on_click) -> rx.Component:
+    return rx.box(
+        rx.box(rx.icon(icon, size=16), class_name="ci-ico"),
+        rx.box(
+            rx.el.div(title, class_name="ci-title"),
+            rx.el.div(sub, class_name="ci-sub"),
+            style={"flex": "1"},
         ),
-        rx.icon("moon", size=14, color="gray.9"),
-        spacing="2",
-        align="center",
-        title="Toggle dark mode",
+        class_name="cmdk-item",
+        on_click=on_click,
     )
 
 
-# ── Logout button ────────────────────────────────────────────────────
+def _cmd_group(label: str, body: rx.Component) -> rx.Component:
+    return rx.box(rx.el.div(label, class_name="cmdk-group-label"), body)
+
+
+def _command_palette() -> rx.Component:
+    return rx.cond(
+        CommandPaletteState.is_open,
+        rx.box(
+            rx.box(
+                # input row
+                rx.box(
+                    rx.icon("search", size=18, color="var(--fg-3)"),
+                    rx.el.input(
+                        placeholder="Search pages, actions, vibes…",
+                        value=CommandPaletteState.query,
+                        on_change=CommandPaletteState.set_query,
+                        class_name="cmdk-input",
+                        auto_focus=True,
+                    ),
+                    rx.el.span("esc", class_name="kbd"),
+                    class_name="cmdk-input-row",
+                ),
+                # results
+                rx.box(
+                    rx.cond(
+                        ~CommandPaletteState.has_results,
+                        rx.box(
+                            "No matches",
+                            style={
+                                "padding": "28px 12px",
+                                "textAlign": "center",
+                                "color": "var(--fg-3)",
+                                "fontSize": "14px",
+                            },
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        CommandPaletteState.action_results.length() > 0,
+                        _cmd_group(
+                            "Actions",
+                            rx.foreach(
+                                CommandPaletteState.action_results,
+                                lambda c: _cmd_item(
+                                    c["icon"],
+                                    c["title"],
+                                    c["sub"],
+                                    CommandPaletteState.run_action(c["id"]),
+                                ),
+                            ),
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        CommandPaletteState.nav_results.length() > 0,
+                        _cmd_group(
+                            "Jump to",
+                            rx.foreach(
+                                CommandPaletteState.nav_results,
+                                lambda c: _cmd_item(
+                                    c["icon"],
+                                    c["title"],
+                                    c["sub"],
+                                    CommandPaletteState.goto(c["href"]),
+                                ),
+                            ),
+                        ),
+                        rx.fragment(),
+                    ),
+                    rx.cond(
+                        CommandPaletteState.vibe_results.length() > 0,
+                        _cmd_group(
+                            "Quick vibes",
+                            rx.foreach(
+                                CommandPaletteState.vibe_results,
+                                lambda v: _cmd_item(
+                                    "music",
+                                    v,
+                                    "Generate this vibe",
+                                    CommandPaletteState.run_vibe(v),
+                                ),
+                            ),
+                        ),
+                        rx.fragment(),
+                    ),
+                    class_name="cmdk-list",
+                ),
+                # hidden close target for the Escape key handler
+                rx.el.button(
+                    class_name="cmdk-close",
+                    on_click=CommandPaletteState.close_palette,
+                    type="button",
+                    style={"display": "none"},
+                ),
+                class_name="cmdk",
+                on_click=CommandPaletteState.stop.stop_propagation,
+            ),
+            class_name="cmdk-backdrop",
+            on_click=CommandPaletteState.close_palette,
+        ),
+        rx.fragment(),
+    )
+
+
+# ── Changelog dialog (preserved) ──────────────────────────────────────
 
 
 def _changelog_dialog() -> rx.Component:
-    """Modal dialog showing the project changelog."""
     return rx.dialog.root(
         rx.dialog.content(
             rx.dialog.title(
@@ -168,20 +306,7 @@ def _changelog_dialog() -> rx.Component:
                 rx.text("Release history for PlexMix", size="2", color="gray.9"),
             ),
             rx.scroll_area(
-                rx.markdown(
-                    AppState.changelog_content,
-                    component_map={
-                        "h1": lambda text: rx.heading(
-                            text, size="5", margin_top="16px", margin_bottom="8px"
-                        ),
-                        "h2": lambda text: rx.heading(
-                            text, size="4", margin_top="16px", margin_bottom="8px"
-                        ),
-                        "h3": lambda text: rx.heading(
-                            text, size="3", margin_top="12px", margin_bottom="4px"
-                        ),
-                    },
-                ),
+                rx.markdown(AppState.changelog_content),
                 max_height="60vh",
                 padding_right="12px",
             ),
@@ -191,376 +316,178 @@ def _changelog_dialog() -> rx.Component:
             max_width="640px",
         ),
         open=AppState.show_changelog,
-        on_open_change=lambda open: rx.cond(
-            open,
-            AppState.open_changelog,
-            AppState.close_changelog,
+        on_open_change=lambda is_open: rx.cond(
+            is_open, AppState.open_changelog, AppState.close_changelog
         ),
     )
 
 
-def _version_badge() -> rx.Component:
-    """Clickable version badge that opens the changelog."""
-    return rx.tooltip(
-        rx.text(
-            f"v{__version__}",
-            size="1",
-            color="gray.8",
-            text_align="center",
-            width="100%",
-            cursor="pointer",
-            _hover={"color": "accent.9"},
-            transition="color 150ms ease",
-            on_click=AppState.open_changelog,
-        ),
-        content="View changelog",
-    )
-
-
-def _logout_button() -> rx.Component:
-    """Icon-only logout button, shown when auth is required."""
-    return rx.cond(
-        AppState.auth_required,
-        rx.tooltip(
-            rx.button(
-                rx.icon("log-out", size=16),
-                on_click=AppState.logout,
-                variant="ghost",
-                color_scheme="gray",
-                size="2",
-                cursor="pointer",
-            ),
-            content="Log out",
-        ),
-        rx.fragment(),
-    )
-
-
-# ── Logo ──────────────────────────────────────────────────────────────
-
-
-def _logo(size: str = "80px") -> rx.Component:
-    """Theme-aware logo with hover glow."""
-    return rx.link(
-        rx.color_mode_cond(
-            light=rx.image(
-                src="/logo-light.svg",
-                alt="PlexMix",
-                width=size,
-                height=size,
-            ),
-            dark=rx.image(
-                src="/logo-dark.svg",
-                alt="PlexMix",
-                width=size,
-                height=size,
-            ),
-        ),
-        href="/dashboard",
-        _hover={"opacity": 0.85},
-        transition="opacity 150ms ease",
-    )
-
-
-# ── Grouped nav links ────────────────────────────────────────────────
-
-
-def _desktop_nav_groups() -> list:
-    """Return nav links with section labels for the desktop sidebar."""
-    items: list[rx.Component] = []
-    items.append(_section_label("Main"))
-    for text, href, icon in _MAIN_LINKS:
-        items.append(navbar_link(text, href, icon))
-    items.append(_section_label("Tools"))
-    for text, href, icon in _TOOLS_LINKS:
-        items.append(navbar_link(text, href, icon))
-    items.append(_section_label("System"))
-    for text, href, icon in _SYSTEM_LINKS:
-        items.append(navbar_link(text, href, icon))
-    return items
-
-
-def _mobile_nav_groups() -> list:
-    """Return nav links with section labels for the mobile sidebar."""
-    items: list[rx.Component] = []
-    items.append(_section_label("Main"))
-    for text, href, icon in _MAIN_LINKS:
-        items.append(mobile_navbar_link(text, href, icon))
-    items.append(_section_label("Tools"))
-    for text, href, icon in _TOOLS_LINKS:
-        items.append(mobile_navbar_link(text, href, icon))
-    items.append(_section_label("System"))
-    for text, href, icon in _SYSTEM_LINKS:
-        items.append(mobile_navbar_link(text, href, icon))
-    return items
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Desktop Sidebar
-# ══════════════════════════════════════════════════════════════════════
-
-
-def navbar() -> rx.Component:
-    return rx.box(
-        rx.vstack(
-            # Logo — smaller, centered
-            rx.center(
-                _logo("80px"),
-                width="100%",
-                padding_top="20px",
-                padding_bottom="8px",
-            ),
-            # Grouped navigation
-            rx.vstack(
-                *_desktop_nav_groups(),
-                spacing="1",
-                width="100%",
-            ),
-            rx.spacer(),
-            # Version + bottom controls
-            _version_badge(),
-            rx.hstack(
-                _logout_button(),
-                rx.spacer(),
-                _theme_toggle(),
-                width="100%",
-                align="center",
-                padding_x="8px",
-                padding_bottom="16px",
-            ),
-            spacing="1",
-            align="start",
-            width="100%",
-            height="100%",
-        ),
-        position="fixed",
-        left="0",
-        top="0",
-        height="100vh",
-        width="220px",
-        padding_x="12px",
-        class_name="glass hide-mobile",
-        z_index="100",
-        overflow_y="auto",
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Mobile Top Bar
-# ══════════════════════════════════════════════════════════════════════
-
-
-def mobile_top_bar() -> rx.Component:
-    """Fixed top bar with hamburger + centered logo + theme toggle."""
-    return rx.box(
-        rx.hstack(
-            rx.button(
-                rx.icon("menu", size=20),
-                on_click=AppState.toggle_mobile_nav,
-                variant="ghost",
-                size="2",
-                title="Open navigation",
-            ),
-            rx.spacer(),
-            _logo("32px"),
-            rx.spacer(),
-            _theme_toggle(),
-            spacing="3",
-            align="center",
-            width="100%",
-            padding_x="12px",
-        ),
-        position="fixed",
-        top="0",
-        left="0",
-        right="0",
-        height="48px",
-        z_index="200",
-        display="flex",
-        align_items="center",
-        class_name="glass hide-desktop",
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Mobile Slide-out Sidebar
-# ══════════════════════════════════════════════════════════════════════
-
-
-def mobile_sidebar() -> rx.Component:
-    """Slide-out sidebar overlay for mobile navigation."""
-    return rx.box(
-        rx.vstack(
-            # Close row
-            rx.hstack(
-                _logo("36px"),
-                rx.spacer(),
-                rx.button(
-                    rx.icon("x", size=20),
-                    on_click=AppState.close_mobile_nav,
-                    variant="ghost",
-                    size="2",
-                    title="Close navigation",
-                ),
-                width="100%",
-                align="center",
-                padding_x="12px",
-                padding_top="12px",
-                padding_bottom="8px",
-            ),
-            # Grouped navigation
-            rx.vstack(
-                *_mobile_nav_groups(),
-                spacing="1",
-                width="100%",
-                padding_x="4px",
-            ),
-            rx.spacer(),
-            # Version + bottom
-            _version_badge(),
-            rx.hstack(
-                _logout_button(),
-                width="100%",
-                padding_x="12px",
-                padding_bottom="16px",
-            ),
-            spacing="1",
-            align="start",
-            width="100%",
-            height="100%",
-        ),
-        position="fixed",
-        top="0",
-        left="0",
-        width="220px",
-        height="100vh",
-        z_index="301",
-        class_name="glass hide-desktop",
-        transform=rx.cond(
-            AppState.is_mobile_nav_open,
-            "translateX(0)",
-            "translateX(-100%)",
-        ),
-        transition="transform 400ms cubic-bezier(0.16, 1, 0.3, 1)",
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Mobile Backdrop
-# ══════════════════════════════════════════════════════════════════════
-
-
-def mobile_nav_backdrop() -> rx.Component:
-    """Semi-transparent blurred overlay behind mobile sidebar."""
-    return rx.cond(
-        AppState.is_mobile_nav_open,
-        rx.box(
-            position="fixed",
-            top="0",
-            left="0",
-            right="0",
-            bottom="0",
-            background="rgba(0, 0, 0, 0.6)",
-            backdrop_filter="blur(4px)",
-            z_index="300",
-            on_click=AppState.close_mobile_nav,
-            class_name="hide-desktop",
-        ),
-        rx.fragment(),
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Page Loading Indicator
-# ══════════════════════════════════════════════════════════════════════
-
-
-def loading_overlay() -> rx.Component:
-    """Thin progress bar at the top of the content area (replaces old full-screen overlay)."""
-    return rx.box(
-        rx.box(
-            class_name="pm-progress-bar-indeterminate",
-        ),
-        position="fixed",
-        top=rx.breakpoints(initial="48px", md="0px"),
-        left=rx.breakpoints(initial="0px", md="220px"),
-        right="0",
-        height="2px",
-        background_color="gray.3",
-        z_index="999",
-        overflow="hidden",
-        border_radius="1px",
-    )
-
-
-# ══════════════════════════════════════════════════════════════════════
-#  Layout Shell
-# ══════════════════════════════════════════════════════════════════════
+# ── Global keyboard (consolidated, idempotent) ────────────────────────
 
 
 def _keyboard_shortcuts() -> rx.Component:
-    """Global keyboard shortcuts for navigation and common actions."""
+    """⌘K / '/' open the palette; g+key page nav; Escape closes the palette.
+
+    Installed once (window-flag guarded) so the per-route shell re-render
+    does not stack duplicate listeners. Bridges to Reflex via synthetic
+    clicks on the always-present ``.cmd-trigger`` and ``.cmdk-close`` elements.
+    """
     return rx.script(
         """
-        document.addEventListener('keydown', function(e) {
-            // Ignore when typing in inputs/textareas
-            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.isContentEditable) return;
-
-            // Navigation: g then letter (vim-style)
-            if (e.key === 'g') {
-                window._plexmix_g = true;
-                setTimeout(function() { window._plexmix_g = false; }, 500);
-                return;
-            }
-            if (window._plexmix_g) {
-                window._plexmix_g = false;
-                var routes = {d: '/dashboard', g: '/generator', l: '/library', t: '/tagging', h: '/history', s: '/settings', x: '/doctor'};
-                if (routes[e.key]) { window.location.href = routes[e.key]; e.preventDefault(); return; }
-            }
-
-            // Quick actions
-            if (e.key === '/' && !e.ctrlKey && !e.metaKey) {
-                // Focus search input if on library page
-                var searchInput = document.querySelector('input[placeholder*="Search"]');
-                if (searchInput) { searchInput.focus(); e.preventDefault(); }
+        if (!window.__plexmix_keys__) {
+          window.__plexmix_keys__ = true;
+          document.addEventListener('keydown', function (e) {
+            var t = e.target;
+            var typing = t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+            if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+              e.preventDefault();
+              var trg = document.querySelector('.cmd-trigger'); if (trg) trg.click();
+              return;
             }
             if (e.key === 'Escape') {
-                // Blur any focused input
-                if (document.activeElement) document.activeElement.blur();
+              var c = document.querySelector('.cmdk-close'); if (c) c.click();
+              return;
             }
-        });
+            var __cmdk = document.querySelector('.cmdk');
+            if (__cmdk) {
+              var __items = __cmdk.querySelectorAll('.cmdk-item');
+              if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                if (!__items.length) return;
+                if (window.__cmdk_i == null) window.__cmdk_i = -1;
+                window.__cmdk_i += (e.key === 'ArrowDown' ? 1 : -1);
+                if (window.__cmdk_i < 0) window.__cmdk_i = __items.length - 1;
+                if (window.__cmdk_i >= __items.length) window.__cmdk_i = 0;
+                __items.forEach(function(it, ix){ it.classList.toggle('sel', ix === window.__cmdk_i); });
+                __items[window.__cmdk_i].scrollIntoView({block: 'nearest'});
+                return;
+              }
+              if (e.key === 'Enter' && window.__cmdk_i != null && __items[window.__cmdk_i]) {
+                e.preventDefault(); __items[window.__cmdk_i].click(); return;
+              }
+            } else { window.__cmdk_i = null; }
+            if (typing) return;
+            if (e.key === '/') {
+              e.preventDefault();
+              var t2 = document.querySelector('.cmd-trigger'); if (t2) t2.click();
+              return;
+            }
+            if (e.key === 'g') {
+              window.__plexmix_g__ = true;
+              setTimeout(function () { window.__plexmix_g__ = false; }, 600);
+              return;
+            }
+            if (window.__plexmix_g__) {
+              window.__plexmix_g__ = false;
+              var routes = {d:'/dashboard', g:'/generator', l:'/library', t:'/tagging', h:'/history', x:'/doctor', s:'/settings'};
+              if (routes[e.key]) { window.location.href = routes[e.key]; e.preventDefault(); }
+            }
+          });
+        }
         """
     )
 
 
-def layout(content: rx.Component) -> rx.Component:
+# ── Layout shell ──────────────────────────────────────────────────────
+
+
+def _appearance_restore() -> rx.Component:
+    """Re-apply persisted density/accent to <html> on load."""
+    return rx.script(
+        """
+        (function(){
+          try {
+            var d=localStorage.getItem('pm_density'); if(d) document.documentElement.setAttribute('data-density', d);
+            var a=localStorage.getItem('pm_accent'); if(a) document.documentElement.setAttribute('data-accent', a);
+          } catch(e){}
+        })();
+        """
+    )
+
+
+def _cancel_confirm_dialog() -> rx.Component:
+    """Shared, shell-level confirm for cancelling a running job (or all)."""
     return rx.cond(
-        AppState.is_authenticated,
-        rx.fragment(
-            rx.toast.provider(),
-            _keyboard_shortcuts(),
-            _changelog_dialog(),
+        AppState.pending_cancel_job != "",
+        rx.box(
             rx.box(
-                navbar(),
-                mobile_top_bar(),
-                mobile_sidebar(),
-                mobile_nav_backdrop(),
-                rx.cond(
-                    AppState.is_page_loading,
-                    loading_overlay(),
-                    rx.fragment(),
+                rx.box(
+                    rx.el.h2(
+                        "Cancel running task?",
+                        style={"fontSize": "18px", "fontWeight": "700"},
+                    ),
+                    class_name="modal-head",
                 ),
                 rx.box(
-                    content,
-                    margin_left=rx.breakpoints(initial="0px", md="220px"),
-                    padding_top=rx.breakpoints(initial="48px", md="0px"),
-                    padding_x=rx.breakpoints(initial="16px", md="40px"),
-                    padding_y=rx.breakpoints(initial="20px", md="32px"),
-                    min_height="100vh",
-                    max_width=rx.breakpoints(initial="100%", md="calc(1200px + 80px)"),
-                    class_name="animate-fade-in-up",
+                    rx.el.p(
+                        "Stop ",
+                        rx.cond(
+                            AppState.pending_cancel_job == "__all__",
+                            "all running tasks",
+                            AppState.pending_cancel_job,
+                        ),
+                        "? Work completed so far is kept.",
+                        style={"fontSize": "14px", "color": "var(--fg-2)"},
+                    ),
+                    class_name="modal-body",
                 ),
+                rx.box(
+                    rx.el.button(
+                        "Keep running",
+                        class_name="btn btn-3 btn-soft",
+                        on_click=AppState.dismiss_cancel,
+                        type="button",
+                    ),
+                    rx.el.button(
+                        "Cancel task",
+                        class_name="btn btn-3 btn-primary",
+                        on_click=AppState.confirm_cancel,
+                        type="button",
+                    ),
+                    class_name="modal-foot",
+                ),
+                class_name="modal",
+                style={"maxWidth": "440px"},
+                on_click=CommandPaletteState.stop.stop_propagation,
             ),
+            class_name="modal-backdrop",
+            on_click=AppState.dismiss_cancel,
+        ),
+        rx.fragment(),
+    )
+
+
+def _loadbar() -> rx.Component:
+    return rx.box(rx.box(class_name="ind"), class_name="loadbar")
+
+
+def layout(content: rx.Component, full_bleed: bool = False) -> rx.Component:
+    """Wrap page content in the shared shell (auth-gated).
+
+    ``full_bleed`` skips the centered ``.page`` wrapper for pages that manage
+    their own full-height stage (e.g. the Generator showpiece).
+    """
+    inner = content if full_bleed else rx.box(content, class_name="page")
+    return rx.cond(
+        AppState.is_authenticated,
+        rx.box(
+            _icon_rail(),
+            rx.box(
+                _top_bar(),
+                rx.box(
+                    rx.cond(AppState.is_page_loading, _loadbar(), rx.fragment()),
+                    inner,
+                    class_name="scroll",
+                ),
+                class_name="main",
+            ),
+            _command_palette(),
+            _cancel_confirm_dialog(),
+            rx.toast.provider(),
+            _changelog_dialog(),
+            _keyboard_shortcuts(),
+            _appearance_restore(),
+            class_name="shell",
         ),
         login_page(),
     )
