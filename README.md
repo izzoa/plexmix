@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.svg" alt="PlexMix Logo" width="300"/>
+  <img src="assets/logo-light.svg" alt="PlexMix Logo" width="300"/>
 
   # PlexMix
 
@@ -770,8 +770,8 @@ PlexMix publishes multi-platform Docker images (amd64 + arm64) to GitHub Contain
 
 | Tag | Includes | Size | Best For |
 |-----|----------|------|----------|
-| `:latest` / `:0.5.5` | Cloud AI SDKs, Reflex UI, FAISS, Essentia | ~470MB | Users with API keys (Gemini, OpenAI, Claude, Cohere) |
-| `:latest-local` / `:0.5.5-local` | Everything above + PyTorch, sentence-transformers | ~4GB+ | Fully offline: local embeddings + local LLM, no API keys needed |
+| `:latest` / `:0.11.0` | Cloud AI SDKs, Reflex UI, FAISS, Essentia | ~470MB | Users with API keys (Gemini, OpenAI, Claude, Cohere) |
+| `:latest-local` / `:0.11.0-local` | Everything above + PyTorch, sentence-transformers | ~4GB+ | Fully offline: local embeddings + local LLM, no API keys needed |
 
 ### Quick Start
 

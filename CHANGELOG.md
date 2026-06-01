@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-01
+
 ### Added
 - Redesign the web UI around a glass icon-rail and a ⌘K command palette (search pages, run actions, fire a quick vibe; `g`+key navigation). The Generator is reimagined as an "AI-thinking" showpiece: a live particle vector-field, a four-phase progress tracker bound to the real generation pipeline, a streaming terminal log, and a results playlist with removable tracks.
 - Add a Settings → Appearance section with a theme toggle plus Density (comfortable/compact) and Accent-intensity (subtle/balanced/vivid) preferences, persisted across reloads.
@@ -588,7 +590,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI interface with Rich formatting
 - Tag generation and management
 
-[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/izzoa/plexmix/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/izzoa/plexmix/compare/v0.9.0...v0.10.0
 [0.7.0]: https://github.com/izzoa/plexmix/compare/v0.6.7...v0.7.0
 [0.6.7]: https://github.com/izzoa/plexmix/compare/v0.6.6...v0.6.7
