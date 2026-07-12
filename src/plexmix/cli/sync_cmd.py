@@ -47,7 +47,7 @@ def sync_callback(
     musicbrainz: bool = typer.Option(False, help="Enrich with MusicBrainz metadata during sync"),
 ) -> None:
     if ctx.invoked_subcommand is None:
-        sync_incremental(embeddings=embeddings, audio=audio, musicbrainz=musicbrainz)
+        run_incremental_sync(embeddings=embeddings, audio=audio, musicbrainz=musicbrainz)
 
 
 @sync_app.command("incremental")
@@ -56,6 +56,20 @@ def sync_incremental(
     audio: bool = typer.Option(False, help="Extract audio features during sync"),
     musicbrainz: bool = typer.Option(False, help="Enrich with MusicBrainz metadata during sync"),
 ) -> None:
+    run_incremental_sync(embeddings=embeddings, audio=audio, musicbrainz=musicbrainz)
+
+
+def run_incremental_sync(
+    embeddings: bool = True,
+    audio: bool = False,
+    musicbrainz: bool = False,
+) -> None:
+    """Core incremental sync shared by the CLI command and internal callers.
+
+    Uses plain bool defaults (not ``typer.Option`` sentinels) so callers that
+    invoke it as a function — the wizard, doctor, and ``sync full`` — pass real
+    values instead of truthy ``OptionInfo`` objects that force audio/MusicBrainz on.
+    """
     console.print("[bold]Starting incremental library sync...[/bold]")
 
     settings = Settings.load_from_file()
@@ -74,6 +88,11 @@ def sync_incremental(
     if run_mb:
         mb_settings = settings.musicbrainz
 
+    # Audio analysis runs as a pipeline stage before embeddings (so embeddings can
+    # incorporate audio features), not as a post-sync step.
+    run_audio = audio or settings.audio.analyze_on_sync
+    audio_settings = settings.audio if run_audio else None
+
     with SQLiteManager(str(settings.database.get_db_path())) as db:
         db.create_tables()
 
@@ -84,6 +103,7 @@ def sync_incremental(
             vector_index,
             ai_provider,
             musicbrainz_settings=mb_settings,
+            audio_settings=audio_settings,
         )
 
         try:
@@ -93,13 +113,6 @@ def sync_incremental(
             console.print(f"  Tracks added: {sync_result.tracks_added}")
             console.print(f"  Tracks updated: {sync_result.tracks_updated}")
             console.print(f"  Tracks removed: {sync_result.tracks_removed}")
-
-            # Run audio analysis if requested
-            run_audio = audio or settings.audio.analyze_on_sync
-            if run_audio:
-                from .audio_cmd import _run_audio_analysis
-
-                _run_audio_analysis(db, settings)
 
         except KeyboardInterrupt:
             console.print("\n[yellow]Sync interrupted by user.[/yellow]")
@@ -163,4 +176,6 @@ def sync_full(
     embeddings: bool = typer.Option(True, help="Generate embeddings during sync"),
 ) -> None:
     console.print("[bold]Starting library sync (full is now an alias for incremental)...[/bold]")
-    sync_incremental(embeddings=embeddings)
+    # Explicit values — audio/musicbrainz default off (previously they were
+    # OptionInfo sentinels that always evaluated truthy and forced both on).
+    run_incremental_sync(embeddings=embeddings, audio=False, musicbrainz=False)

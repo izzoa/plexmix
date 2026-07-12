@@ -16,8 +16,12 @@ from .base import AIProvider
 logger = logging.getLogger(__name__)
 
 
+# Keys must be real Hugging Face repo ids. The previous ids (google/gemma-3-1b,
+# liquid/lfm2-1.2b, google/gemma-3-4b) do not exist on the Hub — the instruction
+# variants use the "-it" suffix and Liquid's org is "LiquidAI" — so builtin local
+# mode could never download or load a model.
 LOCAL_LLM_MODELS: Dict[str, Dict[str, Any]] = {
-    "google/gemma-3-1b": {
+    "google/gemma-3-1b-it": {
         "display_name": "Gemma 3 1B",
         "capabilities": "1B params • ~8K ctx • CPU friendly, fast drafts",
         "context_window": 8000,
@@ -26,7 +30,7 @@ LOCAL_LLM_MODELS: Dict[str, Dict[str, Any]] = {
         "torch_dtype": "bfloat16",
         "requires_gpu": False,
     },
-    "liquid/lfm2-1.2b": {
+    "LiquidAI/LFM2-1.2B": {
         "display_name": "Liquid LFM-2 1.2B",
         "capabilities": "1.2B params • 32K ctx • melodic text/music reasoning",
         "context_window": 32000,
@@ -44,7 +48,7 @@ LOCAL_LLM_MODELS: Dict[str, Dict[str, Any]] = {
         "torch_dtype": "bfloat16",
         "requires_gpu": True,
     },
-    "google/gemma-3-4b": {
+    "google/gemma-3-4b-it": {
         "display_name": "Gemma 3 4B",
         "capabilities": "4B params • 32K ctx • balanced quality vs speed",
         "context_window": 32000,
@@ -56,7 +60,7 @@ LOCAL_LLM_MODELS: Dict[str, Dict[str, Any]] = {
 }
 
 LOCAL_LLM_DEVICE = os.getenv("PLEXMIX_LOCAL_LLM_DEVICE", "auto")
-LOCAL_LLM_DEFAULT_MODEL = "google/gemma-3-1b"
+LOCAL_LLM_DEFAULT_MODEL = "google/gemma-3-1b-it"
 
 
 class LocalLLMProvider(AIProvider):
@@ -71,13 +75,17 @@ class LocalLLMProvider(AIProvider):
         mode: str = "builtin",
         endpoint: Optional[str] = None,
         auth_token: Optional[str] = None,
-        max_output_tokens: int = 800,
+        max_output_tokens: Optional[int] = None,
     ):
         super().__init__(api_key=auth_token or "local", model=model, temperature=temperature)
         self.mode = mode or "builtin"
         self.endpoint = endpoint
         self.auth_token = auth_token
-        self.max_output_tokens = max_output_tokens
+        # Prefer an explicit setting, then the model's catalog cap, then 800. The
+        # per-model max_output_tokens (e.g. 2048) was previously ignored, so batch
+        # tag JSON was truncated at the hard-coded 800-token default.
+        model_cap = LOCAL_LLM_MODELS.get(model, {}).get("max_output_tokens")
+        self.max_output_tokens = max_output_tokens or model_cap or 800
 
         if self.mode == "endpoint":
             if not self.endpoint:
@@ -268,6 +276,10 @@ class LocalLLMProvider(AIProvider):
             daemon=True,
         )
         worker.start()
+        # Close the parent's copy of the child end so that if the worker process
+        # dies, recv() on parent_conn raises EOFError instead of blocking forever
+        # (the pipe stays "open" as long as any handle to the write end survives).
+        child_conn.close()
 
         try:
             handshake = parent_conn.recv()

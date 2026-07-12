@@ -11,7 +11,9 @@ console = Console()
 @db_app.command("info")
 def db_info() -> None:
     """Show database information and statistics."""
-    settings = Settings()
+    # Load the saved config so custom database/index paths are honored (a bare
+    # Settings() uses defaults and can point at the wrong location).
+    settings = Settings.load_from_file()
     db_path = settings.database.get_db_path()
     index_path = settings.database.get_index_path()
 
@@ -83,7 +85,7 @@ def db_reset(
     This will delete all synced data, embeddings, playlists, and tags.
     Your Plex library and configuration will not be affected.
     """
-    settings = Settings()
+    settings = Settings.load_from_file()
     db_path = settings.database.get_db_path()
     index_path = settings.database.get_index_path()
 

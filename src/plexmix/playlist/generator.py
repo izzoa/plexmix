@@ -176,12 +176,14 @@ class PlaylistGenerator:
             params.append(filters["year_max"])
 
         if "environment" in filters:
-            where_clauses.append("environments LIKE ?")
-            params.append(f"%{filters['environment'].lower()}%")
+            # Match a whole comma-delimited tag, not a substring, so "work" doesn't
+            # also match "workout". Normalize ", " to "," and wrap in commas.
+            where_clauses.append("(',' || REPLACE(LOWER(environments), ', ', ',') || ',') LIKE ?")
+            params.append(f"%,{filters['environment'].lower()},%")
 
         if "instrument" in filters:
-            where_clauses.append("instruments LIKE ?")
-            params.append(f"%{filters['instrument'].lower()}%")
+            where_clauses.append("(',' || REPLACE(LOWER(instruments), ', ', ',') || ',') LIKE ?")
+            params.append(f"%,{filters['instrument'].lower()},%")
 
         if "rating_min" in filters:
             where_clauses.append("rating >= ?")
@@ -276,7 +278,9 @@ class PlaylistGenerator:
         """Select tracks with artist and album diversity."""
         selected_ids: List[int] = []
         artist_counts: Dict[str, int] = {}
-        album_counts: Dict[str, int] = {}
+        # Keyed by (album title, artist) so identically-titled albums by different
+        # artists aren't merged.
+        album_counts: Dict[tuple[str, str], int] = {}
         seen_combinations = set()
 
         for candidate in candidates:
@@ -294,8 +298,11 @@ class PlaylistGenerator:
             if track_key in seen_combinations:
                 continue
 
+            # Key the album cap on (title, artist) so identically-titled albums by
+            # different artists (e.g. "Greatest Hits") aren't collapsed together.
+            album_key = (album.lower(), artist_key)
             artist_count = artist_counts.get(artist_key, 0)
-            album_count = album_counts.get(album, 0)
+            album_count = album_counts.get(album_key, 0)
 
             if artist_count >= 3:
                 continue
@@ -305,7 +312,7 @@ class PlaylistGenerator:
             selected_ids.append(track_id)
             seen_combinations.add(track_key)
             artist_counts[artist_key] = artist_count + 1
-            album_counts[album] = album_count + 1
+            album_counts[album_key] = album_count + 1
 
         logger.info(
             f"Selected {len(selected_ids)} diverse tracks from {len(candidates)} candidates"
@@ -320,6 +327,10 @@ class PlaylistGenerator:
             return self._shuffle_alternating_artists(tracks)
         elif mode == "energy_curve":
             return self._shuffle_energy_curve(tracks)
+        elif mode not in ("similarity", "", None):
+            # "similarity" (and the empty default) intentionally keep the vector
+            # order; anything else is an unrecognized value worth flagging.
+            logger.warning("Unknown shuffle_mode '%s'; keeping similarity order", mode)
         return tracks
 
     @staticmethod

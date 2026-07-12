@@ -96,5 +96,6 @@ class TestEssentiaAnalyzer:
             assert features.tempo == 120.0
             assert features.key == "C"
             assert features.scale == "major"
-            assert features.danceability == 0.75
+            # Essentia's raw 0.75 (on its 0-3 scale) is normalized to 0-1.
+            assert features.danceability == pytest.approx(0.25)
             assert features.energy_level is not None

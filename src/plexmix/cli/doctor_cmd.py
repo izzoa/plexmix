@@ -51,7 +51,10 @@ def doctor(
         from .embeddings_cmd import embeddings_generate
 
         console.print("\n[bold]Step 1: Generating tags for all tracks...[/bold]")
-        tags_generate(provider=preferred_provider, regenerate_embeddings=False)
+        # Pass every argument explicitly: calling the Typer command as a function
+        # leaves unpassed options as truthy OptionInfo sentinels, and `retag_stale`
+        # (an int) then crashed with `TypeError` on `retag_stale > 0`.
+        tags_generate(provider=preferred_provider, regenerate_embeddings=False, retag_stale=0)
 
         console.print("\n[bold]Step 2: Generating embeddings for all tracks...[/bold]")
         embeddings_generate(regenerate=False)
@@ -90,10 +93,10 @@ def doctor(
             )
 
             if typer.confirm("\nRun a sync to check for deleted tracks in Plex?", default=False):
-                from .sync_cmd import sync_incremental
+                from .sync_cmd import run_incremental_sync
 
                 console.print("\n[bold]Running sync...[/bold]")
-                sync_incremental(embeddings=False)
+                run_incremental_sync(embeddings=False)
                 console.print("\n[green]✓ Sync completed![/green]")
             return
 
@@ -225,7 +228,9 @@ def doctor(
                                 embeddings_saved += 1
                                 progress.update(task, advance=1)
 
-                    all_embeddings = db.get_all_embeddings()
+                    # Scope to the active model so mixed-model rows (after a
+                    # provider switch) don't crash the rebuild with ragged dims.
+                    all_embeddings = db.get_all_embeddings(embedding_generator.provider_name)
                     track_ids = [emb[0] for emb in all_embeddings]
                     vectors = [emb[1] for emb in all_embeddings]
 

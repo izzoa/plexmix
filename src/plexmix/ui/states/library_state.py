@@ -68,17 +68,30 @@ class LibraryState(AppState):
     def set_sync_mode(self, mode: str):
         self.sync_mode = mode
 
+    def start_sync_or_confirm(self):
+        """Sync button entry point: the destructive 'regenerate' mode opens a
+        confirmation first; other modes start immediately. Previously the button
+        always called start_sync, so the regenerate mode/confirm was unreachable."""
+        if self.sync_mode == "regenerate":
+            self.show_regenerate_confirm = True
+            return None
+        return LibraryState.start_sync
+
     def confirm_regenerate_sync(self):
         self.show_regenerate_confirm = True
 
     def cancel_regenerate_confirm(self):
         self.show_regenerate_confirm = False
 
+    def set_regenerate_confirm_open(self, is_open: bool):
+        if not is_open:
+            self.show_regenerate_confirm = False
+
     def on_load(self):
         if not self.check_auth():
             self.is_page_loading = False
             return
-        super().on_load()
+        self.load_app_data()
         self.load_tracks()
         self.poll_task_progress()  # Recover in-progress tasks from TaskStore
         self.is_page_loading = False
@@ -97,7 +110,7 @@ class LibraryState(AppState):
                 self.is_syncing = True
                 self.sync_progress = sync_entry.progress
                 self.sync_message = sync_entry.message
-            elif sync_entry.status == "completed":
+            elif self.is_syncing and sync_entry.status == "completed":
                 self.is_syncing = False
                 self.sync_progress = 100
                 self.sync_message = ""
@@ -105,18 +118,15 @@ class LibraryState(AppState):
                 self.check_configuration_status()
                 self.load_library_stats()
                 msg = sync_entry.message or "Sync completed!"
-                task_store.clear("sync")
                 return rx.toast.success(msg)
-            elif sync_entry.status == "failed":
+            elif self.is_syncing and sync_entry.status == "failed":
                 self.is_syncing = False
                 self.sync_message = ""
                 msg = sync_entry.message or "Sync failed"
-                task_store.clear("sync")
                 return rx.toast.error(f"Sync failed: {msg}")
-            elif sync_entry.status == "cancelled":
+            elif self.is_syncing and sync_entry.status == "cancelled":
                 self.is_syncing = False
                 self.sync_message = ""
-                task_store.clear("sync")
                 return rx.toast.warning("Sync cancelled")
 
         # -- Embedding --
@@ -126,27 +136,24 @@ class LibraryState(AppState):
                 self.is_embedding = True
                 self.embedding_progress = embed_entry.progress
                 self.embedding_message = embed_entry.message
-            elif embed_entry.status == "completed":
+            elif self.is_embedding and embed_entry.status == "completed":
                 self.is_embedding = False
                 self.embedding_progress = 100
                 self.embedding_message = ""
                 self.clear_selection()
                 self.load_tracks()
                 self.load_library_stats()
-                task_store.clear("embedding")
                 return rx.toast.success("Embeddings generated successfully!")
-            elif embed_entry.status == "failed":
+            elif self.is_embedding and embed_entry.status == "failed":
                 self.is_embedding = False
                 self.embedding_message = ""
                 msg = embed_entry.message or "Embedding generation failed"
-                task_store.clear("embedding")
                 return rx.toast.error(msg)
-            elif embed_entry.status == "cancelled":
+            elif self.is_embedding and embed_entry.status == "cancelled":
                 self.is_embedding = False
                 self.embedding_message = ""
                 self.load_tracks()
                 self.load_library_stats()
-                task_store.clear("embedding")
                 return rx.toast.warning("Embedding generation cancelled")
 
         # -- MusicBrainz enrichment --
@@ -156,25 +163,22 @@ class LibraryState(AppState):
                 self.is_enriching_musicbrainz = True
                 self.musicbrainz_progress = mb_entry.progress
                 self.musicbrainz_message = mb_entry.message
-            elif mb_entry.status == "completed":
+            elif self.is_enriching_musicbrainz and mb_entry.status == "completed":
                 self.is_enriching_musicbrainz = False
                 self.musicbrainz_progress = 100
                 self.musicbrainz_message = ""
                 self.load_library_stats()
                 msg = mb_entry.message or "MusicBrainz enrichment complete!"
-                task_store.clear("musicbrainz")
                 return rx.toast.success(msg)
-            elif mb_entry.status == "failed":
+            elif self.is_enriching_musicbrainz and mb_entry.status == "failed":
                 self.is_enriching_musicbrainz = False
                 self.musicbrainz_message = ""
                 msg = mb_entry.message or "MusicBrainz enrichment failed"
-                task_store.clear("musicbrainz")
                 return rx.toast.error(msg)
-            elif mb_entry.status == "cancelled":
+            elif self.is_enriching_musicbrainz and mb_entry.status == "cancelled":
                 self.is_enriching_musicbrainz = False
                 self.musicbrainz_message = ""
                 self.load_library_stats()
-                task_store.clear("musicbrainz")
                 return rx.toast.warning("MusicBrainz enrichment cancelled")
 
         # -- Audio analysis --
@@ -186,7 +190,7 @@ class LibraryState(AppState):
                 self.audio_analysis_message = audio_entry.message
                 self.audio_analysis_eta = audio_entry.extra.get("eta", "")
                 self.audio_analysis_paused = audio_entry.extra.get("paused", False)
-            elif audio_entry.status == "completed":
+            elif self.is_analyzing_audio and audio_entry.status == "completed":
                 self.is_analyzing_audio = False
                 self.audio_analysis_progress = 100
                 self.audio_analysis_message = ""
@@ -194,23 +198,20 @@ class LibraryState(AppState):
                 self.audio_analysis_paused = False
                 self.load_library_stats()
                 msg = audio_entry.extra.get("result_msg", "Audio analysis complete!")
-                task_store.clear("audio")
                 return rx.toast.success(msg)
-            elif audio_entry.status == "cancelled":
+            elif self.is_analyzing_audio and audio_entry.status == "cancelled":
                 self.is_analyzing_audio = False
                 self.audio_analysis_message = ""
                 self.audio_analysis_eta = ""
                 self.audio_analysis_paused = False
                 msg = audio_entry.extra.get("result_msg", "Audio analysis stopped")
-                task_store.clear("audio")
                 return rx.toast.warning(msg)
-            elif audio_entry.status == "failed":
+            elif self.is_analyzing_audio and audio_entry.status == "failed":
                 self.is_analyzing_audio = False
                 self.audio_analysis_message = ""
                 self.audio_analysis_eta = ""
                 self.audio_analysis_paused = False
                 msg = audio_entry.message or "Audio analysis failed"
-                task_store.clear("audio")
                 return rx.toast.error(msg)
 
     def load_tracks(self):
@@ -386,6 +387,8 @@ class LibraryState(AppState):
     @rx.event(background=True)
     async def apply_bulk_tags(self):
         async with self:
+            if not self.access_allowed():
+                return
             tags_text = self.bulk_tag_input.strip()
             track_ids = list(self.selected_tracks)
             self.show_bulk_tag_dialog = False
@@ -405,9 +408,11 @@ class LibraryState(AppState):
                 for tid_str in track_ids:
                     db.update_track_tags(int(tid_str), tags=tags_text)
 
+            # load_tracks mutates state, so it must run inside `async with self`
+            # in a background event or it raises ImmutableStateError.
             async with self:
                 self.selected_tracks = []
-            self.load_tracks()
+                self.load_tracks()
 
             yield rx.toast.success(f"Applied tags to {len(track_ids)} tracks")
 
@@ -429,6 +434,8 @@ class LibraryState(AppState):
     @rx.event(background=True)
     async def delete_selected_tracks(self):
         async with self:
+            if not self.access_allowed():
+                return
             track_ids = list(self.selected_tracks)
             self.show_delete_confirm = False
 
@@ -448,7 +455,7 @@ class LibraryState(AppState):
 
             async with self:
                 self.selected_tracks = []
-            self.load_tracks()
+                self.load_tracks()
 
             yield rx.toast.success(f"Deleted {len(track_ids)} tracks")
 
@@ -458,6 +465,8 @@ class LibraryState(AppState):
     @rx.event(background=True)
     async def start_sync(self):
         async with self:
+            if not self.access_allowed():
+                return
             self.is_syncing = True
             self.sync_progress = 0
             self.sync_message = "Starting sync..."
@@ -583,7 +592,10 @@ class LibraryState(AppState):
                                 in_flight.pop(fut)
                                 try:
                                     track_obj, features = fut.result()
-                                    db.insert_audio_features(track_obj.id, features)
+                                    # insert_audio_features expects a dict, not the
+                                    # AudioFeatures dataclass — otherwise every insert
+                                    # errored and no features were ever saved.
+                                    db.insert_audio_features(track_obj.id, features.to_dict())
                                     analyzed += 1
                                 except Exception as e:
                                     logger.warning(f"Audio analysis failed: {e}")
@@ -610,17 +622,29 @@ class LibraryState(AppState):
             else:
                 task_store.complete("sync")
 
+        except KeyboardInterrupt:
+            # Cancellation propagates as KeyboardInterrupt from the sync engine;
+            # complete the task as cancelled so its TaskStore entry doesn't wedge
+            # in the "running" state forever (KeyboardInterrupt isn't an Exception).
+            task_store.complete("sync", status="cancelled")
         except Exception as e:
             task_store.complete("sync", status="failed", message=str(e))
 
     @rx.event(background=True)
     async def generate_embeddings(self):
         async with self:
-            if not self.selected_tracks:
+            if not self.access_allowed():
                 return
-            self.is_embedding = True
-            self.embedding_progress = 0
-            self.embedding_message = "Starting embedding generation..."
+            has_selection = bool(self.selected_tracks)
+            if has_selection:
+                self.is_embedding = True
+                self.embedding_progress = 0
+                self.embedding_message = "Starting embedding generation..."
+
+        if not has_selection:
+            # Give feedback instead of silently doing nothing.
+            yield rx.toast.warning("Select one or more tracks to generate embeddings.")
+            return
 
         cancel_event = task_store.start("embedding", message="Starting embedding generation...")
         if cancel_event is None:
@@ -630,7 +654,11 @@ class LibraryState(AppState):
             from plexmix.config.settings import Settings
             from plexmix.database.sqlite_manager import SQLiteManager
             from plexmix.services.providers import build_embedding_generator
-            from plexmix.services.tagging_service import generate_embeddings_for_tracks
+            from plexmix.services.sync_service import build_vector_index
+            from plexmix.services.tagging_service import (
+                generate_embeddings_for_tracks,
+                rebuild_vector_index,
+            )
 
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
@@ -664,18 +692,29 @@ class LibraryState(AppState):
                     message=f"Generated {generated}/{total} embeddings",
                 )
 
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: generate_embeddings_for_tracks(
+            def _generate_and_index() -> None:
+                generate_embeddings_for_tracks(
                     db,
                     embedding_generator,
                     tracks,
                     batch_size=EMBEDDING_BATCH_SIZE,
                     progress_callback=on_progress,
                     cancel_event=cancel_event,
-                ),
-            )
+                )
+                # Persist to the FAISS index too — writing only the DB rows left the
+                # index stale, so newly embedded tracks never appeared in search.
+                if not cancel_event.is_set():
+                    task_store.update("embedding", message="Updating search index...")
+                    vector_index = build_vector_index(settings, embedding_generator)
+                    rebuild_vector_index(
+                        db,
+                        vector_index,
+                        str(settings.database.get_index_path()),
+                        embedding_generator.provider_name,
+                    )
+
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, _generate_and_index)
 
             db.close()
 
@@ -690,6 +729,8 @@ class LibraryState(AppState):
     @rx.event(background=True)
     async def enrich_musicbrainz(self):
         async with self:
+            if not self.access_allowed():
+                return
             self.is_enriching_musicbrainz = True
             self.musicbrainz_progress = 0
             self.musicbrainz_message = "Starting MusicBrainz enrichment..."

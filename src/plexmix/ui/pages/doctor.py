@@ -47,6 +47,11 @@ def _check_row(
 
 def doctor() -> rx.Component:
     content = rx.vstack(
+        # Hidden poller so Doctor fix progress updates live (not just on page load).
+        rx.box(
+            rx.moment(interval=2000, on_change=DoctorState.poll_task_progress),
+            display="none",
+        ),
         # Health hero
         rx.box(
             rx.box(

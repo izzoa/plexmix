@@ -18,7 +18,12 @@ def _claude_rejects_sampling_params(model: str) -> bool:
     if not m.startswith("claude-opus-4-"):
         return False
     minor = m[len("claude-opus-4-") :].split("-")[0]
-    return minor.isdigit() and int(minor) >= 7
+    # A bare date-stamped id like "claude-opus-4-20250514" is Opus 4.0 (no minor),
+    # which accepts sampling params. Only a 1-2 digit segment is a minor version;
+    # an 8-digit date must not be read as a huge minor number (>= 7).
+    if not minor.isdigit() or len(minor) > 2:
+        return False
+    return int(minor) >= 7
 
 
 class ClaudeProvider(AIProvider):

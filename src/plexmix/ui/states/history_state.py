@@ -46,7 +46,7 @@ class HistoryState(AppState):
         if not self.check_auth():
             self.is_page_loading = False
             return
-        super().on_load()
+        self.load_app_data()
         return HistoryState.load_playlists
 
     @rx.event(background=True)
@@ -187,6 +187,8 @@ class HistoryState(AppState):
     async def save_track_order(self):
         """Persist reordered track positions to the database."""
         async with self:
+            if not self.access_allowed():
+                return
             playlist_id = self.selected_playlist.get("id", "")
             tracks = list(self.selected_playlist_tracks)
 
@@ -202,11 +204,18 @@ class HistoryState(AppState):
 
             with SQLiteManager(str(db_path)) as db:
                 cursor = db.get_connection().cursor()
-                for t in tracks:
+                # Rebuild the rows in the new order. Updating by track_id alone
+                # can't disambiguate a track that appears more than once and would
+                # collide on the (playlist_id, track_id, position) primary key; a
+                # delete-then-reinsert with fresh sequential positions is safe.
+                cursor.execute(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ?", (int(playlist_id),)
+                )
+                for new_pos, t in enumerate(tracks):
                     cursor.execute(
-                        "UPDATE playlist_tracks SET position = ? "
-                        "WHERE playlist_id = ? AND track_id = ?",
-                        (int(t["position"]) - 1, int(playlist_id), int(t["id"])),
+                        "INSERT INTO playlist_tracks (playlist_id, track_id, position) "
+                        "VALUES (?, ?, ?)",
+                        (int(playlist_id), int(t["id"]), new_pos),
                     )
                 db.get_connection().commit()
 
@@ -270,6 +279,8 @@ class HistoryState(AppState):
     @rx.event(background=True)
     async def confirm_delete(self):
         async with self:
+            if not self.access_allowed():
+                return
             if not self.playlist_to_delete:
                 return
 
@@ -311,6 +322,8 @@ class HistoryState(AppState):
     @rx.event(background=True)
     async def export_to_plex(self, playlist_id: str):
         async with self:
+            if not self.access_allowed():
+                return
             self.exporting = True
 
         try:
@@ -367,11 +380,15 @@ class HistoryState(AppState):
                 return
 
             playlist_name = playlist.name or f"PlexMix Playlist {pid}"
-            plex_client.create_playlist(playlist_name, track_plex_keys)
+            created = plex_client.create_playlist(playlist_name, track_plex_keys)
 
             async with self:
                 self.exporting = False
-            yield rx.toast.success(f"Exported '{playlist_name}' to Plex!")
+            # create_playlist returns None on failure — don't claim success.
+            if created is None:
+                yield rx.toast.error(f"Failed to export '{playlist_name}' to Plex.")
+            else:
+                yield rx.toast.success(f"Exported '{playlist_name}' to Plex!")
 
         except Exception as e:
             async with self:

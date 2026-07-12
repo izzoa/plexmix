@@ -2,6 +2,10 @@
 .github
 .web
 .states
+# Never copy a host virtualenv over the container's freshly built .venv.
+.venv
+.venv/
+venv/
 __pycache__
 *.pyc
 .env

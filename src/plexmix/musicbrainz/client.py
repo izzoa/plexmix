@@ -47,15 +47,27 @@ class MusicBrainzClient:
             time.sleep(self.rate_limit_delay - elapsed)
         self._last_request_time = time.monotonic()
 
+    @staticmethod
+    def _escape_lucene_phrase(value: str) -> str:
+        """Escape the characters that are special inside a quoted Lucene phrase.
+
+        Only backslash and double-quote need escaping within a ``"..."`` phrase;
+        unescaped quotes/backslashes in a title or artist otherwise broke the query
+        and produced a silent false no-match (which then got negative-cached).
+        """
+        return value.replace("\\", "\\\\").replace('"', '\\"')
+
     def search_recording(self, title: str, artist: str) -> Optional[Dict[str, Any]]:
         """Fuzzy match a recording by title and artist.
 
         Returns the best result above the confidence threshold, or None.
         """
         self._rate_limit()
+        safe_title = self._escape_lucene_phrase(title)
+        safe_artist = self._escape_lucene_phrase(artist)
         try:
             result = self.mb.search_recordings(
-                query=f'recording:"{title}" AND artist:"{artist}"',
+                query=f'recording:"{safe_title}" AND artist:"{safe_artist}"',
                 limit=5,
             )
         except Exception as e:
@@ -107,6 +119,16 @@ class MusicBrainzClient:
         if releases:
             rg = releases[0].get("release-group", {})
             release_group_id = rg.get("id")
+            # A recording's release stubs don't carry the release-group, so the
+            # inline lookup above was always empty. Resolve it with a follow-up
+            # release lookup ("release-groups" is not a valid recording include).
+            if not release_group_id and releases[0].get("id"):
+                try:
+                    self._rate_limit()
+                    rel = self.mb.get_release_by_id(releases[0]["id"], includes=["release-groups"])
+                    release_group_id = rel.get("release", {}).get("release-group", {}).get("id")
+                except Exception as e:
+                    logger.debug("Release-group lookup failed for %s: %s", mbid, e)
 
         return {
             "mbid": mbid,

@@ -32,6 +32,7 @@ class SyncEngine:
         vector_index: Optional[VectorIndex] = None,
         ai_provider: Optional[AIProvider] = None,
         musicbrainz_settings: Optional[MusicBrainzSettings] = None,
+        audio_settings: Optional[Any] = None,
     ):
         self.plex = plex_client
         self.db = db_manager
@@ -40,6 +41,10 @@ class SyncEngine:
         self.ai_provider = ai_provider
         self.tag_generator = TagGenerator(ai_provider) if ai_provider else None
         self.musicbrainz_settings = musicbrainz_settings
+        # When set (CLI --audio / audio.analyze_on_sync), audio analysis runs as a
+        # pipeline stage BEFORE embeddings so the embedding text includes audio
+        # features. The UI runs its own audio pass and leaves this None.
+        self.audio_settings = audio_settings
 
     def incremental_sync(
         self,
@@ -96,8 +101,11 @@ class SyncEngine:
                 if cancel_event and cancel_event.is_set():
                     raise KeyboardInterrupt("Sync cancelled by user")
 
-                # MusicBrainz enrichment (between DB sync and AI tags)
-                if self.musicbrainz_settings and self.musicbrainz_settings.enrich_on_sync:
+                # MusicBrainz enrichment (between DB sync and AI tags). Presence of
+                # musicbrainz_settings is the gate: callers (CLI --musicbrainz, UI)
+                # only set it when enrichment is intended, so re-checking
+                # enrich_on_sync here made the --musicbrainz flag a silent no-op.
+                if self.musicbrainz_settings:
                     task = progress.add_task("Enriching with MusicBrainz...", total=None)
                     self._enrich_musicbrainz(
                         progress, task, progress_callback, cancel_event, 0.45, 0.55
@@ -109,7 +117,18 @@ class SyncEngine:
                 if self.tag_generator and self.ai_provider:
                     task = progress.add_task("Generating AI tags...", total=None)
                     self._generate_tags_for_untagged_tracks(
-                        progress, task, progress_callback, cancel_event, 0.55, 0.7
+                        progress, task, progress_callback, cancel_event, 0.55, 0.65
+                    )
+
+                if cancel_event and cancel_event.is_set():
+                    raise KeyboardInterrupt("Sync cancelled by user")
+
+                # Audio analysis runs BEFORE embeddings so audio features are in the
+                # DB when the embedding text is built for newly synced tracks.
+                if self.audio_settings is not None:
+                    task = progress.add_task("Analyzing audio features...", total=None)
+                    self._analyze_audio_features(
+                        progress, task, progress_callback, cancel_event, 0.65, 0.75
                     )
 
                 if cancel_event and cancel_event.is_set():
@@ -118,7 +137,7 @@ class SyncEngine:
                 if generate_embeddings and self.embedding_generator and self.vector_index:
                     task = progress.add_task("Generating embeddings...", total=None)
                     self._generate_embeddings_for_new_tracks(
-                        progress, task, progress_callback, cancel_event, 0.7, 1.0
+                        progress, task, progress_callback, cancel_event, 0.75, 1.0
                     )
 
             sync_record = SyncHistory(
@@ -163,6 +182,19 @@ class SyncEngine:
         cancel_event: Optional[Event] = None,
     ) -> SyncHistory:
         logger.info("Starting regenerate sync - will clear and regenerate all tags and embeddings")
+
+        # Validate the Plex connection and honor cancellation BEFORE the
+        # destructive clear. Otherwise a failed connection, or a Ctrl+C moments
+        # after starting, wipes every tag and embedding with nothing regenerated —
+        # discarding potentially hours of paid AI work.
+        if progress_callback:
+            progress_callback(0.0, "Validating Plex connection...")
+        token_valid, token_msg = self.plex.validate_token()
+        if not token_valid:
+            logger.error("Plex token validation failed: %s", token_msg)
+            raise ConnectionError(token_msg)
+        if cancel_event and cancel_event.is_set():
+            raise KeyboardInterrupt("Sync cancelled by user")
 
         if progress_callback:
             progress_callback(0.0, "Clearing existing tags and embeddings...")
@@ -235,7 +267,12 @@ class SyncEngine:
             progress.update(task, advance=len(track_batch))
 
             if progress_callback and total_items % 100 == 0:
-                current_progress = progress_start + (progress_end - progress_start) * 0.5
+                # Advance monotonically as items are indexed (the grand total isn't
+                # known up front) instead of reporting a constant 0.5 fraction.
+                indexed_fraction = min(0.95, total_items / (total_items + 1000.0))
+                current_progress = (
+                    progress_start + (progress_end - progress_start) * indexed_fraction
+                )
                 progress_callback(current_progress, f"Indexed {total_items} items from Plex...")
 
         progress.update(
@@ -295,11 +332,20 @@ class SyncEngine:
         with self.db.deferred_commits():
             artist_map = {}
             for plex_key, plex_artist in plex_library["artists"].items():
-                if plex_key in db_artists:
-                    artist_map[plex_key] = db_artists[plex_key].id
+                existing_artist = db_artists.get(plex_key)
+                # Upsert new artists, and refresh existing ones whose metadata
+                # changed in Plex — previously existing rows were only mapped by
+                # id, so renames/genre edits never propagated to the DB.
+                if (
+                    existing_artist is None
+                    or existing_artist.id is None
+                    or existing_artist.name != plex_artist.name
+                    or existing_artist.genre != plex_artist.genre
+                    or existing_artist.bio != plex_artist.bio
+                ):
+                    artist_map[plex_key] = self.db.insert_artist(plex_artist)
                 else:
-                    artist_id = self.db.insert_artist(plex_artist)
-                    artist_map[plex_key] = artist_id
+                    artist_map[plex_key] = existing_artist.id
 
             album_map = {}
             for plex_key, plex_album in plex_library["albums"].items():
@@ -312,11 +358,21 @@ class SyncEngine:
                     )
                     plex_album.artist_id = unknown_artist_id
 
-                if plex_key in db_albums:
-                    album_map[plex_key] = db_albums[plex_key].id
+                existing_album = db_albums.get(plex_key)
+                # Upsert new albums, and refresh existing ones on metadata change
+                # (title, artist link, year, genre, cover art) so Plex edits sync.
+                if (
+                    existing_album is None
+                    or existing_album.id is None
+                    or existing_album.title != plex_album.title
+                    or existing_album.artist_id != plex_album.artist_id
+                    or existing_album.year != plex_album.year
+                    or existing_album.genre != plex_album.genre
+                    or existing_album.cover_art_url != plex_album.cover_art_url
+                ):
+                    album_map[plex_key] = self.db.insert_album(plex_album)
                 else:
-                    album_id = self.db.insert_album(plex_album)
-                    album_map[plex_key] = album_id
+                    album_map[plex_key] = existing_album.id
 
             total_tracks = len(plex_library["tracks"])
             processed = 0
@@ -369,12 +425,49 @@ class SyncEngine:
                             current_progress, f"Processing tracks... ({processed}/{total_tracks})"
                         )
 
-            for db_plex_key in db_tracks.keys():
-                if db_plex_key not in plex_library["tracks"]:
-                    track_id = db_tracks[db_plex_key].id
-                    if track_id is not None:
-                        self.db.delete_track(track_id)
-                    stats["tracks_removed"] += 1
+            # Safety guard: never mass-delete when Plex returned zero tracks but
+            # the DB is populated. A failed/incomplete fetch or a mis-selected
+            # library yields an empty track index that is indistinguishable here
+            # from a genuinely emptied library; deleting on it would wipe the
+            # entire local database (with cascades to embeddings, tags, audio
+            # features, and playlist contents). Fetch failures now raise upstream,
+            # but this keeps the destructive phase safe as defense in depth.
+            if not plex_library["tracks"] and db_tracks:
+                logger.warning(
+                    "Plex returned 0 tracks but the database holds %d; skipping the "
+                    "deletion phase to avoid wiping the library. Re-run sync once Plex "
+                    "is returning tracks, or clear the database intentionally if the "
+                    "library really is empty.",
+                    len(db_tracks),
+                )
+            else:
+                removed_track_ids: List[int] = []
+                for db_plex_key in db_tracks.keys():
+                    if db_plex_key not in plex_library["tracks"]:
+                        track_id = db_tracks[db_plex_key].id
+                        if track_id is not None:
+                            self.db.delete_track(track_id)
+                            removed_track_ids.append(track_id)
+                        stats["tracks_removed"] += 1
+
+                # Drop the deleted tracks' vectors from the FAISS index too, so
+                # search never returns tracks that no longer exist.
+                if (
+                    removed_track_ids
+                    and self.vector_index is not None
+                    and self.vector_index.index is not None
+                    and self.vector_index.index_path is not None
+                    and not self.vector_index.dimension_mismatch
+                ):
+                    try:
+                        self.vector_index.remove_vectors(removed_track_ids)
+                        self.vector_index.save_index(str(self.vector_index.index_path))
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to remove %d deleted vectors from FAISS index: %s",
+                            len(removed_track_ids),
+                            e,
+                        )
 
         progress.update(
             task,
@@ -391,6 +484,9 @@ class SyncEngine:
             or db_track.rating != plex_track.rating
             or db_track.play_count != plex_track.play_count
             or db_track.last_played != plex_track.last_played
+            # Detect relocated/renamed media so audio analysis (which needs a
+            # valid file_path) picks up the new location on the next sync.
+            or db_track.file_path != plex_track.file_path
         )
 
     def _generate_embeddings_for_new_tracks(
@@ -406,7 +502,11 @@ class SyncEngine:
             return
 
         all_tracks = self.db.get_all_tracks()
-        existing_track_ids = self.db.get_track_ids_with_embeddings()
+        # Scope to the active embedding model so switching provider/model re-embeds
+        # tracks that were only embedded by a previous model.
+        existing_track_ids = self.db.get_track_ids_with_embeddings(
+            self.embedding_generator.provider_name
+        )
         tracks_needing_embeddings = [t for t in all_tracks if t.id not in existing_track_ids]
 
         if not tracks_needing_embeddings:
@@ -514,6 +614,20 @@ class SyncEngine:
             logger.warning(
                 f"Embedding generation interrupted. Saved {embeddings_saved} embeddings."
             )
+            # Rebuild the FAISS index from the DB (which holds the partial results)
+            # so the index doesn't diverge from the embeddings table after an
+            # interrupt. The rebuild is scoped to the active model.
+            if self.vector_index is not None and embeddings_saved > 0:
+                try:
+                    partial = self.db.get_all_embeddings(self.embedding_generator.provider_name)
+                    if partial:
+                        self.vector_index.build_index(
+                            [v for _, v in partial], [t for t, _ in partial]
+                        )
+                        if self.vector_index.index_path is not None:
+                            self.vector_index.save_index(str(self.vector_index.index_path))
+                except Exception as e:
+                    logger.warning("Failed to persist partial embeddings to index: %s", e)
             raise
 
         # Use incremental FAISS updates if index already exists with correct dimension
@@ -525,8 +639,10 @@ class SyncEngine:
                 self.vector_index.update_vectors(new_embeddings, new_track_ids)
                 logger.info(f"Incrementally updated {len(new_embeddings)} vectors in FAISS index")
         else:
-            # Full rebuild needed (new index or dimension mismatch)
-            all_embeddings = self.db.get_all_embeddings()
+            # Full rebuild needed (new index or dimension mismatch). Scope to the
+            # active model so stale vectors from a previous provider/model don't
+            # get mixed in (which would crash the build with ragged dimensions).
+            all_embeddings = self.db.get_all_embeddings(self.embedding_generator.provider_name)
             track_ids = [emb[0] for emb in all_embeddings]
             vectors = [emb[1] for emb in all_embeddings]
             self.vector_index.build_index(vectors, track_ids)
@@ -612,12 +728,14 @@ class SyncEngine:
                     saved += 1
             return saved
 
+        partial_results: Dict[int, Dict[str, Any]] = {}
         try:
             tag_results = self.tag_generator.generate_tags_batch(
                 track_data_list,
                 batch_size=20,
                 progress_callback=tag_progress_callback,
                 cancel_event=cancel_event,
+                result_sink=partial_results,
             )
             tags_saved = _save_tag_results(tag_results)
             progress.update(task, description=f"Generated tags for {tags_saved} tracks")
@@ -632,11 +750,73 @@ class SyncEngine:
             if progress_callback:
                 progress_callback(progress_end, f"AI tagging stopped: {e.user_message}")
         except KeyboardInterrupt:
-            logger.warning("Tag generation interrupted by user")
+            # Persist tags generated before the interrupt so they aren't discarded
+            # (the CLI/UI tells the user "progress saved").
+            tags_saved = _save_tag_results(partial_results)
+            logger.warning("Tag generation interrupted; saved %d tagged tracks", tags_saved)
             raise
         except Exception as e:
             logger.error(f"Tag generation failed: {e}")
             progress.update(task, description="Tag generation failed")
+
+    def _analyze_audio_features(
+        self,
+        progress: Progress,
+        task: Any,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0,
+    ) -> None:
+        if self.audio_settings is None:
+            return
+
+        try:
+            from ..audio.analyzer import EssentiaAnalyzer
+
+            analyzer = EssentiaAnalyzer()
+        except ImportError:
+            logger.warning("essentia not available, skipping audio analysis")
+            progress.update(task, description="Audio: Essentia not installed")
+            return
+
+        tracks = self.db.get_tracks_without_audio_features()
+        if not tracks:
+            progress.update(task, description="No tracks need audio analysis")
+            return
+
+        progress.update(task, total=len(tracks))
+        logger.info(f"Analyzing audio features for {len(tracks)} tracks")
+        duration_limit = self.audio_settings.duration_limit
+        analyzed = 0
+        errors = 0
+
+        for track in tracks:
+            if cancel_event and cancel_event.is_set():
+                break
+            if not track.file_path or track.id is None:
+                continue
+            try:
+                resolved = self.audio_settings.resolve_path(track.file_path)
+                features = analyzer.analyze(resolved, duration_limit=duration_limit)
+                self.db.insert_audio_features(track.id, features.to_dict())
+                analyzed += 1
+            except Exception as e:
+                errors += 1
+                logger.debug("Audio analysis failed for %s: %s", track.title, e)
+
+            processed = analyzed + errors
+            progress.update(task, completed=processed)
+            if progress_callback and processed % 5 == 0:
+                current_progress = progress_start + (progress_end - progress_start) * (
+                    processed / len(tracks)
+                )
+                progress_callback(
+                    current_progress, f"Analyzing audio... ({processed}/{len(tracks)})"
+                )
+
+        progress.update(task, description=f"Audio: {analyzed} analyzed, {errors} errors")
+        logger.info(f"Audio analysis: {analyzed} analyzed, {errors} errors")
 
     def _enrich_musicbrainz(
         self,

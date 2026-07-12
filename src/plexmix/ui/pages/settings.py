@@ -375,6 +375,9 @@ def _appearance_section() -> rx.Component:
     """Theme, density, and accent-intensity controls."""
     return rx.vstack(
         _section_heading("Appearance"),
+        # Sync the persisted density/accent from localStorage into state on mount
+        # so the segmented controls show the correct selection after a reload.
+        rx.box(on_mount=AppearanceState.hydrate_appearance, display="none"),
         rx.box(
             rx.box("Theme", class_name="field-label"),
             rx.el.button(

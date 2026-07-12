@@ -340,13 +340,25 @@ def test_select_diverse_caps_artist_at_3(playlist_generator):
 
 
 def test_select_diverse_caps_album_at_2(playlist_generator):
-    """Album cap: max 2 tracks per album."""
+    """Album cap: max 2 tracks per album (same album = same title AND artist)."""
     candidates = [
-        {"id": i, "title": f"Song {i}", "artist": f"Artist {i}", "album": "Same Album"}
+        {"id": i, "title": f"Song {i}", "artist": "Same Artist", "album": "Same Album"}
         for i in range(10)
     ]
     selected = playlist_generator._select_diverse_tracks(candidates, max_tracks=10)
     assert len(selected) == 2
+
+
+def test_select_diverse_does_not_conflate_same_title_albums(playlist_generator):
+    """Identically-titled albums by different artists are distinct albums and must
+    not be capped together (regression for the album-key conflation bug)."""
+    candidates = [
+        {"id": i, "title": f"Song {i}", "artist": f"Artist {i}", "album": "Greatest Hits"}
+        for i in range(6)
+    ]
+    selected = playlist_generator._select_diverse_tracks(candidates, max_tracks=10)
+    # Each is a different artist/album, so none are dropped by the album cap.
+    assert len(selected) == 6
 
 
 def test_select_diverse_deduplicates_title_artist(playlist_generator):

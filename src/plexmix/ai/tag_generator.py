@@ -21,11 +21,14 @@ class TagGenerator:
         batch_size: int = 20,
         progress_callback: Optional[Callable[[int, int, int], None]] = None,
         cancel_event: Optional[threading.Event] = None,
+        result_sink: Optional[Dict[int, Dict[str, Any]]] = None,
     ) -> Dict[int, Dict[str, Any]]:
         logger.debug(f"Generating tags for {len(tracks)} tracks")
 
         total_batches = (len(tracks) + batch_size - 1) // batch_size
-        all_results: Dict[int, Dict[str, Any]] = {}
+        # If a sink is supplied, accumulate into it so a caller can recover the
+        # partial results even if a KeyboardInterrupt propagates mid-run.
+        all_results: Dict[int, Dict[str, Any]] = result_sink if result_sink is not None else {}
         tracks_tagged = 0
 
         for batch_num in range(total_batches):

@@ -125,14 +125,25 @@ def create_playlist(
         if name is None:
             name = typer.prompt("Playlist name", default=f"{mood} - {len(tracks)} tracks")
 
+        # Validate the name BEFORE any side effect (Plex creation / DB save) so a
+        # blank/whitespace name fails cleanly instead of raising a ValidationError
+        # after the Plex playlist has already been created.
+        name = (name or "").strip()
+        if not name:
+            console.print("[red]Playlist name cannot be empty.[/red]")
+            raise typer.Exit(1)
+
         track_ids = [t["id"] for t in tracks]
 
         plex_key = None
         if create_in_plex and settings.plex.library_name:
             try:
                 plex_client = connect_plex(settings)
-            except PlexConnectionError:
+            except PlexConnectionError as e:
                 plex_client = None
+                console.print(
+                    f"[yellow]Could not connect to Plex ({e}); saving locally only.[/yellow]"
+                )
             if plex_client:
                 plex_rating_keys: list[str] = []
                 for track_id in track_ids:
@@ -146,6 +157,11 @@ def create_playlist(
                 if playlist:
                     plex_key = str(playlist.ratingKey)
                     console.print("[green]Created playlist in Plex![/green]")
+                else:
+                    # Don't report success for a Plex creation that failed.
+                    console.print(
+                        "[yellow]Failed to create the playlist in Plex; saving locally only.[/yellow]"
+                    )
 
         generator.save_playlist(name, track_ids, mood, plex_key=plex_key)
         console.print(f"[green]Playlist '{name}' saved with {len(tracks)} tracks![/green]")

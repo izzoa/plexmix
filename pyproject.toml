@@ -1,11 +1,18 @@
 [tool.poetry]
 name = "plexmix"
-version = "0.11.0"
+version = "0.12.0"
 description = "AI-powered Plex playlist generator using mood-based queries"
 authors = ["Anthony Izzo"]
 license = "AGPL-3.0-only"
 readme = "README.md"
 packages = [{include = "plexmix", from = "src"}]
+# Ship the Reflex UI app dir, its entrypoint config, and UI assets in the built
+# sdist/wheel — without these, `plexmix ui` was broken for every pip install.
+include = [
+    { path = "rxconfig.py", format = ["sdist", "wheel"] },
+    { path = "plexmix_ui", format = ["sdist", "wheel"] },
+    { path = "assets", format = ["sdist", "wheel"] },
+]
 
 [tool.poetry.dependencies]
 python = "^3.10"

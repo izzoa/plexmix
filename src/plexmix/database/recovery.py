@@ -115,7 +115,20 @@ class DatabaseRecovery:
             return f"Database was missing. Created new database at {path}. Run 'plexmix sync' to populate."
 
         if not DatabaseRecovery.verify_database_integrity(db_path):
-            backup_path = path.parent / f"{path.stem}_corrupted_{path.suffix}"
+            # Unique, well-formed backup name. The old scheme
+            # (f"{stem}_corrupted_{suffix}") produced "plexmix_corrupted_.db" and
+            # was fixed, so a second recovery overwrote the first backup (and
+            # rename() onto an existing file fails on Windows).
+            from datetime import datetime
+
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            backup_path = path.with_name(f"{path.stem}_corrupted_{timestamp}{path.suffix}")
+            counter = 1
+            while backup_path.exists():
+                backup_path = path.with_name(
+                    f"{path.stem}_corrupted_{timestamp}_{counter}{path.suffix}"
+                )
+                counter += 1
             path.rename(backup_path)
             logger.warning(f"Corrupted database backed up to {backup_path}")
 

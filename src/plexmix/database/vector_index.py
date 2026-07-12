@@ -1,5 +1,6 @@
 import faiss  # type: ignore[import-untyped]
 import numpy as np
+import os
 import pickle
 from pathlib import Path
 from typing import List, Tuple, Optional
@@ -130,7 +131,10 @@ class VectorIndex:
             )
             if not filter_set:
                 return []
-            k_search = min(k_search * 3, self.index.ntotal)
+            # Scan the whole index when filtering. A fixed 3x-k window starved the
+            # candidate pool for selective filters (the matching tracks can sit far
+            # down the ranking); with a flat IP index the search cost is the same.
+            k_search = self.index.ntotal
 
         distances, indices = self.index.search(query_normalized, k_search)
 
@@ -156,12 +160,22 @@ class VectorIndex:
 
         save_path = Path(path).expanduser()
         save_path.parent.mkdir(parents=True, exist_ok=True)
-
-        faiss.write_index(self.index, str(save_path))
-
         metadata_path = save_path.with_suffix(".metadata")
-        with open(metadata_path, "wb") as f:
+
+        # Write to temp files and atomically replace, so an interrupted save can't
+        # leave a half-written index/metadata pair. A partial file would be treated
+        # as corrupt by load_index and deleted, destroying the whole index.
+        tmp_index = save_path.parent / (save_path.name + ".tmp")
+        tmp_metadata = metadata_path.parent / (metadata_path.name + ".tmp")
+
+        faiss.write_index(self.index, str(tmp_index))
+        with open(tmp_metadata, "wb") as f:
             pickle.dump({"track_ids": self.track_ids, "dimension": self.dimension}, f)
+            f.flush()
+            os.fsync(f.fileno())
+
+        os.replace(tmp_index, save_path)
+        os.replace(tmp_metadata, metadata_path)
 
         logger.info(f"Saved FAISS index to {save_path}")
 
@@ -194,19 +208,49 @@ class VectorIndex:
                     else:
                         self.dimension_mismatch = False
                         self.loaded_dimension = None
+            else:
+                # No metadata file: derive the dimension from the loaded index so a
+                # wrong-dimension index is flagged here instead of crashing later
+                # inside faiss during search/add_with_ids.
+                index_dim = getattr(raw_index, "d", None)
+                if index_dim is not None and index_dim != self.dimension:
+                    logger.warning(
+                        "Index dimension %s does not match current provider dimension %s "
+                        "(no metadata file). Flagging for regeneration.",
+                        index_dim,
+                        self.dimension,
+                    )
+                    self.dimension_mismatch = True
+                    self.loaded_dimension = index_dim
 
             # Migrate legacy IndexFlatIP → IndexIDMap(IndexFlatIP)
             if isinstance(raw_index, faiss.IndexFlatIP):
-                logger.info("Migrating legacy IndexFlatIP to IndexIDMap")
-                self._create_index()
                 n = raw_index.ntotal
-                if n > 0 and self.track_ids:
+                if n > 0 and len(self.track_ids) >= n:
+                    logger.info("Migrating legacy IndexFlatIP to IndexIDMap")
+                    self._create_index()
                     vectors = faiss.rev_swig_ptr(raw_index.get_xb(), n * raw_index.d)
                     vectors = np.reshape(vectors, (n, raw_index.d)).copy()
                     ids = np.array(self.track_ids[:n], dtype=np.int64)
                     self.index.add_with_ids(vectors, ids)  # type: ignore[union-attr]
                     self.track_ids = self.track_ids[:n]
-                logger.info(f"Migrated {n} vectors to IndexIDMap")
+                    logger.info(f"Migrated {n} vectors to IndexIDMap")
+                elif n > 0:
+                    # We have vectors but no usable track_id mapping — a bare
+                    # IndexFlatIP cannot be migrated without it. Don't silently
+                    # drop them (the old code produced an empty index while logging
+                    # "Migrated N vectors"); flag for a rebuild from the database.
+                    logger.warning(
+                        "Legacy index has %d vectors but only %d track_ids; cannot migrate. "
+                        "Flagging for rebuild from the database.",
+                        n,
+                        len(self.track_ids),
+                    )
+                    self._create_index()
+                    self.track_ids = []
+                    self.dimension_mismatch = True
+                else:
+                    self._create_index()
             else:
                 self.index = raw_index
 

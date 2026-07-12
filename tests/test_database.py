@@ -25,6 +25,116 @@ def db_manager():
     Path(db_path).unlink(missing_ok=True)
 
 
+def test_connect_upgrades_legacy_database():
+    """connect() upgrades a legacy DB (old column names, no audio_features table)
+    without crashing. Regression for the migrate-after-index ordering bug: indexes
+    referencing audio_features / the environments+instruments columns were created
+    before the migrations that add them, so connect() crashed on any old database."""
+    import sqlite3
+
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+        db_path = tmp.name
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.executescript(
+            """
+            CREATE TABLE artists (id INTEGER PRIMARY KEY, plex_key TEXT, name TEXT,
+                                  genre TEXT, bio TEXT);
+            CREATE TABLE albums (id INTEGER PRIMARY KEY, plex_key TEXT, title TEXT,
+                                 artist_id INTEGER, year INTEGER, genre TEXT, cover_art_url TEXT);
+            CREATE TABLE tracks (
+                id INTEGER PRIMARY KEY, plex_key TEXT, title TEXT, artist_id INTEGER,
+                album_id INTEGER, duration_ms INTEGER, genre TEXT, year INTEGER, rating REAL,
+                play_count INTEGER, last_played TIMESTAMP, file_path TEXT, tags TEXT,
+                environment TEXT, primary_instrument TEXT, tags_generated_at TIMESTAMP,
+                musicbrainz_recording_id TEXT, musicbrainz_genres TEXT, recording_type TEXT,
+                musicbrainz_enriched_at TIMESTAMP
+            );
+            CREATE TABLE genres (id INTEGER PRIMARY KEY, name TEXT);
+            CREATE TABLE track_genres (track_id INTEGER, genre_id INTEGER);
+            CREATE TABLE embeddings (id INTEGER PRIMARY KEY, track_id INTEGER, embedding_model TEXT,
+                                     embedding_dim INTEGER, vector BLOB,
+                                     created_at TIMESTAMP, updated_at TIMESTAMP);
+            CREATE TABLE sync_history (id INTEGER PRIMARY KEY, sync_date TIMESTAMP,
+                                       tracks_added INTEGER, tracks_updated INTEGER,
+                                       tracks_removed INTEGER, status TEXT, error_message TEXT);
+            CREATE TABLE playlists (id INTEGER PRIMARY KEY, plex_key TEXT, name TEXT);
+            CREATE TABLE playlist_tracks (playlist_id INTEGER, track_id INTEGER, position INTEGER);
+            INSERT INTO artists (plex_key, name) VALUES ('a1', 'Artist');
+            INSERT INTO albums (plex_key, title, artist_id, year) VALUES ('al1', 'Album', 1, 1990);
+            INSERT INTO tracks (plex_key, title, artist_id, album_id, environment)
+                VALUES ('t1', 'Song', 1, 1, 'club');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        manager = SQLiteManager(db_path)
+        manager.connect()  # must not raise despite the legacy schema
+
+        cursor = manager.get_connection().cursor()
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='audio_features'"
+        )
+        assert cursor.fetchone() is not None  # migration 5 created it
+        cursor.execute("PRAGMA table_info(tracks)")
+        cols = {row[1] for row in cursor.fetchall()}
+        assert "environments" in cols  # migration 1 renamed environment
+        assert "instruments" in cols  # migration 2 renamed primary_instrument
+        manager.close()
+    finally:
+        Path(db_path).unlink(missing_ok=True)
+
+
+def _seed_track_with_embeddings(db_manager, models_and_dims):
+    """Insert one artist/album/track plus one embedding per (model, dim) pair."""
+    artist_id = db_manager.insert_artist(Artist(plex_key="a1", name="Artist"))
+    album_id = db_manager.insert_album(Album(plex_key="al1", title="Album", artist_id=artist_id))
+    track_id = db_manager.insert_track(
+        Track(plex_key="t1", title="Song", artist_id=artist_id, album_id=album_id)
+    )
+    for model, dim in models_and_dims:
+        db_manager.insert_embedding(
+            Embedding(
+                track_id=track_id,
+                embedding_model=model,
+                embedding_dim=dim,
+                vector=[0.1] * dim,
+            )
+        )
+    return track_id
+
+
+def test_embedding_reads_are_model_scoped(db_manager):
+    """get_all_embeddings / get_track_ids_with_embeddings filter by model so a
+    provider switch never mixes dimensions or skips re-embedding."""
+    _seed_track_with_embeddings(db_manager, [("Gemini", 4), ("OpenAI", 2)])
+
+    # Unscoped returns both rows (one per model).
+    assert len(db_manager.get_all_embeddings()) == 2
+
+    gemini = db_manager.get_all_embeddings("Gemini")
+    assert len(gemini) == 1 and len(gemini[0][1]) == 4
+    openai = db_manager.get_all_embeddings("OpenAI")
+    assert len(openai) == 1 and len(openai[0][1]) == 2
+
+    # A track embedded only by Gemini is "missing" for OpenAI, so it re-embeds.
+    assert db_manager.get_track_ids_with_embeddings("OpenAI")  # OpenAI row exists here
+    assert db_manager.get_track_ids_with_embeddings("Cohere") == set()
+
+
+def test_get_tracks_no_duplicate_rows_with_multi_model_embeddings(db_manager):
+    """get_tracks must not duplicate a track that has embeddings from more than
+    one model (previously a LEFT JOIN produced one row per embedding)."""
+    _seed_track_with_embeddings(db_manager, [("Gemini", 4), ("OpenAI", 2)])
+
+    rows = db_manager.get_tracks(limit=50, offset=0)
+    matching = [r for r in rows if r["plex_key"] == "t1"]
+    assert len(matching) == 1
+    assert matching[0]["has_embedding"] == 1
+
+
 def test_create_tables(db_manager):
     cursor = db_manager.get_connection().cursor()
     cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")

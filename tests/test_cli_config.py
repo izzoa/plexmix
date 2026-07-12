@@ -25,7 +25,7 @@ class TestConfigTest:
     def test_no_plex_url_configured(self, mock_settings_cls):
         mock_settings = MagicMock()
         mock_settings.plex.url = None
-        mock_settings_cls.return_value = mock_settings
+        mock_settings_cls.load_from_file.return_value = mock_settings
 
         result = runner.invoke(app, ["config", "test"])
         assert result.exit_code == 1

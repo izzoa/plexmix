@@ -23,6 +23,10 @@ _FATAL_MSG = (
     "The AI provider rejected the request and it cannot be retried. "
     "Check your API key, model name, and provider settings."
 )
+_QUOTA_MSG = (
+    "The AI provider rejected the request because your quota or billing is exhausted. "
+    "This is not a temporary rate limit — check your plan, billing, and usage limits."
+)
 
 
 class FatalProviderError(Exception):
@@ -60,6 +64,13 @@ def classify_provider_error(exc: BaseException) -> Tuple[bool, bool, str]:
     """
     s = str(exc)
     low = s.lower()
+
+    # 0) Permanent billing / quota exhaustion — distinct from a transient rate
+    #    limit and unrecoverable by retrying, so treat as fatal. Checked before the
+    #    retryable block because OpenAI returns HTTP 429 for insufficient_quota,
+    #    which would otherwise be misread as a rate limit and silently retried away.
+    if "insufficient_quota" in low or "billing" in low or "exceeded your current quota" in low:
+        return (False, True, _QUOTA_MSG)
 
     # 1) Retryable transient errors (checked first).
     if (

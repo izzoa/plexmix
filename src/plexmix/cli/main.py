@@ -53,8 +53,32 @@ def main(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Verbose output"),
     quiet: bool = typer.Option(False, "--quiet", "-q", help="Quiet mode"),
 ) -> None:
+    # Honor the global --config: register it so every Settings.load_from_file()
+    # in subcommands reads from it (previously the option was accepted and ignored).
+    if config:
+        from ..config.settings import set_config_path_override
+
+        set_config_path_override(config)
+
+    # --verbose/--quiet override the configured level; otherwise use the config's
+    # level. The log file honors LOG_FILE_PATH / PLEXMIX_DATA_DIR instead of a
+    # hard-coded path. Loading is defensive so a bad/missing config can't stop the
+    # CLI from starting.
+    from pathlib import Path
+
     log_level = "DEBUG" if verbose else ("ERROR" if quiet else "INFO")
-    setup_logging(level=log_level, log_file="~/.plexmix/plexmix.log")
+    log_file = "~/.plexmix/plexmix.log"
+    try:
+        settings = Settings.load_from_file()
+        level = settings.logging.level
+        if not verbose and not quiet and isinstance(level, str):
+            log_level = level
+        log_path = settings.logging.get_log_path()
+        if isinstance(log_path, Path):
+            log_file = str(log_path)
+    except Exception:
+        pass
+    setup_logging(level=log_level, log_file=log_file)
 
 
 if __name__ == "__main__":

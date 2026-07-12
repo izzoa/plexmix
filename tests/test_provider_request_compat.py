@@ -150,6 +150,8 @@ class TestClaudeSamplingParams:
         assert _claude_rejects_sampling_params("claude-opus-4-10")  # two-digit minor >= 7
         assert not _claude_rejects_sampling_params("claude-opus-4-6")
         assert not _claude_rejects_sampling_params("claude-opus-4-1-20250414")
+        # A bare date-stamped Opus 4.0 id must not read the date as the minor version.
+        assert not _claude_rejects_sampling_params("claude-opus-4-20250514")
         assert not _claude_rejects_sampling_params("claude-sonnet-4-6")
         assert not _claude_rejects_sampling_params("claude-haiku-4-5-20251001")
 

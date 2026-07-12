@@ -64,7 +64,11 @@ def generate_embeddings_for_tracks(
         batch_tracks = tracks[i : i + batch_size]
 
         track_data_list = [build_track_embedding_data(db, t) for t in batch_tracks]
-        texts = [create_track_text(td) for td in track_data_list]
+        # Include audio features in the embedding text, matching the sync path —
+        # otherwise CLI/UI-regenerated embeddings diverge from sync-generated ones.
+        batch_ids = [td["id"] for td in track_data_list if td["id"] is not None]
+        audio_features_map = db.get_audio_features_by_track_ids(batch_ids)
+        texts = [create_track_text(td, audio_features_map.get(td["id"])) for td in track_data_list]
         vectors = embedding_generator.generate_batch_embeddings(texts, batch_size=batch_size)
 
         for td, vector in zip(track_data_list, vectors):
@@ -87,12 +91,17 @@ def rebuild_vector_index(
     db: SQLiteManager,
     vector_index: VectorIndex,
     index_path: str,
+    embedding_model: Optional[str] = None,
 ) -> int:
     """Rebuild and save the FAISS index from all embeddings in the database.
 
+    Pass *embedding_model* to build from a single model's vectors — mixing models
+    (e.g. after switching providers) produces ragged dimensions that crash the
+    index build.
+
     Returns the number of embeddings in the rebuilt index.
     """
-    all_embeddings = db.get_all_embeddings()
+    all_embeddings = db.get_all_embeddings(embedding_model)
     track_ids = [emb[0] for emb in all_embeddings]
     vectors = [emb[1] for emb in all_embeddings]
 

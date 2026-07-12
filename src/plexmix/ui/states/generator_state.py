@@ -33,6 +33,9 @@ class GeneratorState(AppState):
     audio_analyzed_count: int = 0
 
     is_generating: bool = False
+    # Separate flag for save operations so saving doesn't reuse is_generating and
+    # flip the results view back to the "AI-thinking" stage.
+    is_saving: bool = False
     generation_progress: int = 0
     generation_message: str = ""
     generation_log: list[str] = []
@@ -64,7 +67,7 @@ class GeneratorState(AppState):
         if not self.check_auth():
             self.is_page_loading = False
             return
-        super().on_load()
+        self.load_app_data()
         self._load_audio_stats()
         self._load_templates()
 
@@ -132,9 +135,10 @@ class GeneratorState(AppState):
             else:
                 self.templates = []
 
-            # Seed built-in presets if none exist
-            if not any(t.get("is_preset") == "1" for t in self.templates):
-                self._seed_presets()
+            # NOTE: built-in presets are intentionally NOT auto-seeded here. The
+            # template apply/save UI is not yet wired, so writing preset rows into
+            # the DB on every generator page load was a surprising side effect.
+            # _seed_presets() remains available to call once the feature is wired.
 
         except Exception:
             self.templates = []
@@ -314,6 +318,22 @@ class GeneratorState(AppState):
         self.shuffle_mode = config.get("shuffle_mode", "similarity")
         self.candidate_pool_multiplier = int(config.get("candidate_pool_multiplier", 25))
         self.avoid_recent = int(config.get("avoid_recent", 0))
+        # Reveal the advanced panel when the rerun brought any advanced filters, so
+        # they aren't silently applied (and carried into later generations) while
+        # hidden in a collapsed section.
+        if any(
+            [
+                self.genre_filter,
+                self.year_min,
+                self.year_max,
+                self.tempo_min,
+                self.tempo_max,
+                self.energy_level,
+                self.key_filter,
+                self.danceability_min,
+            ]
+        ):
+            self.show_advanced = True
 
     def use_example(self, example: str):
         self.mood_query = example
@@ -370,6 +390,12 @@ class GeneratorState(AppState):
     @rx.event(background=True)
     async def generate_playlist(self):
         async with self:
+            if not self.access_allowed():
+                return
+            # Guard against concurrent generations (e.g. a double-click) so two
+            # overlapping jobs don't run against the index at once.
+            if self.is_generating:
+                return
             if not self.mood_query.strip():
                 return
 
@@ -381,6 +407,9 @@ class GeneratorState(AppState):
             self.generation_log = ["Starting playlist generation..."]
             self.generated_playlist = []
             self.total_duration_ms = 0
+            # Default the playlist name to THIS generation's mood, so a second
+            # generation isn't saved under the first playlist's name.
+            self.playlist_name = self.mood_query.strip()[:60]
 
         current_gen = self._generation_id
         cancel_event = self._cancel_event
@@ -425,8 +454,16 @@ class GeneratorState(AppState):
             loop = asyncio.get_running_loop()
 
             def progress_callback(progress: float, message: str):
+                gen_id = current_gen
+
                 async def update():
                     async with self:
+                        # Drop callbacks from a cancelled or superseded generation
+                        # so they don't repopulate the cleared message/log.
+                        if self._generation_id != gen_id or (
+                            cancel_event is not None and cancel_event.is_set()
+                        ):
+                            return
                         progress_value = max(0, min(100, int(progress * 100)))
                         self.generation_progress = progress_value
                         self.generation_message = message
@@ -502,7 +539,9 @@ class GeneratorState(AppState):
                         cancel_event=cancel_event,
                     )
 
-                    total_duration = sum(track.get("duration_ms", 0) for track in tracks)
+                    # Coerce NULL durations to 0 — a track with duration_ms=None
+                    # otherwise raised TypeError in sum().
+                    total_duration = sum((track.get("duration_ms") or 0) for track in tracks)
 
                     return {
                         "tracks": tracks,
@@ -537,7 +576,7 @@ class GeneratorState(AppState):
 
             # Format durations for display
             for track in playlist_tracks:
-                duration_ms = track.get("duration_ms", 0)
+                duration_ms = track.get("duration_ms") or 0
                 if duration_ms:
                     minutes = duration_ms // 60000
                     seconds = (duration_ms // 1000) % 60
@@ -579,9 +618,11 @@ class GeneratorState(AppState):
                     -GENERATION_LOG_MAX:
                 ]
 
-    @rx.event(background=True)
-    async def regenerate(self):
-        await self.generate_playlist()
+    @rx.event
+    def regenerate(self):
+        # Trigger the background generation handler by returning it; awaiting a
+        # background event directly raises (it is dispatched, not awaited).
+        return GeneratorState.generate_playlist
 
     def remove_track(self, track_id: str):
         self.generated_playlist = [t for t in self.generated_playlist if t["id"] != track_id]
@@ -646,10 +687,12 @@ class GeneratorState(AppState):
     @rx.event(background=True)
     async def save_to_plex(self):
         async with self:
+            if not self.access_allowed():
+                return
             if not self.generated_playlist or not self.playlist_name.strip():
                 return
 
-            self.is_generating = True
+            self.is_saving = True
             self.generation_message = "Saving to Plex..."
 
         try:
@@ -658,34 +701,47 @@ class GeneratorState(AppState):
 
             settings = Settings.load_from_file()
 
-            try:
-                plex_client = connect_plex(settings)
-            except PlexConnectionError as e:
-                async with self:
-                    self.is_generating = False
-                    self.generation_message = ""
-                yield rx.toast.error(str(e))
-                return
-
             if not settings.plex.library_name:
                 async with self:
-                    self.is_generating = False
+                    self.is_saving = False
                     self.generation_message = ""
                 yield rx.toast.error("Music library not configured")
                 return
 
-            track_plex_keys = [int(track["plex_key"]) for track in self.generated_playlist]
-            plex_client.create_playlist(self.playlist_name, track_plex_keys)
+            # Capture state inside the context, then do the blocking Plex network
+            # work in an executor so the event loop isn't frozen.
+            async with self:
+                playlist_name = self.playlist_name
+                track_plex_keys = [int(track["plex_key"]) for track in self.generated_playlist]
+
+            def _create() -> Any:
+                client = connect_plex(settings)
+                return client.create_playlist(playlist_name, track_plex_keys)
+
+            loop = asyncio.get_running_loop()
+            try:
+                playlist = await loop.run_in_executor(None, _create)
+            except PlexConnectionError as e:
+                async with self:
+                    self.is_saving = False
+                    self.generation_message = ""
+                yield rx.toast.error(str(e))
+                return
 
             async with self:
-                self.is_generating = False
+                self.is_saving = False
                 self.generation_message = ""
 
-            yield rx.toast.success(f"Saved to Plex: {self.playlist_name}")
+            # Honor the return: create_playlist returns None on failure, so don't
+            # claim success when nothing was actually created in Plex.
+            if playlist is None:
+                yield rx.toast.error("Failed to save to Plex (the playlist was not created).")
+            else:
+                yield rx.toast.success(f"Saved to Plex: {playlist_name}")
 
         except Exception as e:
             async with self:
-                self.is_generating = False
+                self.is_saving = False
                 self.generation_message = ""
 
             yield rx.toast.error(f"Failed to save to Plex: {str(e)}")
@@ -696,7 +752,7 @@ class GeneratorState(AppState):
             if not self.generated_playlist or not self.playlist_name.strip():
                 return
 
-            self.is_generating = True
+            self.is_saving = True
             self.generation_message = "Saving locally..."
 
         try:
@@ -746,14 +802,14 @@ class GeneratorState(AppState):
             db.close()
 
             async with self:
-                self.is_generating = False
+                self.is_saving = False
                 self.generation_message = ""
 
             yield rx.toast.success(f"Saved locally: {self.playlist_name}")
 
         except Exception as e:
             async with self:
-                self.is_generating = False
+                self.is_saving = False
                 self.generation_message = ""
 
             yield rx.toast.error(f"Failed to save locally: {str(e)}")

@@ -157,12 +157,18 @@ def playlist_import(
             )
             raise typer.Exit(1)
 
-    content = path.read_text(encoding="utf-8")
-
-    if fmt == "json":
-        playlist_name, tracks_meta = _parse_json_import(content)
-    else:
-        playlist_name, tracks_meta = _parse_m3u_import(content)
+    try:
+        content = path.read_text(encoding="utf-8")
+        if fmt == "json":
+            playlist_name, tracks_meta = _parse_json_import(content)
+        else:
+            playlist_name, tracks_meta = _parse_m3u_import(content)
+    except (OSError, UnicodeDecodeError) as e:
+        console.print(f"[red]Could not read '{path}': {e}[/red]")
+        raise typer.Exit(1)
+    except (json.JSONDecodeError, ValueError, AttributeError, KeyError, TypeError) as e:
+        console.print(f"[red]Malformed {fmt} playlist file: {e}[/red]")
+        raise typer.Exit(1)
 
     if name:
         playlist_name = name

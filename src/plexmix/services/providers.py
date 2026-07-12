@@ -121,9 +121,16 @@ def build_ai_provider(
     """
     name = provider_name or settings.ai.default_provider or "gemini"
     api_key = api_key_override if api_key_override is not None else resolve_ai_api_key(name)
-    model = settings.ai.model
+    # Only forward the configured model when building the configured provider.
+    # Forwarding settings.ai.model to a *different* provider (e.g. a Gemini model
+    # name to OpenAI) sends an invalid model; None lets the factory pick that
+    # provider's own default model.
+    if canonical_ai_provider(name) == canonical_ai_provider(settings.ai.default_provider):
+        model = settings.ai.model
+    else:
+        model = None
     if canonical_ai_provider(name) == "custom":
-        model = settings.ai.custom_model or model
+        model = settings.ai.custom_model or settings.ai.model
     try:
         return get_ai_provider(
             provider_name=name,
@@ -134,7 +141,11 @@ def build_ai_provider(
             custom_endpoint=settings.ai.custom_endpoint,
             custom_api_key=settings.ai.custom_api_key or resolve_ai_api_key("custom"),
         )
-    except ValueError as exc:
+    except Exception as exc:
+        # Honor the "returns None if the provider cannot be created" contract for
+        # ANY construction failure, not just ValueError. The local provider raises
+        # RuntimeError on model-load failure, which previously escaped and crashed
+        # callers (e.g. `plexmix sync`) despite their explicit fallback path.
         if not silent:
             logger.warning("AI provider init failed: %s", exc)
         return None
@@ -143,7 +154,9 @@ def build_ai_provider(
 def build_embedding_generator(settings: Settings) -> Optional[EmbeddingGenerator]:
     """Build an EmbeddingGenerator from settings, resolving API keys automatically.
 
-    Returns ``None`` if the provider requires an API key that isn't configured.
+    Returns ``None`` if the provider requires an API key that isn't configured, or
+    if construction fails (e.g. missing optional dependency, local model load
+    error) — callers treat None as "embeddings unavailable".
     """
     provider = settings.embedding.default_provider
     api_key = resolve_embedding_api_key(provider)
@@ -166,4 +179,10 @@ def build_embedding_generator(settings: Settings) -> Optional[EmbeddingGenerator
         )
         kwargs["custom_dimension"] = settings.embedding.custom_dimension
 
-    return EmbeddingGenerator(**kwargs)
+    try:
+        return EmbeddingGenerator(**kwargs)
+    except Exception as exc:
+        # Don't let ValueError/ImportError/RuntimeError escape the documented
+        # "returns None" contract and crash CLI callers.
+        logger.warning("Embedding provider init failed: %s", exc)
+        return None

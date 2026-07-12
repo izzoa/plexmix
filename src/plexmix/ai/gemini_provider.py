@@ -34,6 +34,13 @@ class GeminiProvider(AIProvider):
         # values; max_output_tokens is a *combined* thinking+output budget, so
         # constrain thinking to LOW to avoid starving the response.
         config_kwargs: dict[str, Any] = {"max_output_tokens": max_tokens}
+        # Apply the request timeout (google-genai expects milliseconds via
+        # HttpOptions); previously the timeout parameter was ignored and a hung
+        # request could block forever.
+        try:
+            config_kwargs["http_options"] = self.types.HttpOptions(timeout=timeout * 1000)
+        except Exception:
+            pass
         if self.model.lower().startswith("gemini-3"):
             config_kwargs["thinking_config"] = self.types.ThinkingConfig(
                 thinking_level=self.types.ThinkingLevel.LOW
@@ -69,11 +76,15 @@ class GeminiProvider(AIProvider):
                         and response.candidates[0].content is not None
                         and response.candidates[0].content.parts
                     ):
-                        return "".join(
+                        # Only join parts that actually carry text; str(part.text)
+                        # on a None part produced the literal string "None".
+                        texts = [
                             str(part.text)
                             for part in response.candidates[0].content.parts
-                            if hasattr(part, "text")
-                        )
+                            if getattr(part, "text", None)
+                        ]
+                        if texts:
+                            return "".join(texts)
                     raise ValueError("Could not extract text from Gemini response")
 
             except Exception as e:

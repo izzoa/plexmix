@@ -245,28 +245,28 @@ class TestIncrementalSync:
         assert updated.rating == 4.5
 
     def test_sync_removes_deleted_tracks(self, db_manager):
-        """Tracks in the DB but no longer in Plex are removed."""
-        # Seed the DB
+        """Tracks in the DB but no longer in Plex are removed (non-empty snapshot)."""
+        # Seed the DB with two tracks
         artist = Artist(plex_key="a1", name="Artist One")
         artist_id = db_manager.insert_artist(artist)
         album = Album(plex_key="al1", title="Album One", artist_id=artist_id)
         album_id = db_manager.insert_album(album)
         db_manager.insert_track(
-            Track(
-                plex_key="t1",
-                title="Gone Track",
-                artist_id=artist_id,
-                album_id=album_id,
-            )
+            Track(plex_key="t1", title="Kept Track", artist_id=artist_id, album_id=album_id)
+        )
+        db_manager.insert_track(
+            Track(plex_key="t2", title="Gone Track", artist_id=artist_id, album_id=album_id)
         )
 
-        # Plex returns the artist and album but no tracks
+        # Plex still returns t1 but not t2 (a non-empty snapshot, so the safety
+        # guard against wholesale deletion does not apply).
         plex_artist = _make_artist("a1", "Artist One")
         plex_album = _make_album("al1", "Album One", artist_key="a1")
+        plex_track = _make_track("t1", "Kept Track", artist_key="a1", album_key="al1")
         mock_plex = _mock_plex_client(
             artists=[plex_artist],
             albums=[plex_album],
-            tracks=[],
+            tracks=[plex_track],
         )
 
         engine = SyncEngine(plex_client=mock_plex, db_manager=db_manager)
@@ -275,7 +275,32 @@ class TestIncrementalSync:
         assert result.tracks_removed == 1
 
         remaining = db_manager.get_all_tracks()
-        assert all(t.plex_key != "t1" for t in remaining)
+        assert any(t.plex_key == "t1" for t in remaining)
+        assert all(t.plex_key != "t2" for t in remaining)
+
+    def test_sync_does_not_delete_when_plex_returns_no_tracks(self, db_manager):
+        """Safety guard: an empty track snapshot against a populated DB must not
+        wipe the library (a failed/incomplete fetch looks identical here)."""
+        artist = Artist(plex_key="a1", name="Artist One")
+        artist_id = db_manager.insert_artist(artist)
+        album = Album(plex_key="al1", title="Album One", artist_id=artist_id)
+        album_id = db_manager.insert_album(album)
+        db_manager.insert_track(
+            Track(plex_key="t1", title="Kept Track", artist_id=artist_id, album_id=album_id)
+        )
+
+        # Plex returns the artist/album but zero tracks
+        plex_artist = _make_artist("a1", "Artist One")
+        plex_album = _make_album("al1", "Album One", artist_key="a1")
+        mock_plex = _mock_plex_client(artists=[plex_artist], albums=[plex_album], tracks=[])
+
+        engine = SyncEngine(plex_client=mock_plex, db_manager=db_manager)
+        result = engine.incremental_sync(generate_embeddings=False)
+
+        # The guard skips deletion, so nothing is removed and the track survives.
+        assert result.tracks_removed == 0
+        remaining = db_manager.get_all_tracks()
+        assert any(t.plex_key == "t1" for t in remaining)
 
     def test_sync_records_history(self, db_manager):
         """A SyncHistory record is persisted after a successful sync."""

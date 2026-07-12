@@ -1,4 +1,5 @@
 import typer
+from typing import Any, Optional
 from rich.console import Console
 
 from ..config.constants import EMBEDDING_BATCH_SIZE, TAG_BATCH_SIZE
@@ -19,6 +20,13 @@ tags_app = typer.Typer(name="tags", help="AI-based tag generation")
 console = Console()
 
 
+def _join_tag_list(value: Any) -> Optional[str]:
+    """Join a tag list into the comma-separated storage form, or None if empty."""
+    if isinstance(value, list):
+        return ",".join(value) if value else None
+    return value or None
+
+
 @tags_app.command("generate")
 def tags_generate(
     provider: str = typer.Option("gemini", help="AI provider (gemini, openai, claude, local)"),
@@ -35,7 +43,11 @@ def tags_generate(
     canonical = _canonical_ai_provider(provider)
 
     api_key = _resolve_ai_api_key(canonical)
-    if canonical != "local" and not api_key:
+    # Only providers that actually require a key are blocked when it's missing;
+    # the custom (OpenAI-compatible) provider is keyless-capable, like local.
+    from ..services.registry import requires_ai_api_key
+
+    if requires_ai_api_key(canonical) and not api_key:
         console.print(f"[red]{canonical.title()} API key not configured.[/red]")
         raise typer.Exit(1)
 
@@ -94,6 +106,9 @@ def tags_generate(
             )
 
         updated_count = 0
+        # Accumulate across ALL batches; using the last batch's tags_dict alone
+        # meant embeddings were regenerated for only the final batch's tracks.
+        newly_tagged_track_ids: set = set()
         batch_size = TAG_BATCH_SIZE
 
         from rich.progress import (
@@ -132,28 +147,37 @@ def tags_generate(
                         break
 
                     for track in tracks_needing_tags:
-                        if track.id in tags_dict and tags_dict[track.id]:
-                            tag_data = tags_dict[track.id]
-                            if isinstance(tag_data, dict):
-                                track.set_tags_list(tag_data.get("tags", []))
-                                environments = tag_data.get("environments", [])
-                                if isinstance(environments, list):
-                                    track.environments = (
-                                        ", ".join(environments) if environments else None
-                                    )
-                                else:
-                                    track.environments = environments
-                                instruments = tag_data.get("instruments", [])
-                                if isinstance(instruments, list):
-                                    track.instruments = (
-                                        ", ".join(instruments) if instruments else None
-                                    )
-                                else:
-                                    track.instruments = instruments
-                            else:
-                                track.set_tags_list(tag_data if isinstance(tag_data, list) else [])
-                            db.insert_track(track)
-                            updated_count += 1
+                        if track.id is None:
+                            continue
+                        tag_data = tags_dict.get(track.id)
+                        if tag_data is None:
+                            continue
+
+                        if isinstance(tag_data, dict):
+                            tags_list = tag_data.get("tags") or []
+                            env_list = tag_data.get("environments") or []
+                            inst_list = tag_data.get("instruments") or []
+                        else:
+                            tags_list = tag_data if isinstance(tag_data, list) else []
+                            env_list = []
+                            inst_list = []
+
+                        # Skip results with no actual content so failed/empty
+                        # batches aren't counted as updated or re-embedded.
+                        if not (tags_list or env_list or inst_list):
+                            continue
+
+                        # update_track_tags stamps tags_generated_at (insert_track
+                        # did not), so CLI-tagged tracks are no longer permanently
+                        # classified as stale.
+                        db.update_track_tags(
+                            track.id,
+                            tags=_join_tag_list(tags_list),
+                            environments=_join_tag_list(env_list),
+                            instruments=_join_tag_list(inst_list),
+                        )
+                        newly_tagged_track_ids.add(track.id)
+                        updated_count += 1
 
                     progress.update(task, advance=len(batch))
 
@@ -180,11 +204,7 @@ def tags_generate(
             vector_index = build_vector_index(settings, embedding_generator)
             index_path = str(settings.database.get_index_path())
 
-            newly_tagged_track_ids = {
-                track.id
-                for track in tracks_needing_tags
-                if track.id in tags_dict and tags_dict[track.id]
-            }
+            # Use the ids accumulated across all batches (not just the last one).
             tagged_tracks = [t for t in tracks_needing_tags if t.id in newly_tagged_track_ids]
 
             from rich.progress import (
@@ -217,7 +237,9 @@ def tags_generate(
                         progress_callback=on_progress,
                     )
 
-                rebuild_vector_index(db, vector_index, index_path)
+                rebuild_vector_index(
+                    db, vector_index, index_path, embedding_generator.provider_name
+                )
                 console.print(
                     f"[green]Regenerated {embeddings_saved} embeddings with tags![/green]"
                 )

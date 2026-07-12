@@ -64,10 +64,13 @@ class EssentiaAnalyzer:
             # Energy & loudness
             loudness = float(self.es.Loudness()(audio))
             raw_energy = float(self.es.Energy()(audio))
-            # Normalize energy by number of samples for a meaningful per-sample value
-            normalized_energy = raw_energy / max(len(audio), 1)
-            # Clamp to 0-1 range
-            energy = min(max(normalized_energy, 0.0), 1.0)
+            # Essentia's Energy() is the sum of squares over the whole signal, so it
+            # grows with track length. Convert to RMS (sqrt of the mean square), a
+            # length-independent 0-1 loudness proxy. The previous code divided the
+            # total energy by the sample count, yielding mean-square values so tiny
+            # that every track scored "low" and "high" was unreachable.
+            mean_square = raw_energy / max(len(audio), 1)
+            energy = min(max(mean_square**0.5, 0.0), 1.0)
 
             # Spectral features
             centroid = float(self.es.SpectralCentroidTime()(audio))
@@ -76,9 +79,11 @@ class EssentiaAnalyzer:
             # MFCCs (compute on spectrum of frames, average across frames)
             mfcc_coeffs = self._extract_mfcc(audio)
 
-            # Danceability
+            # Danceability. Essentia returns this on a 0-3 scale; normalize to 0-1
+            # to match how it is consumed (playlist danceability_min filter and
+            # embedding text both assume a 0-1 range).
             danceability_val, _ = self.es.Danceability()(audio)
-            danceability = float(danceability_val)
+            danceability = min(max(float(danceability_val) / 3.0, 0.0), 1.0)
 
             # Derive energy level
             energy_level = self._classify_energy(energy, bpm)
@@ -154,7 +159,9 @@ class EssentiaAnalyzer:
         if energy is None:
             return None
 
-        # Combine energy and tempo signals
+        # Combine energy and tempo signals. With the RMS energy fix, typical music
+        # lands in the ~0.1-0.4 range (was ~0 under the old mean-square math, which
+        # made every track "low"), so these thresholds are now actually reachable.
         score = energy
         if bpm is not None:
             if bpm >= 130:

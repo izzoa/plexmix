@@ -65,7 +65,7 @@ def test_extract_track_metadata():
     plex_track.duration = 540000
     plex_track.genres = [Mock(tag="Jazz")]
     plex_track.year = 1959
-    plex_track.userRating = 4.5
+    plex_track.userRating = 9.0  # Plex 0-10 scale (== 4.5 stars)
     plex_track.viewCount = 42
     plex_track.lastViewedAt = None
     plex_track.artist.return_value = None
@@ -79,6 +79,7 @@ def test_extract_track_metadata():
     assert track.duration_ms == 540000
     assert track.genre == "Jazz"
     assert track.year == 1959
+    # Plex's 0-10 userRating is converted to PlexMix's 0-5 scale.
     assert track.rating == 4.5
     assert track.play_count == 42
 

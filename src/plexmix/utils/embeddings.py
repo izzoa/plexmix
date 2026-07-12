@@ -304,6 +304,9 @@ class CohereEmbeddingProvider(EmbeddingProvider):
 
 class LocalEmbeddingProvider(EmbeddingProvider):
     worker_cache: Dict[str, Dict[str, Any]] = {}
+    # Serializes worker acquisition so concurrent first-inits can't each spawn a
+    # duplicate model process (check-then-act race on worker_cache).
+    _cache_lock: threading.Lock = threading.Lock()
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         super().__init__()
@@ -319,61 +322,72 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         device = LOCAL_EMBEDDING_DEVICE
         cache_key = f"{model_name}-{trust_remote_code}-{device}"
 
-        cached = self.worker_cache.get(cache_key)
-        if cached and cached["process"].is_alive():  # type: ignore[union-attr]
-            logger.info(
-                f"[{self.provider_name}] Reusing cached local worker for {model_name} on {device}"
-            )
-            self.worker_conn: mp_connection.Connection = cached["conn"]
-            self.worker_process: mp.process.BaseProcess = cached["process"]
-            self.dimension: int = cached["dimension"]
-            self.worker_lock: threading.Lock = cached["lock"]
-        else:
-            if cached:
-                logger.warning(
-                    f"[{self.provider_name}] Cached worker for {model_name} is not alive. Restarting..."
+        with LocalEmbeddingProvider._cache_lock:
+            cached = self.worker_cache.get(cache_key)
+            if cached and cached["process"].is_alive():  # type: ignore[union-attr]
+                logger.info(
+                    f"[{self.provider_name}] Reusing cached local worker for {model_name} on {device}"
+                )
+                self.worker_conn: mp_connection.Connection = cached["conn"]
+                self.worker_process: mp.process.BaseProcess = cached["process"]
+                self.dimension: int = cached["dimension"]
+                self.worker_lock: threading.Lock = cached["lock"]
+            else:
+                if cached:
+                    logger.warning(
+                        f"[{self.provider_name}] Cached worker for {model_name} is not alive. Restarting..."
+                    )
+
+                # Dispose workers for other models before starting a new one — only
+                # one embedding model is active at a time, so stale workers from a
+                # provider/model switch would otherwise leak loaded processes.
+                for stale_key in [k for k in list(self.worker_cache) if k != cache_key]:
+                    logger.info(f"[{self.provider_name}] Disposing stale local worker {stale_key}")
+                    self._shutdown_worker(stale_key)
+
+                ctx = mp.get_context("spawn")
+                parent_conn, child_conn = ctx.Pipe()
+                worker = ctx.Process(
+                    target=_local_embedding_worker,
+                    args=(model_name, trust_remote_code, device, child_conn),
+                    daemon=True,
+                )
+                worker.start()
+                # Close the parent's copy of the child end so recv() raises EOFError
+                # if the worker dies instead of blocking forever holding worker_lock.
+                child_conn.close()
+
+                try:
+                    handshake = parent_conn.recv()
+                except EOFError:
+                    raise RuntimeError(
+                        f"Failed to start local embedding worker for {model_name}. "
+                        "See logs for details."
+                    )
+
+                if handshake.get("status") != "ready":
+                    error = handshake.get("error", "Unknown error")
+                    raise RuntimeError(f"Failed to load local model {model_name}: {error}")
+
+                self.worker_conn = parent_conn
+                self.worker_process = worker
+                self.dimension = int(handshake.get("dimension", 0)) or int(
+                    model_config.get("dimension", 384)
+                )
+                self.worker_lock = threading.Lock()
+                self.worker_cache[cache_key] = {
+                    "conn": self.worker_conn,
+                    "process": self.worker_process,
+                    "dimension": self.dimension,
+                    "lock": self.worker_lock,
+                }
+
+                logger.info(
+                    f"[{self.provider_name}] Local embedding worker ready for {model_name} "
+                    f"(dim: {self.dimension}, device={device})"
                 )
 
-            ctx = mp.get_context("spawn")
-            parent_conn, child_conn = ctx.Pipe()
-            worker = ctx.Process(
-                target=_local_embedding_worker,
-                args=(model_name, trust_remote_code, device, child_conn),
-                daemon=True,
-            )
-            worker.start()
-
-            try:
-                handshake = parent_conn.recv()
-            except EOFError:
-                raise RuntimeError(
-                    f"Failed to start local embedding worker for {model_name}. "
-                    "See logs for details."
-                )
-
-            if handshake.get("status") != "ready":
-                error = handshake.get("error", "Unknown error")
-                raise RuntimeError(f"Failed to load local model {model_name}: {error}")
-
-            self.worker_conn = parent_conn
-            self.worker_process = worker
-            self.dimension = int(handshake.get("dimension", 0)) or int(
-                model_config.get("dimension", 384)
-            )
-            self.worker_lock = threading.Lock()
-            self.worker_cache[cache_key] = {
-                "conn": self.worker_conn,
-                "process": self.worker_process,
-                "dimension": self.dimension,
-                "lock": self.worker_lock,
-            }
-
-            logger.info(
-                f"[{self.provider_name}] Local embedding worker ready for {model_name} "
-                f"(dim: {self.dimension}, device={device})"
-            )
-
-            atexit.register(self._shutdown_worker, cache_key)
+                atexit.register(self._shutdown_worker, cache_key)
 
     def generate_embedding(self, text: str) -> List[float]:
         try:
@@ -488,6 +502,7 @@ class CustomEmbeddingProvider(EmbeddingProvider):
             self.client = OpenAI(base_url=base_url, api_key=api_key or "no-key-required")
             self.model_name = model
             self.dimension = dimension
+            self._dim_verified = False
             logger.info(
                 f"[{self.provider_name}] Initialized custom embedding provider: "
                 f"{base_url} model={model} dim={dimension}"
@@ -495,13 +510,29 @@ class CustomEmbeddingProvider(EmbeddingProvider):
         except ImportError:
             raise ImportError("openai not installed. Run: pip install openai")
 
+    def _verify_dimension(self, vector: List[float]) -> None:
+        """Fail fast if the endpoint's real dimension differs from the configured
+        one. Otherwise mismatched vectors are stored and only surface as a cryptic
+        crash when the FAISS index is built."""
+        actual = len(vector)
+        if actual != self.dimension:
+            raise ValueError(
+                f"Custom embedding endpoint returned {actual}-dimensional vectors, but "
+                f"the configured custom embedding dimension is {self.dimension}. Set the "
+                f"custom embedding dimension to {actual} in Settings and regenerate embeddings."
+            )
+        self._dim_verified = True
+
     def generate_embedding(self, text: str) -> List[float]:
         try:
             response = self.client.embeddings.create(
                 model=self.model_name,
                 input=text,
             )
-            return response.data[0].embedding
+            vector = response.data[0].embedding
+            if not self._dim_verified:
+                self._verify_dimension(vector)
+            return vector
         except Exception as e:
             logger.error(f"[{self.provider_name}] Failed to generate embedding: {e}")
             raise
@@ -518,6 +549,8 @@ class CustomEmbeddingProvider(EmbeddingProvider):
                     input=batch,
                 )
                 batch_embeddings = [item.embedding for item in response.data]
+                if batch_embeddings and not self._dim_verified:
+                    self._verify_dimension(batch_embeddings[0])
                 embeddings.extend(batch_embeddings)
                 logger.debug(
                     f"[{self.provider_name}] Generated {len(batch)} embeddings "

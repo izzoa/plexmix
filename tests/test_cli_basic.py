@@ -215,6 +215,6 @@ class TestDbInfo:
     def test_no_db_shows_message(self, mock_settings_cls, tmp_path):
         mock_settings = Settings.load_from_file(_make_settings_yaml(tmp_path))
         mock_settings.database.path = str(tmp_path / "nonexistent.db")
-        mock_settings_cls.return_value = mock_settings
+        mock_settings_cls.load_from_file.return_value = mock_settings
         result = runner.invoke(app, ["db", "info"])
         assert "does not exist" in result.output or "not initialized" in result.output.lower()

@@ -100,6 +100,14 @@ def _icon_rail() -> rx.Component:
     items.append(rx.box(class_name="rail-spacer"))
 
     bottom: list[rx.Component] = [
+        # Changelog trigger — the dialog is controlled by show_changelog and had no
+        # trigger, so it could never be opened.
+        rx.box(
+            rx.icon("file-text", size=19),
+            rx.el.span("Changelog", class_name="rail-tip"),
+            class_name="rail-item",
+            on_click=AppState.open_changelog,
+        ),
         rx.cond(
             AppState.auth_required,
             rx.box(
@@ -351,6 +359,12 @@ def _keyboard_shortcuts() -> rx.Component:
             var __cmdk = document.querySelector('.cmdk');
             if (__cmdk) {
               var __items = __cmdk.querySelectorAll('.cmdk-item');
+              // Editing the query re-filters the list; drop the highlighted index
+              // (and its 'sel' marker) so Enter can't activate a now-stale item.
+              if (typing && (e.key.length === 1 || e.key === 'Backspace' || e.key === 'Delete')) {
+                window.__cmdk_i = -1;
+                __items.forEach(function(it){ it.classList.remove('sel'); });
+              }
               if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                 e.preventDefault();
                 if (!__items.length) return;
@@ -362,8 +376,14 @@ def _keyboard_shortcuts() -> rx.Component:
                 __items[window.__cmdk_i].scrollIntoView({block: 'nearest'});
                 return;
               }
-              if (e.key === 'Enter' && window.__cmdk_i != null && __items[window.__cmdk_i]) {
-                e.preventDefault(); __items[window.__cmdk_i].click(); return;
+              if (e.key === 'Enter' && __items.length) {
+                e.preventDefault();
+                var __i = window.__cmdk_i;
+                // Fall back to the first (current) result when nothing is validly
+                // highlighted, so Enter activates a real item, never a stale one.
+                if (__i == null || __i < 0 || __i >= __items.length) __i = 0;
+                __items[__i].click();
+                return;
               }
             } else { window.__cmdk_i = null; }
             if (typing) return;

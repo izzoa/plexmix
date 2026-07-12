@@ -80,6 +80,11 @@ async def download_local_embedding_impl(state: Any) -> None:
         return
 
     model_name = state.embedding_model or "all-MiniLM-L6-v2"
+    # huggingface_hub.snapshot_download needs a full repo id. A bare
+    # sentence-transformers model name (no "/", e.g. the default all-MiniLM-L6-v2)
+    # lives under the sentence-transformers org; without this prefix the download
+    # 404'd even though SentenceTransformer() resolves the bare name itself.
+    repo_id = model_name if "/" in model_name else f"sentence-transformers/{model_name}"
     async with state:
         state.is_downloading_local_model = True
         state.local_download_status = f"Preparing download for {model_name}..."
@@ -97,7 +102,7 @@ async def download_local_embedding_impl(state: Any) -> None:
         def snapshot_download_model():
             from huggingface_hub import snapshot_download
 
-            snapshot_download(model_name, local_files_only=False, resume_download=True)
+            snapshot_download(repo_id, local_files_only=False, resume_download=True)
 
         await loop.run_in_executor(None, snapshot_download_model)
         await update_status("Initializing model (first run may take a minute)...", 70)

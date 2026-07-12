@@ -13,6 +13,17 @@ def _data_dir() -> Path:
     return Path("~/.plexmix").expanduser()
 
 
+# Process-wide config path override, set by the CLI's global --config option so
+# every subsequent Settings.load_from_file()/save_to_file() uses that file.
+_config_path_override: Optional[str] = None
+
+
+def set_config_path_override(path: Optional[str]) -> None:
+    """Set (or clear) the global config-file path used when none is passed."""
+    global _config_path_override
+    _config_path_override = path
+
+
 class PlexSettings(BaseSettings):
     url: Optional[str] = Field(default=None, description="Plex server URL")
     token: Optional[str] = Field(default=None, description="Plex authentication token")
@@ -135,8 +146,10 @@ class AudioSettings(BaseSettings):
             prefix = self.path_prefix_from
             if file_path.startswith(prefix) and (
                 len(file_path) == len(prefix)
-                or file_path[len(prefix)] == "/"
-                or prefix.endswith("/")
+                # Accept both POSIX and Windows separators at the boundary so
+                # Windows-style Plex paths (C:\Music\...) are remapped too.
+                or file_path[len(prefix)] in ("/", "\\")
+                or prefix.endswith(("/", "\\"))
             ):
                 return self.path_prefix_to + file_path[len(prefix) :]
         return file_path
@@ -252,6 +265,20 @@ class Settings(BaseSettings):
             ("MUSICBRAINZ_CONFIDENCE_THRESHOLD", "musicbrainz.confidence_threshold", float),
             ("MUSICBRAINZ_RATE_LIMIT_DELAY", "musicbrainz.rate_limit_delay", float),
             ("MUSICBRAINZ_CONTACT_EMAIL", "musicbrainz.contact_email", str),
+            # AI / embedding / database / playlist / logging groups were previously
+            # unmapped, so their env vars were silently ignored once config.yaml existed.
+            ("AI_DEFAULT_PROVIDER", "ai.default_provider", str),
+            ("AI_MODEL", "ai.model", str),
+            ("AI_TEMPERATURE", "ai.temperature", float),
+            ("AI_LOCAL_MODE", "ai.local_mode", str),
+            ("AI_LOCAL_ENDPOINT", "ai.local_endpoint", str),
+            ("EMBEDDING_DEFAULT_PROVIDER", "embedding.default_provider", str),
+            ("EMBEDDING_MODEL", "embedding.model", str),
+            ("EMBEDDING_DIMENSION", "embedding.dimension", int),
+            ("DATABASE_PATH", "database.path", str),
+            ("PLAYLIST_DEFAULT_LENGTH", "playlist.default_length", int),
+            ("LOG_LEVEL", "logging.level", str),
+            ("LOG_FILE_PATH", "logging.file_path", str),
         ]
         for env_key, yaml_path, cast in _env_maps:
             val = os.getenv(env_key)
@@ -265,9 +292,9 @@ class Settings(BaseSettings):
 
     @classmethod
     def load_from_file(cls, config_path: Optional[str] = None) -> "Settings":
-        using_default = config_path is None
+        using_default = config_path is None and _config_path_override is None
         if config_path is None:
-            config_path = str(_data_dir() / "config.yaml")
+            config_path = _config_path_override or str(_data_dir() / "config.yaml")
 
         config = Path(config_path)
         if config.exists():
@@ -294,14 +321,34 @@ class Settings(BaseSettings):
 
     def save_to_file(self, config_path: Optional[str] = None) -> None:
         if config_path is None:
-            config_path = str(_data_dir() / "config.yaml")
+            config_path = _config_path_override or str(_data_dir() / "config.yaml")
 
-        Path(config_path).parent.mkdir(parents=True, exist_ok=True)
+        target = Path(config_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
 
         import yaml
 
-        with open(config_path, "w") as f:
-            yaml.dump(self.model_dump(exclude_none=True), f, default_flow_style=False)
+        # Write to a temp file in the same directory and atomically replace, so an
+        # interrupted save can't leave a truncated/corrupt config that bricks every
+        # subsequent command. Create it 0600 — the file may hold fallback secrets.
+        tmp = target.with_name(target.name + ".tmp")
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w") as f:
+                yaml.dump(self.model_dump(exclude_none=True), f, default_flow_style=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, target)
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                pass
+        except Exception:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+            raise
 
 
 def get_config_dir() -> Path:

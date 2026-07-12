@@ -94,7 +94,7 @@ class TestGetAIModels:
     def test_local_returns_models(self):
         models = get_ai_models("local")
         assert len(models) > 0
-        assert "google/gemma-3-1b" in models
+        assert "google/gemma-3-1b-it" in models
 
     def test_custom_empty(self):
         assert get_ai_models("custom") == []
@@ -128,7 +128,7 @@ class TestGetDefaultAIModel:
         assert get_default_ai_model("cohere") == "command-a-03-2025"
 
     def test_local(self):
-        assert get_default_ai_model("local") == "google/gemma-3-1b"
+        assert get_default_ai_model("local") == "google/gemma-3-1b-it"
 
     def test_unknown_empty(self):
         assert get_default_ai_model("xyz") == ""
@@ -185,6 +185,13 @@ class TestGetEmbeddingDimension:
 
     def test_openai(self):
         assert get_embedding_dimension("openai") == 1536
+
+    def test_openai_large_model_is_3072(self):
+        # A specific model overrides the provider default; large is 3072, not 1536.
+        assert get_embedding_dimension("openai", model="text-embedding-3-large") == 3072
+
+    def test_openai_small_model_is_1536(self):
+        assert get_embedding_dimension("openai", model="text-embedding-3-small") == 1536
 
     def test_cohere(self):
         assert get_embedding_dimension("cohere") == 1024

@@ -42,13 +42,24 @@ def embeddings_generate(
             db._commit()
             tracks_to_embed = all_tracks
         else:
+            # Scope existence to the active model: after a provider/model switch,
+            # tracks embedded only by the previous model must be re-embedded.
+            existing_ids = db.get_track_ids_with_embeddings(embedding_generator.provider_name)
             tracks_to_embed = [
-                t for t in all_tracks if t.id is not None and not db.get_embedding_by_track_id(t.id)
+                t for t in all_tracks if t.id is not None and t.id not in existing_ids
             ]
             console.print(f"Found {len(tracks_to_embed)} tracks without embeddings")
 
         if not tracks_to_embed:
             console.print("[green]All tracks already have embeddings![/green]")
+            # Still rebuild the FAISS index from the embeddings already in the DB,
+            # so a missing/lost/corrupt index is recovered rather than left broken.
+            total_in_index = rebuild_vector_index(
+                db, vector_index, index_path, embedding_generator.provider_name
+            )
+            console.print(
+                f"[green]✓ Vector index rebuilt with {total_in_index} embeddings.[/green]"
+            )
             console.print("Use --regenerate to regenerate all embeddings.")
             return
 
@@ -61,6 +72,7 @@ def embeddings_generate(
             TimeRemainingColumn,
         )
 
+        embeddings_saved = 0  # bound before the try so the interrupt handler is safe
         try:
             with Progress(
                 SpinnerColumn(),
@@ -82,7 +94,9 @@ def embeddings_generate(
                     progress_callback=on_progress,
                 )
 
-            total_in_index = rebuild_vector_index(db, vector_index, index_path)
+            total_in_index = rebuild_vector_index(
+                db, vector_index, index_path, embedding_generator.provider_name
+            )
             console.print(
                 f"\n[green]✓ Successfully generated {embeddings_saved} embeddings![/green]"
             )

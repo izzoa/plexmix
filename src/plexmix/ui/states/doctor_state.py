@@ -2,7 +2,7 @@ import reflex as rx
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from pathlib import Path
 from plexmix.ui.states.app_state import AppState
 from plexmix.ui.job_manager import task_store
@@ -39,84 +39,83 @@ class DoctorState(AppState):
         if not self.check_auth():
             self.is_page_loading = False
             return
-        super().on_load()
+        self.load_app_data()
         self.poll_task_progress()
         return DoctorState.run_health_check
 
+    @staticmethod
+    def _compute_health_stats() -> Optional[Dict[str, Any]]:
+        """Read health stats from the DB. Pure (no state mutation), so it is safe
+        to run in an executor and keep the heavy queries off the event loop."""
+        from plexmix.config.settings import Settings
+        from plexmix.database.sqlite_manager import SQLiteManager
+
+        settings = Settings.load_from_file()
+        db_path = settings.database.get_db_path()
+        if not db_path.exists():
+            return None
+
+        with SQLiteManager(str(db_path)) as db:
+            cursor = db.get_connection().cursor()
+            cursor.execute("SELECT COUNT(*) FROM tracks")
+            total_tracks = cursor.fetchone()[0]
+            cursor.execute("SELECT COUNT(DISTINCT track_id) FROM embeddings")
+            tracks_with_embeddings = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT COUNT(*) FROM embeddings WHERE track_id NOT IN (SELECT id FROM tracks)"
+            )
+            orphaned_count = cursor.fetchone()[0]
+            cursor.execute('SELECT COUNT(*) FROM tracks WHERE tags IS NULL OR tags = ""')
+            untagged_count = cursor.fetchone()[0]
+            cursor.execute(
+                "SELECT COUNT(*) FROM tracks WHERE id NOT IN (SELECT DISTINCT track_id FROM embeddings)"
+            )
+            tracks_needing_embeddings = cursor.fetchone()[0]
+            return {
+                "total_tracks": total_tracks,
+                "tracks_with_embeddings": tracks_with_embeddings,
+                "orphaned_count": orphaned_count,
+                "untagged_count": untagged_count,
+                "tracks_needing_embeddings": tracks_needing_embeddings,
+                "audio_features_count": db.get_audio_features_count(),
+                "tracks_without_audio": len(db.get_tracks_without_audio_features()),
+                "mb_enriched": db.get_musicbrainz_enrichment_count(),
+                "mb_without": len(db.get_tracks_without_musicbrainz()),
+            }
+
+    def _apply_health_stats(self, stats: Optional[Dict[str, Any]]) -> None:
+        """Apply computed stats to state. Must run with state access (inside
+        `async with self` for a background event)."""
+        if stats is None:
+            return
+        self.doctor_total_tracks = stats["total_tracks"]
+        self.doctor_tracks_with_embeddings = stats["tracks_with_embeddings"]
+        self.doctor_orphaned_embeddings = stats["orphaned_count"]
+        self.doctor_untagged_tracks = stats["untagged_count"]
+        self.doctor_tracks_needing_embeddings = stats["tracks_needing_embeddings"]
+        self.doctor_audio_features_count = stats["audio_features_count"]
+        self.doctor_tracks_without_audio = stats["tracks_without_audio"]
+        self.doctor_musicbrainz_enriched = stats["mb_enriched"]
+        self.doctor_tracks_without_musicbrainz = stats["mb_without"]
+
+        if stats["orphaned_count"] == 0 and stats["tracks_needing_embeddings"] == 0:
+            self.is_healthy = True
+            self.check_message = (
+                "✓ Database is healthy! All tracks have embeddings and no orphaned data."
+            )
+        else:
+            self.is_healthy = False
+            issues = []
+            if stats["orphaned_count"] > 0:
+                issues.append(f"{stats['orphaned_count']} orphaned embeddings")
+            if stats["tracks_needing_embeddings"] > 0:
+                issues.append(f"{stats['tracks_needing_embeddings']} tracks need embeddings")
+            self.check_message = f"⚠️ Issues found: {', '.join(issues)}"
+
     def _refresh_health_stats(self) -> None:
-        """Synchronous health check -- updates state vars from DB."""
+        """Synchronous refresh (used by the post-fix status handler)."""
         try:
-            from plexmix.config.settings import Settings
-            from plexmix.database.sqlite_manager import SQLiteManager
-
-            settings = Settings.load_from_file()
-            db_path = settings.database.get_db_path()
-
-            if not db_path.exists():
-                return
-
-            with SQLiteManager(str(db_path)) as db:
-                cursor = db.get_connection().cursor()
-
-                # Get total tracks
-                cursor.execute("SELECT COUNT(*) FROM tracks")
-                total_tracks = cursor.fetchone()[0]
-
-                # Get tracks with embeddings
-                cursor.execute("SELECT COUNT(DISTINCT track_id) FROM embeddings")
-                tracks_with_embeddings = cursor.fetchone()[0]
-
-                # Get orphaned embeddings
-                cursor.execute(
-                    """
-                    SELECT COUNT(*) FROM embeddings
-                    WHERE track_id NOT IN (SELECT id FROM tracks)
-                """
-                )
-                orphaned_count = cursor.fetchone()[0]
-
-                # Get untagged tracks
-                cursor.execute('SELECT COUNT(*) FROM tracks WHERE tags IS NULL OR tags = ""')
-                untagged_count = cursor.fetchone()[0]
-
-                # Get tracks needing embeddings
-                cursor.execute(
-                    "SELECT COUNT(*) FROM tracks WHERE id NOT IN (SELECT DISTINCT track_id FROM embeddings)"
-                )
-                tracks_needing_embeddings = cursor.fetchone()[0]
-
-                # Get audio analysis stats
-                audio_features_count = db.get_audio_features_count()
-                tracks_without_audio = len(db.get_tracks_without_audio_features())
-
-                # Get MusicBrainz enrichment stats
-                mb_enriched = db.get_musicbrainz_enrichment_count()
-                mb_without = len(db.get_tracks_without_musicbrainz())
-
-                self.doctor_total_tracks = total_tracks
-                self.doctor_tracks_with_embeddings = tracks_with_embeddings
-                self.doctor_orphaned_embeddings = orphaned_count
-                self.doctor_untagged_tracks = untagged_count
-                self.doctor_tracks_needing_embeddings = tracks_needing_embeddings
-                self.doctor_audio_features_count = audio_features_count
-                self.doctor_tracks_without_audio = tracks_without_audio
-                self.doctor_musicbrainz_enriched = mb_enriched
-                self.doctor_tracks_without_musicbrainz = mb_without
-
-                if orphaned_count == 0 and tracks_needing_embeddings == 0:
-                    self.is_healthy = True
-                    self.check_message = (
-                        "✓ Database is healthy! All tracks have embeddings and no orphaned data."
-                    )
-                else:
-                    self.is_healthy = False
-                    issues = []
-                    if orphaned_count > 0:
-                        issues.append(f"{orphaned_count} orphaned embeddings")
-                    if tracks_needing_embeddings > 0:
-                        issues.append(f"{tracks_needing_embeddings} tracks need embeddings")
-                    self.check_message = f"⚠️ Issues found: {', '.join(issues)}"
-
+            self._apply_health_stats(self._compute_health_stats())
         except Exception as e:
             logger.error("Error during health check: %s", e)
 
@@ -127,20 +126,16 @@ class DoctorState(AppState):
             self.check_message = "Running health check..."
 
         try:
-            from plexmix.config.settings import Settings
-
-            settings = Settings.load_from_file()
-            db_path = settings.database.get_db_path()
-
-            if not db_path.exists():
-                async with self:
-                    self.check_message = "Database not found. Please run a sync first."
-                    self.is_checking = False
-                    self.is_page_loading = False
-                return
+            # Run the (potentially heavy) DB scan in an executor so the event loop
+            # isn't frozen for large libraries; then apply results under the lock.
+            loop = asyncio.get_running_loop()
+            stats = await loop.run_in_executor(None, self._compute_health_stats)
 
             async with self:
-                self._refresh_health_stats()
+                if stats is None:
+                    self.check_message = "Database not found. Please run a sync first."
+                else:
+                    self._apply_health_stats(stats)
                 self.is_checking = False
                 self.is_page_loading = False
 
@@ -153,6 +148,8 @@ class DoctorState(AppState):
     @rx.event(background=True)
     async def delete_orphaned_embeddings(self):
         async with self:
+            if not self.access_allowed():
+                return
             self.is_fixing = True
             self.fix_message = "Deleting orphaned embeddings..."
             self.current_fix_target = "cleanup"
@@ -196,6 +193,8 @@ class DoctorState(AppState):
     @rx.event(background=True)
     async def generate_missing_embeddings(self):
         async with self:
+            if not self.access_allowed():
+                return
             self.is_fixing = True
             self.fix_message = "Generating embeddings for missing tracks..."
             self.fix_progress = 0
@@ -266,6 +265,8 @@ class DoctorState(AppState):
     @rx.event(background=True)
     async def regenerate_all_embeddings(self):
         async with self:
+            if not self.access_allowed():
+                return
             self.is_fixing = True
             self.fix_message = "Regenerating all embeddings..."
             self.fix_progress = 0
@@ -359,6 +360,8 @@ class DoctorState(AppState):
     async def regenerate_all_tags(self):
         """Regenerate tags for ALL tracks (force retag)."""
         async with self:
+            if not self.access_allowed():
+                return
             self.is_fixing = True
             self.fix_message = "Regenerating tags for all tracks..."
             self.fix_progress = 0
@@ -430,11 +433,18 @@ class DoctorState(AppState):
                         extra={"fix_target": "tags", "fix_total": total_tracks},
                     )
 
+                from plexmix.services.tagging_service import build_track_embedding_data
+
+                # TagGenerator expects a list of track-data dicts, not Track model
+                # objects; passing the models raised TypeError and the whole
+                # force-retag crashed before saving anything.
+                track_data_list = [build_track_embedding_data(db, t) for t in all_tracks]
+
                 def run_tag_regen():
                     fatal = None
                     try:
                         results = tag_generator.generate_tags_batch(
-                            all_tracks,
+                            track_data_list,
                             batch_size=20,
                             progress_callback=progress_callback,
                             cancel_event=cancel_event,
@@ -484,6 +494,8 @@ class DoctorState(AppState):
     @rx.event(background=True)
     async def regenerate_missing_tags(self):
         async with self:
+            if not self.access_allowed():
+                return
             self.is_fixing = True
             self.fix_message = "Regenerating tags for untagged tracks..."
             self.fix_progress = 0
@@ -611,6 +623,8 @@ class DoctorState(AppState):
     @rx.event(background=True)
     async def analyze_missing_audio(self):
         async with self:
+            if not self.access_allowed():
+                return
             self.is_fixing = True
             self.fix_message = "Analyzing audio features for unanalyzed tracks..."
             self.fix_progress = 0
@@ -810,7 +824,9 @@ class DoctorState(AppState):
                         extra={"fix_total": total},
                     )
 
-            all_embeddings = db.get_all_embeddings()
+            # Scope to the active model so a DB with mixed-model rows (after a
+            # provider switch) doesn't crash the rebuild with ragged dimensions.
+            all_embeddings = db.get_all_embeddings(embedding_generator.provider_name)
             track_ids = [emb[0] for emb in all_embeddings]
             vectors = [emb[1] for emb in all_embeddings]
 
@@ -836,7 +852,7 @@ class DoctorState(AppState):
             self.fix_message = entry.message
             self.fix_total = int(entry.extra.get("fix_total", 0))
             self.current_fix_target = entry.extra.get("fix_target", "")
-        elif entry.status == "completed":
+        elif self.is_fixing and entry.status == "completed":
             self.is_fixing = False
             self.fix_message = ""
             self.fix_progress = 0
@@ -844,25 +860,22 @@ class DoctorState(AppState):
             self.current_fix_target = ""
             self._refresh_health_stats()
             msg = entry.extra.get("result_msg", "Fix completed!")
-            task_store.clear("doctor_fix")
             return rx.toast.success(msg)
-        elif entry.status == "failed":
+        elif self.is_fixing and entry.status == "failed":
             self.is_fixing = False
             self.fix_message = ""
             self.fix_progress = 0
             self.fix_total = 0
             self.current_fix_target = ""
             msg = entry.message or "Fix failed"
-            task_store.clear("doctor_fix")
             return rx.toast.error(msg)
-        elif entry.status == "cancelled":
+        elif self.is_fixing and entry.status == "cancelled":
             self.is_fixing = False
             self.fix_message = ""
             self.fix_progress = 0
             self.fix_total = 0
             self.current_fix_target = ""
             self._refresh_health_stats()
-            task_store.clear("doctor_fix")
             return rx.toast.warning("Fix cancelled")
 
     @rx.var(cache=True)
@@ -926,6 +939,8 @@ class DoctorState(AppState):
     @rx.event(background=True)
     async def enrich_missing_musicbrainz(self):
         async with self:
+            if not self.access_allowed():
+                return
             self.is_fixing = True
             self.fix_message = "Enriching tracks with MusicBrainz metadata..."
             self.fix_progress = 0

@@ -26,7 +26,15 @@ class SQLiteManager:
 
     def connect(self) -> None:
         db_existed = self.db_path.exists()
-        self.conn = sqlite3.connect(str(self.db_path))
+        # check_same_thread=False: UI background handlers create the connection on
+        # the asyncio event-loop thread and then run their DB work inside
+        # loop.run_in_executor on a worker thread. Access is a strictly sequential
+        # handoff (the coroutine awaits the executor, so the two threads never touch
+        # the connection concurrently), which is exactly the case this flag is for.
+        # Without it, the first cursor call on the worker thread raised
+        # sqlite3.ProgrammingError and every UI sync/embedding/tagging/doctor job
+        # crashed. busy_timeout below still guards against lock contention.
+        self.conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
 
         # Enable foreign key constraints and optimize for concurrency
@@ -48,9 +56,17 @@ class SQLiteManager:
             self.create_tables()
         else:
             logger.info(f"Connected to database at {self.db_path}")
-            self._create_indexes(cursor)
+            # Order matters. Create the FTS table first (migration 6 backfills it),
+            # then run migrations to bring a legacy schema up to date (rename/add
+            # columns, create audio_features, dedupe embeddings), and only then
+            # create indexes. The index list references columns and tables that the
+            # migrations add, so building indexes first raised OperationalError/
+            # IntegrityError on any database created by an older release — before the
+            # very migrations meant to upgrade it could run.
             self._create_fts_table(cursor)
             self._run_migrations(cursor)
+            self._create_indexes(cursor)
+            self._commit()
 
     def get_connection(self) -> sqlite3.Connection:
         if not self.conn:
@@ -375,6 +391,18 @@ class SQLiteManager:
         cursor.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (?)", (version,))
 
     def _run_migrations(self, cursor: sqlite3.Cursor) -> None:
+        # Ensure the version-tracking table exists before recording any migration.
+        # A database from a release predating the migration system has no
+        # schema_version table; _record_version would otherwise raise "no such
+        # table: schema_version" now that migrations run before index creation.
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """
+        )
         applied = self._get_applied_versions(cursor)
         migrations_run = False
 
@@ -817,13 +845,15 @@ class SQLiteManager:
         return {row["id"]: Album(**dict(row)) for row in cursor.fetchall()}
 
     def get_track_details_by_ids(self, track_ids: List[int]) -> List[Dict[str, Any]]:
-        """Bulk fetch tracks with artist/album info. Returns list of dicts."""
+        """Bulk fetch tracks with artist/album info. Returns list of dicts.
+
+        Chunks the ``IN (...)`` list so a large candidate pool can't exceed
+        SQLite's bound-parameter limit (999 on older builds).
+        """
         if not track_ids:
             return []
         cursor = self.get_connection().cursor()
-        placeholders = ",".join("?" * len(track_ids))
-        cursor.execute(
-            f"""
+        base_query = """
             SELECT
                 t.id,
                 t.plex_key,
@@ -845,10 +875,15 @@ class SQLiteManager:
             JOIN artists a ON t.artist_id = a.id
             JOIN albums al ON t.album_id = al.id
             WHERE t.id IN ({placeholders})
-        """,
-            track_ids,
-        )
-        return [dict(row) for row in cursor.fetchall()]
+        """
+        results: List[Dict[str, Any]] = []
+        chunk_size = 900
+        for i in range(0, len(track_ids), chunk_size):
+            batch = track_ids[i : i + chunk_size]
+            placeholders = ",".join("?" * len(batch))
+            cursor.execute(base_query.format(placeholders=placeholders), batch)
+            results.extend(dict(row) for row in cursor.fetchall())
+        return results
 
     def delete_track(self, track_id: int) -> None:
         cursor = self.get_connection().cursor()
@@ -948,14 +983,39 @@ class SQLiteManager:
             return Embedding(**data)
         return None
 
-    def get_track_ids_with_embeddings(self) -> set:
+    def get_track_ids_with_embeddings(self, embedding_model: Optional[str] = None) -> set:
+        """Track ids that already have an embedding.
+
+        Pass *embedding_model* to scope to a single model so a provider/model
+        switch correctly re-embeds tracks that were only embedded by the old
+        model (rows for other models don't count as "already embedded").
+        """
         cursor = self.get_connection().cursor()
-        cursor.execute("SELECT track_id FROM embeddings")
+        if embedding_model is not None:
+            cursor.execute(
+                "SELECT track_id FROM embeddings WHERE embedding_model = ?", (embedding_model,)
+            )
+        else:
+            cursor.execute("SELECT track_id FROM embeddings")
         return {row["track_id"] for row in cursor.fetchall()}
 
-    def get_all_embeddings(self) -> List[Tuple[int, List[float]]]:
+    def get_all_embeddings(
+        self, embedding_model: Optional[str] = None
+    ) -> List[Tuple[int, List[float]]]:
+        """All (track_id, vector) pairs, optionally scoped to one model.
+
+        FAISS rebuilds must pass *embedding_model* so the index is built from a
+        single model's vectors — mixing models yields ragged dimensions that crash
+        the index build.
+        """
         cursor = self.get_connection().cursor()
-        cursor.execute("SELECT track_id, vector FROM embeddings")
+        if embedding_model is not None:
+            cursor.execute(
+                "SELECT track_id, vector FROM embeddings WHERE embedding_model = ?",
+                (embedding_model,),
+            )
+        else:
+            cursor.execute("SELECT track_id, vector FROM embeddings")
         return [(row["track_id"], json.loads(row["vector"])) for row in cursor.fetchall()]
 
     def insert_sync_record(self, sync: SyncHistory) -> int:
@@ -1394,6 +1454,13 @@ class SQLiteManager:
         self._commit()
 
     def search_tracks_fts(self, query: str) -> List[Track]:
+        # Escape the raw query into a valid FTS5 MATCH expression. Binding the
+        # user's text directly raised OperationalError on common punctuation
+        # (apostrophes, hyphens, ampersands, periods), which callers swallow —
+        # silently dropping tracks whose titles contain those characters.
+        fts_term = self._build_fts_query(query)
+        if not fts_term:
+            return []
         cursor = self.get_connection().cursor()
         cursor.execute(
             """
@@ -1402,7 +1469,7 @@ class SQLiteManager:
             WHERE tracks_fts MATCH ?
             ORDER BY bm25(tracks_fts)
         """,
-            (query,),
+            (fts_term,),
         )
         return [Track(**dict(row)) for row in cursor.fetchall()]
 
@@ -1434,11 +1501,10 @@ class SQLiteManager:
                 t.tags,
                 a.name as artist_name,
                 al.title as album_title,
-                CASE WHEN e.id IS NOT NULL THEN 1 ELSE 0 END as has_embedding
+                EXISTS(SELECT 1 FROM embeddings e WHERE e.track_id = t.id) as has_embedding
             FROM tracks t
             JOIN artists a ON t.artist_id = a.id
             JOIN albums al ON t.album_id = al.id
-            LEFT JOIN embeddings e ON t.id = e.track_id
         """
         params: list = []
 
@@ -1709,7 +1775,7 @@ class SQLiteManager:
             JOIN artists a ON t.artist_id = a.id
             JOIN albums al ON t.album_id = al.id
             WHERE t.tags IS NOT NULL AND t.tags != ''
-            ORDER BY t.id DESC
+            ORDER BY (t.tags_generated_at IS NULL), t.tags_generated_at DESC, t.id DESC
             LIMIT ?
         """,
             (limit,),

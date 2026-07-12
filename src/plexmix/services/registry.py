@@ -147,6 +147,16 @@ EMBEDDING_PROVIDERS_REQUIRING_KEY = frozenset(
     pid for pid, p in EMBEDDING_PROVIDERS.items() if p.requires_api_key
 )
 
+# Cloud embedding models whose native dimension differs from their provider's
+# default. Used so a specific model selection reports the correct dimension
+# (e.g. OpenAI text-embedding-3-large is 3072, not the 1536 provider default) —
+# reporting the wrong dimension corrupts the FAISS index and crashes its build.
+CLOUD_EMBEDDING_MODEL_DIMENSIONS: Dict[str, int] = {
+    "text-embedding-3-large": 3072,
+    "text-embedding-3-small": 1536,
+    "text-embedding-ada-002": 1536,
+}
+
 # ---------------------------------------------------------------------------
 # Query helpers
 # ---------------------------------------------------------------------------
@@ -278,6 +288,9 @@ def get_embedding_dimension(
 
     entry = EMBEDDING_PROVIDERS.get(provider)
     if entry:
+        # A specific model can override the provider default (e.g. OpenAI large).
+        if model and model in CLOUD_EMBEDDING_MODEL_DIMENSIONS:
+            return CLOUD_EMBEDDING_MODEL_DIMENSIONS[model]
         return entry.default_dimension
     # Unknown provider — use caller-provided fallback
     return fallback_dimension or 768

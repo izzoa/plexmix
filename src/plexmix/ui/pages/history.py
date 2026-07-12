@@ -32,14 +32,33 @@ def _pl_card(pl: rx.Var) -> rx.Component:
     )
 
 
-def _detail_track(track: rx.Var) -> rx.Component:
+def _detail_track(track: rx.Var, index: rx.Var) -> rx.Component:
     return rx.box(
         rx.box(
             rx.box(track["title"], style={"fontWeight": "500", "fontSize": "14px"}),
             rx.box(track["artist"], class_name="fg3", style={"fontSize": "13px"}),
             style={"flex": "1", "minWidth": "0"},
         ),
-        style={"padding": "8px 4px", "borderBottom": "1px solid var(--border-subtle)"},
+        # Reorder controls (the move/save handlers existed but were never wired).
+        rx.el.button(
+            rx.icon("chevron-up", size=15),
+            class_name="icon-btn",
+            on_click=HistoryState.move_track_up(index.to_string()),
+            type="button",
+        ),
+        rx.el.button(
+            rx.icon("chevron-down", size=15),
+            class_name="icon-btn",
+            on_click=HistoryState.move_track_down(index.to_string()),
+            type="button",
+        ),
+        style={
+            "padding": "8px 4px",
+            "borderBottom": "1px solid var(--border-subtle)",
+            "display": "flex",
+            "alignItems": "center",
+            "gap": "6px",
+        },
     )
 
 
@@ -87,6 +106,29 @@ def _detail_modal() -> rx.Component:
                         on_click=HistoryState.export_to_m3u(HistoryState.selected_playlist["id"]),
                         type="button",
                     ),
+                    rx.el.button(
+                        rx.icon("braces", size=16),
+                        "Export JSON",
+                        class_name="btn btn-3 btn-soft",
+                        on_click=HistoryState.export_to_json(HistoryState.selected_playlist["id"]),
+                        type="button",
+                    ),
+                    rx.el.button(
+                        rx.icon("list-ordered", size=16),
+                        "Save order",
+                        class_name="btn btn-3 btn-soft",
+                        on_click=HistoryState.save_track_order,
+                        type="button",
+                    ),
+                    rx.el.button(
+                        rx.icon("trash-2", size=16),
+                        "Delete",
+                        class_name="btn btn-3 btn-soft",
+                        on_click=HistoryState.show_delete_confirmation(
+                            HistoryState.selected_playlist["id"]
+                        ),
+                        type="button",
+                    ),
                     class_name="modal-foot",
                 ),
                 class_name="modal",
@@ -94,6 +136,42 @@ def _detail_modal() -> rx.Component:
             class_name="modal-backdrop",
         ),
         rx.fragment(),
+    )
+
+
+def _delete_confirm_dialog() -> rx.Component:
+    """Confirm dialog for deleting a saved playlist (delete flow was unwired)."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Delete this playlist?"),
+            rx.dialog.description(
+                "This removes the saved playlist from PlexMix. Any copy already "
+                "exported to Plex is not affected.",
+                size="2",
+            ),
+            rx.hstack(
+                rx.dialog.close(
+                    rx.el.button(
+                        "Cancel",
+                        class_name="btn btn-soft",
+                        on_click=HistoryState.cancel_delete,
+                        type="button",
+                    ),
+                ),
+                rx.el.button(
+                    "Delete",
+                    class_name="btn btn-soft",
+                    on_click=HistoryState.confirm_delete,
+                    type="button",
+                ),
+                spacing="2",
+                margin_top="16px",
+                justify="end",
+            ),
+            max_width="440px",
+        ),
+        open=HistoryState.is_delete_confirmation_open,
+        on_open_change=HistoryState.set_delete_confirmation_open,
     )
 
 
@@ -137,6 +215,7 @@ def history() -> rx.Component:
             ),
         ),
         _detail_modal(),
+        _delete_confirm_dialog(),
         spacing="4",
         width="100%",
         on_mount=HistoryState.on_load,

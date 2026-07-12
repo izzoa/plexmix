@@ -40,8 +40,12 @@ class Album(BaseModel):
     @field_validator("year")
     @classmethod
     def year_must_be_valid(cls, v: Optional[int]) -> Optional[int]:
+        # Plex sometimes reports out-of-range years (0, or data-entry typos).
+        # Coerce those to None instead of raising: raising made album extraction
+        # fail, which skipped the whole album and reassigned its tracks to the
+        # "Unknown Album" bucket on sync.
         if v is not None and (v < 1900 or v > 2100):
-            raise ValueError("Year must be between 1900 and 2100")
+            return None
         return v
 
 

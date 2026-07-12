@@ -56,16 +56,20 @@ async def test_plex_connection_impl(state: Any) -> None:
     async with state:
         state.testing_connection = True
         state.plex_test_status = "Testing..."
+        url = state.plex_url
+        token = state.plex_token
 
     try:
         from plexapi.server import PlexServer
 
-        await asyncio.sleep(0.5)
+        def _probe() -> list:
+            server = PlexServer(url, token)
+            return [s.title for s in server.library.sections() if s.type == "artist"]
 
-        server = PlexServer(state.plex_url, state.plex_token)
-        libraries = [
-            section.title for section in server.library.sections() if section.type == "artist"
-        ]
+        # Run the blocking network calls off the event loop so the whole backend
+        # doesn't freeze while the Plex server is contacted.
+        loop = asyncio.get_running_loop()
+        libraries = await loop.run_in_executor(None, _probe)
 
         async with state:
             state.plex_libraries = libraries
@@ -86,7 +90,9 @@ async def test_ai_provider_impl(state: Any) -> None:
 
     try:
         loop = asyncio.get_running_loop()
-        provider = state.ai_provider
+        # "claude" (the id the CLI setup writes) is an alias for "anthropic"; map it
+        # so the real Anthropic test runs instead of falling through to fake success.
+        provider = "anthropic" if state.ai_provider == "claude" else state.ai_provider
         api_key = sanitize_credential_value(state.ai_api_key)
         if provider in ("gemini", "openai", "anthropic", "cohere"):
             validate_api_key(api_key, provider)
@@ -239,6 +245,10 @@ async def test_ai_provider_impl(state: Any) -> None:
                     raise ValueError("Could not connect to endpoint")
 
                 await loop.run_in_executor(None, test_endpoint)
+
+        else:
+            # Never report success for a provider we didn't actually exercise.
+            raise ValueError(f"Unknown AI provider '{provider}'")
 
         async with state:
             state.ai_test_status = f"✓ {provider.title()} provider test successful"

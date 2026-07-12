@@ -122,6 +122,11 @@ def _tagged_row(track: rx.Var) -> rx.Component:
 
 def tagging() -> rx.Component:
     content = rx.vstack(
+        # Hidden poller so tagging progress updates live (not just on page load).
+        rx.box(
+            rx.moment(interval=2000, on_change=TaggingState.poll_task_progress),
+            display="none",
+        ),
         _filter_bar(),
         # Preview + start
         rx.box(

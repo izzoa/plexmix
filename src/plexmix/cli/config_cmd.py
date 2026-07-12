@@ -21,7 +21,9 @@ def config_init() -> None:
     plex_url = typer.prompt("Plex server URL", default="http://localhost:32400")
     plex_token = typer.prompt("Plex token", hide_input=True)
 
-    credentials.store_plex_token(plex_token)
+    # Keep the result: if the keyring is unavailable we must fall back to writing
+    # the token into config.yaml, or it would be unrecoverable on next run.
+    token_stored = credentials.store_plex_token(plex_token)
 
     plex_client = PlexClient(plex_url, plex_token)
     if not plex_client.connect():
@@ -45,6 +47,9 @@ def config_init() -> None:
         console.print(f"  {idx + 1}. {lib}")
 
     lib_choice = typer.prompt("Select library number", type=int, default=1)
+    if lib_choice < 1 or lib_choice > len(libraries):
+        console.print(f"[red]Invalid selection {lib_choice}. Choose 1-{len(libraries)}.[/red]")
+        raise typer.Exit(1)
     library_name = libraries[lib_choice - 1]
 
     ai_model = None
@@ -197,10 +202,34 @@ def config_init() -> None:
         )
         raise typer.Exit(1)
 
-    settings = Settings()
+    # Load existing settings so re-running the wizard preserves non-wizard fields
+    # (audio path prefixes, MusicBrainz email, UI password, custom DB path, etc.)
+    # instead of resetting everything to defaults.
+    settings = Settings.load_from_file()
     settings.plex.url = plex_url
     settings.plex.library_name = library_name
+    # Persist the token in config.yaml only as a keyring fallback.
+    settings.plex.token = None if token_stored else plex_token
+
+    from ..services.registry import get_default_embedding_model, get_embedding_dimension
+
     settings.embedding.default_provider = embedding_provider
+    # Set the embedding model to the chosen provider's default (and its dimension).
+    # Previously it kept the Gemini default model for non-Gemini providers, which
+    # broke embedding generation.
+    if embedding_provider == "local":
+        embedding_model = "all-MiniLM-L6-v2"
+    else:
+        embedding_model = (
+            get_default_embedding_model(embedding_provider) or settings.embedding.model
+        )
+    settings.embedding.model = embedding_model
+    settings.embedding.dimension = get_embedding_dimension(
+        embedding_provider,
+        model=embedding_model,
+        custom_dimension=settings.embedding.custom_dimension,
+    )
+
     settings.ai.default_provider = ai_provider
     settings.ai.model = ai_model
     settings.ai.local_mode = local_mode
@@ -216,9 +245,11 @@ def config_init() -> None:
         "\nRun initial sync now? (May take 10-30 minutes for large libraries)", default=True
     ):
         try:
-            from .sync_cmd import sync_incremental
+            from .sync_cmd import run_incremental_sync
 
-            sync_incremental()
+            # Plain helper with real defaults — calling the Typer command directly
+            # passed OptionInfo sentinels that force-enabled audio analysis.
+            run_incremental_sync()
         except typer.Exit as e:
             if e.exit_code == 130:  # KeyboardInterrupt
                 console.print("\n[yellow]You can resume the sync later with:[/yellow]")
@@ -231,7 +262,9 @@ def config_init() -> None:
 @config_app.command("test")
 def config_test() -> None:
     """Test Plex server connection."""
-    settings = Settings()
+    # Load the saved config; a bare Settings() has empty defaults, so this command
+    # always reported "No Plex URL configured" even when Plex was set up.
+    settings = Settings.load_from_file()
 
     console.print("\n[bold cyan]Testing Plex Connection[/bold cyan]\n")
 

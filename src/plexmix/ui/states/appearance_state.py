@@ -14,6 +14,25 @@ class AppearanceState(rx.State):
     accent: str = "balanced"
 
     @rx.event
+    def hydrate_appearance(self):
+        """Read persisted density/accent from localStorage into state so the
+        segmented controls highlight the actually-saved option after a reload
+        (the state otherwise stayed at defaults while the DOM was restored)."""
+        return rx.call_script(
+            "[localStorage.getItem('pm_density') || 'comfortable',"
+            " localStorage.getItem('pm_accent') || 'balanced']",
+            callback=AppearanceState.apply_appearance,
+        )
+
+    @rx.event
+    def apply_appearance(self, values: list):
+        try:
+            self.density = values[0] or "comfortable"
+            self.accent = values[1] or "balanced"
+        except (IndexError, TypeError):
+            pass
+
+    @rx.event
     def set_density(self, value: str):
         self.density = value
         return rx.call_script(

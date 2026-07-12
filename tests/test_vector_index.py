@@ -188,6 +188,33 @@ class TestSaveLoad:
         vi.save_index(index_path)
         assert not Path(index_path).exists()
 
+    def test_save_is_atomic_no_temp_files_left(self, tmp_path):
+        index_path = str(tmp_path / "test.index")
+        vi = VectorIndex(dimension=DIM)
+        vi.build_index(_random_embeddings(3), [1, 2, 3])
+        vi.save_index(index_path)
+        # Atomic replace must leave no .tmp artifacts behind.
+        leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+        assert leftovers == []
+        # And the round trip still works.
+        vi2 = VectorIndex(dimension=DIM, index_path=index_path)
+        assert vi2.index.ntotal == 3
+
+    def test_missing_metadata_flags_dimension_mismatch(self, tmp_path):
+        """Loading an index whose dimension differs from the current provider,
+        with no metadata file, must flag a mismatch rather than accept it and
+        crash later inside faiss."""
+        index_path = str(tmp_path / "test.index")
+        vi = VectorIndex(dimension=DIM)
+        vi.build_index(_random_embeddings(3), [1, 2, 3])
+        vi.save_index(index_path)
+        # Remove the metadata so only the raw index remains.
+        (tmp_path / "test.metadata").unlink()
+
+        vi2 = VectorIndex(dimension=DIM + 4, index_path=index_path)
+        assert vi2.dimension_mismatch is True
+        assert vi2.loaded_dimension == DIM
+
 
 class TestLoadEdgeCases:
     def test_nonexistent_creates_new(self, tmp_path):

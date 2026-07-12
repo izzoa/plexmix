@@ -53,7 +53,7 @@ class TaggingState(AppState):
         if not self.check_auth():
             self.is_page_loading = False
             return
-        super().on_load()
+        self.load_app_data()
         self.load_recently_tagged()
         self._load_stale_count()
         self.poll_task_progress()  # Recover in-progress tagging from TaskStore
@@ -72,24 +72,21 @@ class TaggingState(AppState):
             self.total_batches = int(entry.extra.get("total_batches", 0))
             self.tags_generated_count = int(entry.extra.get("tags_generated_count", 0))
             self.estimated_time_remaining = int(entry.extra.get("estimated_time_remaining", 0))
-        elif entry.status == "completed":
+        elif self.is_tagging and entry.status == "completed":
             self.is_tagging = False
             self.tagging_progress = 100
             self.tagging_message = ""
             self.load_recently_tagged()
             count = entry.extra.get("tags_generated_count", 0)
-            task_store.clear("tagging")
             return rx.toast.success(f"Successfully tagged {count} tracks!")
-        elif entry.status == "failed":
+        elif self.is_tagging and entry.status == "failed":
             self.is_tagging = False
             self.tagging_message = ""
             msg = entry.message or "Tagging failed"
-            task_store.clear("tagging")
             return rx.toast.error(f"Error during tagging: {msg}")
-        elif entry.status == "cancelled":
+        elif self.is_tagging and entry.status == "cancelled":
             self.is_tagging = False
             self.tagging_message = ""
-            task_store.clear("tagging")
             return rx.toast.warning("Tagging cancelled")
 
     def _load_stale_count(self):
@@ -196,6 +193,8 @@ class TaggingState(AppState):
     @rx.event(background=True)
     async def start_tagging(self):
         async with self:
+            if not self.access_allowed():
+                return
             if self.preview_count == 0:
                 self.tagging_message = "No tracks to tag. Preview selection first."
                 return
@@ -248,19 +247,9 @@ class TaggingState(AppState):
                 return
 
             # Set up AI provider
-            from plexmix.services.providers import build_ai_provider
-
-            ai_provider = build_ai_provider(settings, silent=True)
-            if ai_provider is None:
-                task_store.complete(
-                    "tagging",
-                    status="failed",
-                    message="Error initializing AI provider — check settings.",
-                )
-                db.close()
-                return
-
-            tag_generator = TagGenerator(ai_provider)
+            # The AI provider (and, for builtin local mode, the model) is built
+            # inside run_tagging below, so that heavy construction runs in the
+            # executor instead of blocking the event loop.
 
             # Calculate batches
             batch_size = TAG_BATCH_SIZE
@@ -302,6 +291,16 @@ class TaggingState(AppState):
             loop = asyncio.get_running_loop()
 
             def run_tagging():
+                from plexmix.services.providers import build_ai_provider
+
+                ai_provider = build_ai_provider(settings, silent=True)
+                if ai_provider is None:
+                    db.close()
+                    raise FatalProviderError(
+                        "AI provider unavailable",
+                        user_message="Error initializing AI provider — check settings.",
+                    )
+                tag_generator = TagGenerator(ai_provider)
                 fatal = None
                 try:
                     results = tag_generator.generate_tags_batch(
@@ -382,6 +381,11 @@ class TaggingState(AppState):
                 return
 
             track_id = int(self.editing_track_id)
+            # Capture the edit fields inside the context — reading them outside
+            # `async with self` in a background event is unsafe.
+            tags = self.edit_tags
+            environments = self.edit_environments
+            instruments = self.edit_instruments
 
         try:
             from plexmix.config.settings import Settings
@@ -395,21 +399,22 @@ class TaggingState(AppState):
 
             db.update_track_tags(
                 track_id,
-                tags=self.edit_tags,
-                environments=self.edit_environments,
-                instruments=self.edit_instruments,
+                tags=tags,
+                environments=environments,
+                instruments=instruments,
             )
 
             db.close()
 
-            # Reload recently tagged tracks
-            self.load_recently_tagged()
-
+            # Clear the editor and reload — all state access inside the context,
+            # or Reflex raises ImmutableStateError (which showed an error toast and
+            # left the inline editor stuck).
             async with self:
                 self.editing_track_id = ""
                 self.edit_tags = ""
                 self.edit_environments = ""
                 self.edit_instruments = ""
+                self.load_recently_tagged()
 
             yield rx.toast.success("Tags updated successfully!")
 
@@ -443,20 +448,17 @@ class TaggingState(AppState):
         if not is_open:
             self.show_tag_all_confirm = False
 
-    @rx.event(background=True)
-    async def tag_all_untagged(self):
-        async with self:
-            self.show_tag_all_confirm = False
-            self.genre_filter = ""
-            self.year_min = ""
-            self.year_max = ""
-            self.artist_filter = ""
-            self.has_no_tags = True
-
-        await self.preview_selection()
-
-        # Give UI time to update
-        await asyncio.sleep(0.5)
-
-        if self.preview_count > 0:
-            await self.start_tagging()
+    @rx.event
+    def tag_all_untagged(self):
+        if not self.access_allowed():
+            return None
+        self.show_tag_all_confirm = False
+        self.genre_filter = ""
+        self.year_min = ""
+        self.year_max = ""
+        self.artist_filter = ""
+        self.has_no_tags = True
+        # Chain by returning the event handlers instead of awaiting them directly
+        # (awaiting a background event raises in Reflex). preview_selection runs
+        # first and sets the count; start_tagging already no-ops when the count is 0.
+        return [TaggingState.preview_selection, TaggingState.start_tagging]

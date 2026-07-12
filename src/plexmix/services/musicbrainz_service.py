@@ -53,6 +53,10 @@ def enrich_tracks(
     enriched = 0
     cached = 0
     errors = 0
+    # Definitive no-matches are a distinct outcome. They advance progress (folded
+    # into the callback's errors argument, which no consumer displays on its own)
+    # but are kept out of the returned counts so summaries stay accurate.
+    no_match = 0
 
     # Batch artist resolution: resolve each artist name once
     artist_mbid_cache: Dict[int, Optional[str]] = {}
@@ -86,7 +90,7 @@ def enrich_tracks(
                     logger.debug("Transient API error for '%s': %s", track_title, e)
                     errors += 1
                     if progress_callback:
-                        progress_callback(enriched, cached, errors, total)
+                        progress_callback(enriched, cached, errors + no_match, total)
                     continue
 
                 if match:
@@ -98,7 +102,7 @@ def enrich_tracks(
                         )
                         errors += 1
                         if progress_callback:
-                            progress_callback(enriched, cached, errors, total)
+                            progress_callback(enriched, cached, errors + no_match, total)
                         continue
 
                     genres_str = ", ".join(details["tags"]) if details["tags"] else None
@@ -124,8 +128,10 @@ def enrich_tracks(
 
                     enriched += 1
                 else:
-                    # Definitive no-match — safe to cache
+                    # Definitive no-match — safe to cache. Count it so progress
+                    # reaches 100% (previously no-match tracks advanced nothing).
                     db.set_musicbrainz_cache(cache_key, "recording", None, None, 0.0)
+                    no_match += 1
 
             # Resolve artist MBID (once per artist)
             if track.artist_id not in artist_mbid_cache and artist:
@@ -146,7 +152,7 @@ def enrich_tracks(
                             logger.debug("Transient API error for artist '%s': %s", artist_name, e)
                             artist_mbid_cache[track.artist_id] = None
                             if progress_callback:
-                                progress_callback(enriched, cached, errors, total)
+                                progress_callback(enriched, cached, errors + no_match, total)
                             continue
 
                         if artist_match:
@@ -173,7 +179,7 @@ def enrich_tracks(
             )
 
         if progress_callback:
-            progress_callback(enriched, cached, errors, total)
+            progress_callback(enriched, cached, errors + no_match, total)
 
     return enriched, cached, errors
 

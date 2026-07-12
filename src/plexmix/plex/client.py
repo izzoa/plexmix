@@ -10,6 +10,16 @@ from ..database.models import Artist, Album, Track
 logger = logging.getLogger(__name__)
 
 
+class PlexFetchError(Exception):
+    """Raised when fetching artists/albums/tracks from Plex fails.
+
+    Distinguishes a failed or impossible fetch (network error, or no music
+    library selected) from a genuinely empty library, so the sync engine can
+    abort before its deletion phase instead of treating the empty result as
+    authoritative and wiping the local database.
+    """
+
+
 class PlexClient:
     def __init__(self, url: str, token: str):
         self.url = url
@@ -128,8 +138,7 @@ class PlexClient:
 
     def get_all_artists(self, batch_size: int = 100) -> Generator[List[Artist], None, None]:
         if not self.music_library:
-            logger.error("No music library selected")
-            return
+            raise PlexFetchError("No music library selected")
 
         try:
             all_artists = self.music_library.searchArtists()
@@ -155,12 +164,14 @@ class PlexClient:
                 yield batch
 
         except Exception as e:
+            # Re-raise so the sync engine can distinguish a failed fetch from a
+            # genuinely empty library and abort before deleting DB rows.
             logger.error(f"Failed to retrieve artists: {e}")
+            raise
 
     def get_all_albums(self, batch_size: int = 100) -> Generator[List[Album], None, None]:
         if not self.music_library:
-            logger.error("No music library selected")
-            return
+            raise PlexFetchError("No music library selected")
 
         try:
             all_albums = self.music_library.searchAlbums()
@@ -186,12 +197,14 @@ class PlexClient:
                 yield batch
 
         except Exception as e:
+            # Re-raise so the sync engine can distinguish a failed fetch from a
+            # genuinely empty library and abort before deleting DB rows.
             logger.error(f"Failed to retrieve albums: {e}")
+            raise
 
     def get_all_tracks(self, batch_size: int = 100) -> Generator[List[Track], None, None]:
         if not self.music_library:
-            logger.error("No music library selected")
-            return
+            raise PlexFetchError("No music library selected")
 
         try:
             all_tracks = self.music_library.searchTracks()
@@ -217,7 +230,10 @@ class PlexClient:
                 yield batch
 
         except Exception as e:
+            # Re-raise so the sync engine can distinguish a failed fetch from a
+            # genuinely empty library and abort before deleting DB rows.
             logger.error(f"Failed to retrieve tracks: {e}")
+            raise
 
     def extract_artist_metadata(self, plex_artist: Any) -> Artist:
         if not plex_artist.title or not plex_artist.title.strip():
@@ -285,7 +301,15 @@ class PlexClient:
             duration_ms=plex_track.duration if hasattr(plex_track, "duration") else None,
             genre=genre_str,
             year=plex_track.year if hasattr(plex_track, "year") else None,
-            rating=plex_track.userRating if hasattr(plex_track, "userRating") else None,
+            # Plex stores userRating on a 0-10 scale (10 = 5 stars); PlexMix
+            # stores ratings on a 0-5 scale, so convert at the boundary. Passing
+            # the raw 0-10 value fails Track's 0-5 validator, which previously
+            # caused rated tracks to be skipped and then deleted on sync.
+            rating=(
+                plex_track.userRating / 2.0
+                if getattr(plex_track, "userRating", None) is not None
+                else None
+            ),
             play_count=plex_track.viewCount if hasattr(plex_track, "viewCount") else 0,
             last_played=plex_track.lastViewedAt if hasattr(plex_track, "lastViewedAt") else None,
             file_path=self._extract_file_path(plex_track),
@@ -338,7 +362,13 @@ class PlexClient:
             playlist = self.server.createPlaylist(title=name, items=tracks)
 
             if description and hasattr(playlist, "editSummary"):
-                playlist.editSummary(description)
+                # Setting the description is best-effort: a failure here must not
+                # discard the already-created playlist (which would orphan it in
+                # Plex while the caller sees None and assumes creation failed).
+                try:
+                    playlist.editSummary(description)
+                except Exception as e:
+                    logger.warning("Created playlist but failed to set its description: %s", e)
 
             logger.info(f"Created playlist '{name}' with {len(tracks)} tracks")
             return playlist

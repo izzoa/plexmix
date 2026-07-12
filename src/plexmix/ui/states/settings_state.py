@@ -95,7 +95,7 @@ class SettingsState(AppState):
         if not self.check_auth():
             self.is_page_loading = False
             return
-        super().on_load()
+        self.load_app_data()
         self._detect_local_deps()
         self.load_settings()
         self.update_model_lists()
@@ -111,6 +111,13 @@ class SettingsState(AppState):
             self.local_deps_available = False
 
     def load_settings(self):
+        # Server-side auth gate: this handler loads the Plex token and every API
+        # key into client-synced state vars. Without this check an unauthenticated
+        # client could dispatch load_settings directly and receive all secrets in
+        # the state delta, since Reflex exposes public methods as events.
+        if not self.access_allowed():
+            logger.warning("Blocked unauthenticated load_settings request")
+            return
         try:
             from plexmix.config.settings import Settings
             from plexmix.config.credentials import (
@@ -248,10 +255,16 @@ class SettingsState(AppState):
         self._load_ai_api_key_for_provider(provider)
 
     def set_embedding_provider(self, provider: str):
+        from plexmix.services.registry import get_default_embedding_model
+
         self.embedding_provider = provider
         self.update_model_lists()
         if self.embedding_models:
-            self.embedding_model = self.embedding_models[0]
+            # Prefer the provider's declared default model over the alphabetically
+            # first one, so the auto-selected model and the recorded dimension stay
+            # consistent (e.g. OpenAI defaults to the 1536-dim small model, not the
+            # 3072-dim large model that sorts first).
+            self.embedding_model = get_default_embedding_model(provider) or self.embedding_models[0]
         if provider != "local":
             self.is_downloading_local_model = False
             self.local_download_status = ""
@@ -427,6 +440,11 @@ class SettingsState(AppState):
         await test_embedding_provider_impl(self)
 
     def save_all_settings(self):
+        # Server-side auth gate: an unauthenticated client must not be able to
+        # overwrite configuration by dispatching this event directly.
+        if not self.access_allowed():
+            logger.warning("Blocked unauthenticated save_all_settings request")
+            return rx.toast.error("Not authenticated.")
         try:
             from plexmix.config.settings import Settings
             from plexmix.config.credentials import (
@@ -444,9 +462,11 @@ class SettingsState(AppState):
 
             settings.plex.url = self.plex_url
             settings.plex.library_name = self.plex_library
-            settings.plex.token = self.plex_token or None
-            if self.plex_token:
-                store_plex_token(self.plex_token)
+            # Prefer the OS keyring for the Plex token; only fall back to writing
+            # it into plaintext config.yaml when keyring storage is unavailable
+            # (e.g. headless container). Avoids duplicating the secret on disk.
+            token_stored = store_plex_token(self.plex_token) if self.plex_token else False
+            settings.plex.token = None if token_stored else (self.plex_token or None)
 
             settings.ai.default_provider = self.ai_provider
             settings.ai.model = self.ai_model
@@ -456,7 +476,17 @@ class SettingsState(AppState):
             settings.ai.local_auth_token = self.ai_local_auth_token or None
             settings.ai.custom_endpoint = self.ai_custom_endpoint or None
             settings.ai.custom_model = self.ai_custom_model or None
-            settings.ai.custom_api_key = sanitize_credential_value(self.ai_custom_api_key) or None
+            # Custom AI key: keyring-first, only fall back to plaintext config.
+            custom_ai_stored = (
+                store_custom_ai_api_key(self.ai_custom_api_key)
+                if (self.ai_custom_api_key and self.ai_provider == "custom")
+                else False
+            )
+            settings.ai.custom_api_key = (
+                None
+                if custom_ai_stored
+                else (sanitize_credential_value(self.ai_custom_api_key) or None)
+            )
 
             if self.ai_api_key:
                 if self.ai_provider == "gemini":
@@ -467,16 +497,22 @@ class SettingsState(AppState):
                     store_anthropic_api_key(self.ai_api_key)
                 elif self.ai_provider == "cohere":
                     store_cohere_api_key(self.ai_api_key)
-            if self.ai_custom_api_key and self.ai_provider == "custom":
-                store_custom_ai_api_key(self.ai_custom_api_key)
 
             settings.embedding.default_provider = self.embedding_provider
             settings.embedding.model = self.embedding_model
             settings.embedding.dimension = self.embedding_dimension
             settings.embedding.custom_endpoint = self.embedding_custom_endpoint or None
             settings.embedding.custom_model = self.embedding_custom_model or None
+            # Custom embedding key: keyring-first, only fall back to plaintext config.
+            custom_embed_stored = (
+                store_custom_embedding_api_key(self.embedding_custom_api_key)
+                if (self.embedding_custom_api_key and self.embedding_provider == "custom")
+                else False
+            )
             settings.embedding.custom_api_key = (
-                sanitize_credential_value(self.embedding_custom_api_key) or None
+                None
+                if custom_embed_stored
+                else (sanitize_credential_value(self.embedding_custom_api_key) or None)
             )
             settings.embedding.custom_dimension = self.embedding_custom_dimension
 
@@ -487,8 +523,6 @@ class SettingsState(AppState):
                     store_openai_api_key(self.embedding_api_key)
                 elif self.embedding_provider == "cohere":
                     store_cohere_api_key(self.embedding_api_key)
-            if self.embedding_custom_api_key and self.embedding_provider == "custom":
-                store_custom_embedding_api_key(self.embedding_custom_api_key)
 
             settings.logging.level = self.log_level
 

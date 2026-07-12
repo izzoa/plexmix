@@ -28,7 +28,9 @@ def connect_plex(settings: Settings) -> PlexClient:
     Raises :class:`PlexConnectionError` if the token is missing, the server
     is unreachable, or the configured library cannot be selected.
     """
-    plex_token = credentials.get_plex_token()
+    # Fall back to the token stored in config.yaml when the keyring is unavailable
+    # (headless/container) — otherwise a keyring-less token is unrecoverable.
+    plex_token = credentials.get_plex_token() or settings.plex.token
     if not plex_token or not settings.plex.url:
         raise PlexConnectionError("Plex not configured. Run 'plexmix config init' first.")
 
@@ -36,8 +38,18 @@ def connect_plex(settings: Settings) -> PlexClient:
     if not plex_client.connect():
         raise PlexConnectionError("Failed to connect to Plex server.")
 
-    if settings.plex.library_name:
-        plex_client.select_library(settings.plex.library_name)
+    if not settings.plex.library_name:
+        raise PlexConnectionError(
+            "No Plex music library configured. Run 'plexmix config init' to select one."
+        )
+
+    # A failed selection leaves music_library=None, which would make every fetch
+    # return empty and trick sync into deleting the whole local library. Fail loudly.
+    if not plex_client.select_library(settings.plex.library_name):
+        raise PlexConnectionError(
+            f"Failed to select Plex library '{settings.plex.library_name}'. "
+            "It may have been renamed or removed — check your configuration."
+        )
 
     return plex_client
 

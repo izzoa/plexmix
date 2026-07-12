@@ -86,7 +86,9 @@ def get_ai_provider(
             mode=local_mode or "builtin",
             endpoint=local_endpoint,
             auth_token=local_auth_token,
-            max_output_tokens=local_max_output_tokens or 800,
+            # Pass through (may be None) so the provider can fall back to the
+            # model's catalog cap instead of a hard-coded 800.
+            max_output_tokens=local_max_output_tokens,
         )
 
     # Custom (OpenAI-compatible) provider

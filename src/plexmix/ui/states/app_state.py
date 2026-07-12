@@ -128,25 +128,28 @@ class AppState(rx.State):
         """Close the mobile navigation sidebar."""
         self.is_mobile_nav_open = False
 
+    @staticmethod
+    def _configured_ui_password() -> Optional[str]:
+        """Return the configured UI password (config file or env var), or None."""
+        import os
+
+        try:
+            from plexmix.config.settings import Settings
+
+            configured_password = Settings.load_from_file().ui.password
+        except Exception:
+            configured_password = None
+        if not configured_password:
+            configured_password = os.environ.get("PLEXMIX_UI_PASSWORD")
+        return configured_password or None
+
     def check_auth(self) -> bool:
         """Check if authentication is required and whether user is authenticated.
 
         Returns True if the user is authenticated (or no password is set).
         Returns False if the user needs to log in.
         """
-        import os
-
-        try:
-            from plexmix.config.settings import Settings
-
-            settings = Settings.load_from_file()
-            configured_password = settings.ui.password
-        except Exception:
-            configured_password = None
-
-        # Also check env var directly as fallback
-        if not configured_password:
-            configured_password = os.environ.get("PLEXMIX_UI_PASSWORD")
+        configured_password = self._configured_ui_password()
 
         if not configured_password:
             # No password configured — auto-authenticate
@@ -155,6 +158,24 @@ class AppState(rx.State):
             return True
 
         self.auth_required = True
+        return self.is_authenticated
+
+    def access_allowed(self) -> bool:
+        """Server-side authorization gate for sensitive event handlers.
+
+        Reflex exposes every public State method as a websocket-dispatchable
+        event, so enforcing the password only in ``on_load`` and in client-side
+        rendering leaves the backend open: an unauthenticated client could invoke
+        handlers directly to read secrets (``load_settings``) or trigger
+        destructive/costly work. Sensitive handlers must call this and bail out
+        when it returns False.
+
+        Unlike :meth:`check_auth`, this is read-only (it never mutates state), so
+        it is safe to call at the top of a background event before entering
+        ``async with self``.
+        """
+        if not self._configured_ui_password():
+            return True
         return self.is_authenticated
 
     @rx.event
@@ -175,7 +196,11 @@ class AppState(rx.State):
         if not configured_password:
             configured_password = os.environ.get("PLEXMIX_UI_PASSWORD", "")
 
-        if configured_password and hmac.compare_digest(password, configured_password):
+        # Compare as UTF-8 bytes: hmac.compare_digest raises TypeError on str
+        # inputs containing non-ASCII characters.
+        if configured_password and hmac.compare_digest(
+            password.encode("utf-8"), configured_password.encode("utf-8")
+        ):
             self.is_authenticated = True
             self.login_error = ""
             self.login_password = ""
@@ -189,18 +214,14 @@ class AppState(rx.State):
         self.is_authenticated = False
         self.login_password = ""
 
-    @rx.event
-    def on_load(self):
-        """Load app data when the page loads."""
-        logger.debug("AppState.on_load called")
-        if not self.check_auth():
-            self.is_page_loading = False
-            return
-
-        # Cancel orphaned background tasks from dead browser sessions.
-        # When a user closes and reopens the browser they get a new session
-        # token; old tasks keep pushing deltas to the dead WebSocket which
-        # floods the console with "delta to disconnected client" warnings.
+    def load_app_data(self) -> None:
+        """Load shared app data (config status + library stats) and reap orphaned
+        tasks. A plain method so subclass on_load handlers can invoke it directly:
+        calling ``super().on_load()`` on the @rx.event-decorated handler only builds
+        and discards an EventSpec, so this body never ran from subclasses."""
+        # Cancel orphaned background tasks from dead browser sessions. When a user
+        # closes and reopens the browser they get a new session token; old tasks
+        # keep pushing deltas to the dead WebSocket and flood the console.
         from plexmix.ui.job_manager import jobs
 
         token = self.router.session.client_token
@@ -208,6 +229,15 @@ class AppState(rx.State):
 
         self.check_configuration_status()
         self.load_library_stats()
+
+    @rx.event
+    def on_load(self):
+        """Load app data when the page loads."""
+        logger.debug("AppState.on_load called")
+        if not self.check_auth():
+            self.is_page_loading = False
+            return
+        self.load_app_data()
         return rx.console_log("App state loaded")
 
     def check_configuration_status(self):
@@ -245,7 +275,10 @@ class AppState(rx.State):
             ai_key_map = {
                 "gemini": lambda: get_google_api_key() or os.environ.get("GOOGLE_API_KEY"),
                 "openai": lambda: get_openai_api_key() or os.environ.get("OPENAI_API_KEY"),
+                # Both "anthropic" and "claude" (the id the CLI setup writes) must
+                # map to the Anthropic key, or AI shows as unconfigured for Claude.
                 "anthropic": lambda: get_anthropic_api_key() or os.environ.get("ANTHROPIC_API_KEY"),
+                "claude": lambda: get_anthropic_api_key() or os.environ.get("ANTHROPIC_API_KEY"),
                 "cohere": lambda: get_cohere_api_key() or os.environ.get("COHERE_API_KEY"),
                 "custom": lambda: (
                     settings.ai.custom_api_key

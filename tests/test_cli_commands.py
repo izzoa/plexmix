@@ -143,20 +143,25 @@ class TestSyncIncremental:
 class TestEmbeddingsGenerate:
     """Tests for `plexmix embeddings generate`."""
 
+    @patch("plexmix.cli.embeddings_cmd.rebuild_vector_index", return_value=1)
     @patch("plexmix.cli.embeddings_cmd.SQLiteManager")
     @patch("plexmix.cli.embeddings_cmd._build_embedding_generator")
     @patch("plexmix.cli.embeddings_cmd.Settings.load_from_file")
-    def test_no_tracks_need_embeddings(self, mock_load, mock_build_emb, mock_db_cls, tmp_path):
+    def test_no_tracks_need_embeddings(
+        self, mock_load, mock_build_emb, mock_db_cls, mock_rebuild, tmp_path
+    ):
         settings = _make_settings(tmp_path)
         mock_load.return_value = settings
 
         mock_gen = MagicMock()
         mock_gen.get_dimension.return_value = 1536
+        mock_gen.provider_name = "OpenAI"
         mock_build_emb.return_value = mock_gen
 
         mock_db = MagicMock()
         mock_db.get_all_tracks.return_value = [_dummy_track(1)]
-        mock_db.get_embedding_by_track_id.return_value = MagicMock()  # embedding exists
+        # Track 1 already has an embedding for the active model.
+        mock_db.get_track_ids_with_embeddings.return_value = {1}
         mock_db.__enter__ = MagicMock(return_value=mock_db)
         mock_db.__exit__ = MagicMock(return_value=False)
         mock_db_cls.return_value = mock_db
@@ -164,6 +169,8 @@ class TestEmbeddingsGenerate:
         result = runner.invoke(app, ["embeddings", "generate"])
         assert result.exit_code == 0
         assert "all tracks already have embeddings" in result.output.lower()
+        # The index is still rebuilt so a missing/lost index recovers.
+        mock_rebuild.assert_called_once()
 
     @patch("plexmix.cli.embeddings_cmd.rebuild_vector_index", return_value=2)
     @patch("plexmix.cli.embeddings_cmd.generate_embeddings_for_tracks", return_value=2)
@@ -427,7 +434,7 @@ class TestDbInfo:
         settings = _make_settings(tmp_path)
         # Point at a DB path that doesn't exist
         settings.database.path = str(tmp_path / "nonexistent.db")
-        mock_settings_cls.return_value = settings
+        mock_settings_cls.load_from_file.return_value = settings
 
         result = runner.invoke(app, ["db", "info"])
         assert result.exit_code == 0
@@ -447,7 +454,7 @@ class TestDbInfo:
         settings = _make_settings(tmp_path)
         settings.database.path = str(db_path)
         settings.database.faiss_index_path = str(index_path)
-        mock_settings_cls.return_value = settings
+        mock_settings_cls.load_from_file.return_value = settings
 
         result = runner.invoke(app, ["db", "info"])
         assert result.exit_code == 0
