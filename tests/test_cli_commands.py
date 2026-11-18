@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from typing import Any, Iterable, Iterator, List, Optional, Tuple
 from unittest.mock import patch, MagicMock
 
+import click
 import pytest
 import typer
 from click.testing import Result
@@ -976,12 +977,15 @@ class TestSyncRemovals:
     @pytest.mark.parametrize("command", SYNC_COMMANDS)
     def test_sync_help_lists_allow_removals(self, command: List[str]) -> None:
         result = runner.invoke(app, [*command, "--help"])
+        # On GitHub Actions Typer colours its help text, and the colour codes split
+        # an option name such as "--allow-removals". Compare the plain text.
+        help_text = click.unstyle(result.output)
 
         assert result.exit_code == 0
-        assert "--allow-removals" in result.output
+        assert "--allow-removals" in help_text
         # One plain flag that is off by default: there is no "--no-" form of it.
-        assert "--no-allow-removals" not in result.output
-        assert "backup" in result.output.lower()
+        assert "--no-allow-removals" not in help_text
+        assert "backup" in help_text.lower()
 
 
 def test_cli_modules_never_call_sync_commands_as_functions() -> None:

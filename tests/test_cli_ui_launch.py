@@ -12,6 +12,7 @@ import types
 from pathlib import Path
 from typing import Any, Dict, Iterator, List
 
+import click
 import pytest
 import typer
 from click.testing import Result
@@ -194,10 +195,13 @@ class TestLaunchMode:
 
 def test_help_lists_dev_and_prod() -> None:
     result = runner.invoke(_make_cli(), ["ui", "--help"], terminal_width=200)
+    # On GitHub Actions Typer colours its help text, and the colour codes split an
+    # option name such as "--dev". Compare the plain text.
+    help_text = click.unstyle(result.output)
 
     assert result.exit_code == 0, result.output
-    assert "--dev" in result.output
-    assert "--prod" in result.output
+    assert "--dev" in help_text
+    assert "--prod" in help_text
 
 
 def test_real_cli_registers_ui_command() -> None:
