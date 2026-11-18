@@ -72,7 +72,15 @@ VOLUME /data
 EXPOSE ${PLEXMIX_UI_PORT} ${PLEXMIX_BACKEND_PORT}
 
 ENTRYPOINT ["poetry", "run", "plexmix"]
-CMD ["ui", "--host", "0.0.0.0"]
+# Serve the production build explicitly, so a future change to the CLI default cannot
+# flip the image to the dev server. The frontend is built at container start (not at
+# image build) because rxconfig.py bakes PLEXMIX_API_URL into the bundle.
+CMD ["ui", "--host", "0.0.0.0", "--prod"]
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+# Every start builds the production frontend before the backend answers /ping: about
+# 4 minutes on Apple silicon, and NAS/SBC CPUs can need 10 or more. Failures inside
+# the start period do not count toward unhealthy, and the first successful probe ends
+# it early, so a generous 15 minutes costs nothing on fast hosts and keeps slow ones
+# from being marked unhealthy (and restarted into another build) mid-build.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=900s --retries=3 \
     CMD curl -f http://localhost:${PLEXMIX_BACKEND_PORT:-8000}/ping || exit 1

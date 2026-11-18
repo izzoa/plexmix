@@ -54,45 +54,27 @@
 }
 
 /* ================================================================
-   1. Design Tokens — Colors
+   1. Design Tokens
+   ----------------------------------------------------------------
+   All color, type, radius, shadow and motion tokens (light + dark)
+   live in colors_and_type.css, which loads after this file. Do not
+   redefine them here: two copies drift.
+
+   Dark tokens apply ONLY under `.dark` / [data-theme="dark"] on
+   <html>. Never target the Radix theme root
+   ([data-is-root-theme="true"]) for dark values: it exists in BOTH
+   color modes, so dark brand values would leak into light mode.
    ================================================================ */
-:root {
-  /* --- Brand Orange — 12-step scale --- */
-  --brand-1: #fef8f4;
-  --brand-2: #fdf3ec;
-  --brand-3: #fceadd;
-  --brand-4: #f9dcc9;
-  --brand-5: #f3c9a8;
-  --brand-6: #eab382;
-  --brand-7: #e09b5e;
-  --brand-8: #d68034;
-  --brand-9: #F97316;
-  --brand-10: #EA580C;
-  --brand-11: #b55f18;
-  --brand-12: #5c2d0f;
-  --brand-glow: rgba(249, 115, 22, 0.15);
 
-  /* --- Gray scale (light mode reference) --- */
-  --pm-gray-1: #fcfcfc;
-  --pm-gray-2: #f9f9f9;
-  --pm-gray-3: #f0f0f0;
-  --pm-gray-4: #e8e8e8;
-  --pm-gray-5: #e0e0e0;
-  --pm-gray-6: #d9d9d9;
-  --pm-gray-7: #cecece;
-  --pm-gray-8: #bbbbbb;
-  --pm-gray-9: #8d8d8d;
-  --pm-gray-10: #838383;
-  --pm-gray-11: #646464;
-  --pm-gray-12: #202020;
-
-  /* --- Semantic --- */
-  --pm-success: #22C55E;
-  --pm-warning: #EAB308;
-  --pm-error: #EF4444;
-  --pm-info: #3B82F6;
-
-  /* --- Override Reflex/Radix accent with new brand orange --- */
+/* ================================================================
+   1b. Radix accent → PlexMix brand ramp
+   ----------------------------------------------------------------
+   Radix Themes defines --accent-* on [data-accent-color='orange']
+   (the theme root and any orange component), so the mapping must
+   live on that selector; `html` raises specificity above Radix's.
+   Brand vars resolve from <html>, so light/dark follow `.dark`.
+   ================================================================ */
+html [data-accent-color="orange"] {
   --accent-1: var(--brand-1);
   --accent-2: var(--brand-2);
   --accent-3: var(--brand-3);
@@ -105,89 +87,96 @@
   --accent-10: var(--brand-10);
   --accent-11: var(--brand-11);
   --accent-12: var(--brand-12);
-
-  /* --- Legacy aliases (backward compat) --- */
-  --plexmix-orange: var(--brand-9);
-  --plexmix-orange-hover: var(--brand-10);
-  --plexmix-orange-light: var(--brand-glow);
-
-  /* --- Layout --- */
-  --navbar-width: 220px;
-  --content-max-width: 1200px;
-
-  /* --- Spacing (4px grid) --- */
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --space-10: 40px;
-  --space-12: 48px;
-  --space-16: 64px;
-
-  /* --- Border Radius --- */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
-
-  /* --- Shadows --- */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.12);
-  --shadow-glow: 0 0 20px var(--brand-glow);
-
-  /* --- Animation --- */
-  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
-  --duration-fast: 150ms;
-  --duration-normal: 250ms;
-  --duration-slow: 400ms;
-
-  /* --- Typography stacks --- */
-  --font-display: 'Space Grotesk', system-ui, -apple-system, sans-serif;
-  --font-body: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
-  --font-mono: 'IBM Plex Mono', 'JetBrains Mono', 'Fira Code', ui-monospace, monospace;
+  /* Alpha steps drive Radix soft/ghost/surface parts and Link text. Opaque
+     brand steps, shifted one lighter so brand-11 text stays ≥4.5:1 on them. */
+  --accent-a1: var(--brand-1);
+  --accent-a2: var(--brand-2);
+  --accent-a3: var(--brand-2);
+  --accent-a4: var(--brand-3);
+  --accent-a5: var(--brand-3);   /* soft :active — brand-11 stays 4.7:1 */
+  --accent-a6: var(--brand-6);
+  --accent-a7: var(--brand-7);
+  --accent-a8: var(--brand-8);
+  --accent-a9: var(--brand-9);
+  --accent-a10: var(--brand-10);
+  --accent-a11: var(--brand-11);
+  --accent-a12: var(--brand-12);
+  --accent-surface: var(--brand-1);
+  --accent-contrast: var(--brand-ink);   /* dark ink on orange: 6.5:1 (white is 2.8:1) */
+  --accent-indicator: var(--brand-10);   /* ≥3:1 against light tracks (brand-9 is 2.4–2.7) */
+  --accent-track: var(--brand-10);
+  --focus-8: var(--focus-ring);          /* Radix outlines (links, tabs, sliders) */
 }
 
-/* ================================================================
-   1b. Dark Mode Token Overrides
-   ================================================================ */
-.dark,
-[data-theme="dark"],
-[data-accent-color][data-is-root-theme="true"][data-gray-color] {
-  --brand-1: #1f1208;
-  --brand-2: #2a180d;
-  --brand-3: #3d2212;
-  --brand-4: #522e18;
-  --brand-5: #6b3d20;
-  --brand-6: #8c522d;
-  --brand-7: #b06b3d;
-  --brand-8: #d68034;
-  --brand-9: #F97316;
-  --brand-10: #f5933d;
-  --brand-11: #ffb366;
-  --brand-12: #ffdfc7;
+/* Radix radius scale → PlexMix scale (Radix defines it on [data-radius]).
+   r1 stays small: checkboxes and size-1 controls derive from it. */
+html [data-radius] {
+  --radius-1: 5px;
+  --radius-2: var(--radius-md);
+  --radius-3: var(--radius-md);
+  --radius-4: var(--radius-lg);
+  --radius-5: var(--radius-xl);
+  --radius-6: var(--radius-xl);
+}
 
-  --pm-gray-1: #09090B;
-  --pm-gray-2: #18181B;
-  --pm-gray-3: #27272A;
-  --pm-gray-4: #3F3F46;
-  --pm-gray-5: #52525B;
-  --pm-gray-6: #71717A;
-  --pm-gray-7: #A1A1AA;
-  --pm-gray-8: #D4D4D8;
-  --pm-gray-9: #6e6e6e;
-  --pm-gray-10: #7a7a7a;
-  --pm-gray-11: #b0b0b0;
-  --pm-gray-12: #FAFAFA;
+/* Non-orange Radix soft parts draw accent-a11 on accent-a3, which is ~4.1:1
+   for blue/green/yellow in light. Use the scale's high-contrast step. */
+html .rt-CalloutRoot[data-accent-color]:not([data-accent-color="orange"]):not([data-accent-color=""]),
+html .rt-Badge[data-accent-color]:not([data-accent-color="orange"]):not([data-accent-color=""]),
+html .rt-BaseButton.rt-variant-soft[data-accent-color]:not([data-accent-color="orange"]):not([data-accent-color=""]):not([data-disabled]):not(:disabled) {
+  color: var(--accent-12);
+}
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.3);
+/* Solid orange Radix buttons match the custom primary: glow, rise, squash.
+   Radix always renders data-accent-color; "" means "inherit the theme's orange". */
+html .rt-BaseButton.rt-variant-solid:is([data-accent-color="orange"], [data-accent-color=""]):not(:disabled):not([data-disabled]) {
+  box-shadow: var(--cta-glow);
+  transition: transform var(--duration-normal) var(--ease-spring),
+              box-shadow var(--duration-normal) var(--ease-spring),
+              background-color var(--duration-fast) var(--ease-default);
+}
+html .rt-BaseButton.rt-variant-solid:is([data-accent-color="orange"], [data-accent-color=""]):not(:disabled):not([data-disabled]):hover {
+  box-shadow: var(--cta-glow-hover);
+  transform: translateY(-1px);
+}
+html .rt-BaseButton.rt-variant-solid:is([data-accent-color="orange"], [data-accent-color=""]):not(:disabled):not([data-disabled]):active {
+  transform: scale(.96);
+}
+
+/* Radix placeholders default to gray-a10 (3.9:1); use the AA muted token */
+.rt-TextFieldInput::placeholder,
+.rt-TextAreaInput::placeholder {
+  color: var(--fg-3);
+  opacity: 1;
+}
+.rt-SelectTrigger[data-placeholder] .rt-SelectTriggerInner {
+  color: var(--fg-3);
+}
+
+/* Tooltips stay small-radius (the r2 mapping would make short tips pills).
+   PlexMix tokens: Soot panel, Paper text in the body face (the rail labels are
+   Radix tooltips, webui-zoom-and-narrow-fit D2). */
+.rt-TooltipContent {
+  border-radius: var(--radius-sm);
+  background-color: var(--pm-gray-12);
+  box-shadow: var(--shadow-md);
+}
+.rt-TooltipText {
+  color: var(--pm-gray-1);
+  font-family: var(--font-body);
+  font-size: 12px;
+  font-weight: 500;
+}
+.rt-TooltipArrow {
+  fill: var(--pm-gray-12);
+}
+
+/* Radix's touch press band over links relied on a translucent accent-a4;
+   our a4 is opaque, so keep the band translucent or it hides the text. */
+@media (pointer: coarse) {
+  html .rt-Link:active {
+    outline-color: var(--brand-glow);
+  }
 }
 
 /* ================================================================
@@ -220,14 +209,14 @@ code, pre, kbd, samp,
   background-color: var(--brand-10);
 }
 
-/* Progress bar color */
+/* Progress bar color (indicators use brand-10: ≥3:1 on light tracks) */
 .rt-ProgressRoot[data-accent-color="orange"] .rt-ProgressIndicator {
-  background-color: var(--brand-9);
+  background-color: var(--brand-10);
 }
 
 /* Spinner color */
 .rt-Spinner[data-accent-color="orange"] {
-  color: var(--brand-9);
+  color: var(--brand-10);
 }
 
 /* Focus ring for accessibility */
@@ -236,19 +225,24 @@ code, pre, kbd, samp,
 .rt-TextAreaInput:focus-visible,
 .rt-SelectTrigger:focus-visible,
 .rt-CheckboxRoot:focus-visible,
-.rt-SwitchRoot:focus-visible {
-  outline: 2px solid var(--brand-9);
+.rt-SwitchRoot:focus-visible,
+.rt-TabsTrigger:focus-visible {
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
-/* Card base refinement */
-.rt-Card {
-  border-radius: var(--radius-lg);
+/* Tab triggers take the ring on the trigger itself (above); drop Radix's
+   inset ring on the inner label so focus shows one ring, not two. */
+.rt-TabsTrigger:focus-visible .rt-TabsTriggerInner {
+  outline: none;
 }
+
+/* Card / input / select radii come from the Radix scale mapping above
+   (setting border-radius here only rounds the outer box and splits the rings). */
 
 /* Badge refinement */
 .rt-Badge {
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-pill);
   font-family: var(--font-body);
   font-size: 11px;
   font-weight: 500;
@@ -258,13 +252,11 @@ code, pre, kbd, samp,
 .rt-TextFieldInput,
 .rt-TextAreaInput {
   font-family: var(--font-body);
-  border-radius: var(--radius-md);
 }
 
 /* Select refinement */
 .rt-SelectTrigger {
   font-family: var(--font-body);
-  border-radius: var(--radius-md);
 }
 
 /* Table refinement */
@@ -292,7 +284,7 @@ code, pre, kbd, samp,
 }
 
 .sortable-header:hover {
-  color: var(--brand-9);
+  color: var(--accent-fg);
 }
 
 /* ================================================================
@@ -307,6 +299,65 @@ code, pre, kbd, samp,
 @media (min-width: 769px) {
   .hide-desktop {
     display: none !important;
+  }
+}
+
+/* Settings section tabs at narrow widths: stack the tab list above the panel
+   and lay it out as one horizontal scroll row. The tree stays vertical, so
+   ArrowUp/Down, Home and End move between sections (see §15).
+   Overflow cue (webui-zoom-and-narrow-fit, D11): Radix hides the list's
+   scrollbar (scrollbar-width: none; ::-webkit-scrollbar { display: none }), so
+   the tabs past the edge were invisible. Show a thin scrollbar under the strip
+   instead, and snap triggers so a focused tab scrolls fully into view.
+   scrollbar-width is reset to auto, not thin: in Chrome 121+ any non-auto
+   scrollbar-width switches off ::-webkit-scrollbar styling and draws the native
+   bar, an overlay that is invisible at rest on macOS and ignores the gray-5
+   thumb. With auto, Chrome and Safari draw the 6px always-visible bar below with
+   the shared thumb (redesign.css); browsers without ::-webkit-scrollbar
+   (Firefox) get the thin standard bar from the @supports block after this one. */
+@media (max-width: 768px) {
+  .rt-TabsRoot.settings-tabs[data-orientation="vertical"] {
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .rt-TabsList.settings-tab-list[data-orientation="vertical"] {
+    flex-direction: row;
+    flex: none;
+    width: 100%;
+    overflow-x: auto;
+    padding: 4px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .rt-TabsTrigger.settings-tab[data-orientation="vertical"] {
+    width: auto;
+    flex-shrink: 0;
+  }
+
+  .settings-tabs .rt-BaseTabList {
+    scrollbar-width: auto;
+    scroll-snap-type: x proximity;
+    scroll-padding-inline: 8px;
+  }
+
+  .settings-tabs .rt-BaseTabList::-webkit-scrollbar {
+    display: block;
+    height: 6px;
+  }
+
+  .settings-tabs .rt-TabsTrigger {
+    scroll-snap-align: start;
+  }
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  @media (max-width: 768px) {
+    .settings-tabs .rt-BaseTabList {
+      scrollbar-width: thin;
+      scrollbar-color: var(--pm-gray-5) transparent;
+    }
   }
 }
 
@@ -437,10 +488,13 @@ code, pre, kbd, samp,
 /* ================================================================
    10. Glass Morphism
    ================================================================ */
+/* Prefixed first: the production CSS minifier (lightningcss) drops an unprefixed
+   backdrop-filter that is followed by its -webkit- twin, so the blur was lost in
+   `plexmix ui` builds. */
 .glass {
   background: rgba(24, 24, 27, 0.8);
-  backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
   border: 1px solid rgba(63, 63, 70, 0.5);
 }
 
@@ -464,7 +518,7 @@ code, pre, kbd, samp,
 
 .pm-progress-bar-fill {
   height: 100%;
-  background-color: var(--brand-9);
+  background-color: var(--brand-10);
   border-radius: 1px;
   transition: width 300ms var(--ease-out);
 }
@@ -472,7 +526,7 @@ code, pre, kbd, samp,
 .pm-progress-bar-indeterminate {
   height: 100%;
   width: 25%;
-  background-color: var(--brand-9);
+  background-color: var(--brand-10);
   border-radius: 1px;
   animation: progressIndeterminate 1.5s var(--ease-default) infinite;
 }
@@ -518,42 +572,145 @@ code, pre, kbd, samp,
 }
 
 /* ================================================================
-   14. Floating Action Bar (Library Page)
+   15. Settings Section Tabs (pages/settings.py)
+   ----------------------------------------------------------------
+   One vertical Radix Tabs tree at every width (narrow layout: §5).
+   Selectors carry the rt-* class and [data-orientation] so they
+   beat Reflex's own vertical-orientation styles.
    ================================================================ */
-.floating-action-bar {
-  position: fixed;
-  bottom: 24px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 200;
-  animation: slideUp 250ms var(--ease-out);
-  animation-fill-mode: both;
+.rt-TabsRoot.settings-tabs[data-orientation="vertical"] {
+  display: flex;
 }
 
+.rt-TabsList.settings-tab-list[data-orientation="vertical"] {
+  display: flex;
+  gap: 4px;
+  box-shadow: none;
+}
+
+/* Desktop: a 200px section column beside the panel. Scoped to wide
+   screens so the narrow rules in §5 (earlier in this file) still apply. */
 @media (min-width: 769px) {
-  .floating-action-bar {
-    left: calc(50% + 110px); /* offset for sidebar */
+  .rt-TabsRoot.settings-tabs[data-orientation="vertical"] {
+    gap: 24px;
+    align-items: flex-start;
+  }
+
+  .rt-TabsList.settings-tab-list[data-orientation="vertical"] {
+    flex-direction: column;
+    flex: 0 0 200px;
+    width: 200px;
+    padding: 2px 16px 2px 2px;
+    overflow: visible;         /* keep the 2px focus ring unclipped */
+    border-right: 1px solid var(--border-subtle);
+  }
+
+  .settings-panel {
+    flex: 1 1 0;
+    min-width: 0;
   }
 }
 
-/* ================================================================
-   15. Settings Sidebar Nav Item
-   ================================================================ */
-.settings-nav-item {
-  cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-  border-radius: var(--radius-md);
+.rt-TabsTrigger.settings-tab {
+  justify-content: flex-start;
+  height: auto;
+  min-height: 40px;
   padding: 8px 12px;
-  width: 100%;
+  border-radius: var(--radius-md);
+  color: var(--fg-2);
+  font-family: var(--font-body);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-default),
+    color var(--duration-fast) var(--ease-default);
 }
 
-.settings-nav-item:hover {
-  background-color: var(--pm-gray-3);
+/* Lay the label out in flow (Radix centres an absolutely positioned copy). */
+.rt-TabsTrigger.settings-tab .rt-TabsTriggerInner {
+  position: static;
+  gap: 12px;
+  padding: 0;
+  justify-content: flex-start;
+  background-color: transparent;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  word-spacing: inherit;
 }
 
-.settings-nav-item-active {
+.rt-TabsTrigger.settings-tab .rt-TabsTriggerInnerHidden {
+  display: none;
+}
+
+.rt-TabsTrigger.settings-tab svg {
+  flex-shrink: 0;
+  color: var(--fg-3);
+}
+
+.rt-TabsTrigger.settings-tab:hover {
+  background-color: var(--surface-sunken);
+  color: var(--fg-1);
+}
+
+.rt-TabsTrigger.settings-tab:hover svg {
+  color: var(--fg-2);
+}
+
+/* Selected: Peach Wash fill, Burnt Copper text and icon, and the 1px
+   Amp Glow Hover ring as the 3:1 non-color cue. No underline indicator. */
+.rt-TabsTrigger.settings-tab[data-state="active"] {
   background-color: var(--brand-3);
   color: var(--brand-11);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--brand-10);
+}
+
+.rt-TabsTrigger.settings-tab[data-state="active"] svg {
+  color: var(--accent-fg);
+}
+
+.rt-TabsTrigger.settings-tab::before {
+  display: none;
+}
+
+/* Field labels sit in vstacks whose gap already spaces them. */
+.settings-panel .rt-Flex > .field-label {
+  margin-bottom: 0;
+}
+
+/* Visible switch labels (<label for>): clicking one toggles its switch. */
+.switch-label {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-2);
+  cursor: pointer;
+}
+
+/* Discovered model chips: real buttons styled as .badge. */
+.chip-btn {
+  border: 0;
+  cursor: pointer;
+  font-family: inherit;
+  transition: box-shadow var(--duration-fast) var(--ease-default);
+}
+
+.chip-btn:hover {
+  box-shadow: var(--shadow-sm);
+}
+
+.chip-btn[aria-pressed="true"] {
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px var(--info-fg);
+}
+
+/* Forced colors drop box-shadows: mark the selection with a system outline
+   (except while focused, where the focus ring already shows). */
+@media (forced-colors: active) {
+  .rt-TabsTrigger.settings-tab[data-state="active"]:not(:focus-visible),
+  .chip-btn[aria-pressed="true"]:not(:focus-visible) {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
 }
 
 /* ================================================================
@@ -629,7 +786,7 @@ code, pre, kbd, samp,
    ================================================================ */
 .rt-TextFieldInput:focus,
 .rt-TextAreaInput:focus {
-  box-shadow: 0 0 0 1px var(--brand-9), var(--shadow-glow);
+  box-shadow: 0 0 0 1px var(--focus-ring), 0 0 0 4px var(--brand-glow);
 }
 
 /* ================================================================

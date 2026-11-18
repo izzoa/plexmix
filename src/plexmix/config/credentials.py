@@ -122,6 +122,35 @@ def get_credential(key: str) -> Optional[str]:
         return None
 
 
+def get_credential_source(key: str) -> Optional[str]:
+    """Return where :func:`get_credential` would resolve ``key`` from, never the value.
+
+    Follows the same order as :func:`get_credential`: environment variables first,
+    then the system keyring. Returns ``"env:<VAR>"`` naming the variable that
+    supplies the value, ``"keyring"``, or ``None`` when no usable value is
+    stored (or the keyring is unavailable). The value itself is neither returned
+    nor logged, so callers can show *where* a secret lives without handling it.
+    """
+    for env_var in _ENV_VAR_MAP.get(key, []):
+        raw = os.getenv(env_var)
+        if raw:
+            # get_credential stops at the first non-empty env var even when it is
+            # whitespace-only (it then resolves to ""), so mirror that exactly.
+            return f"env:{env_var}" if sanitize_credential_value(raw) else None
+
+    kr = _get_keyring()
+    if kr is None:
+        return None
+    try:
+        kr_value: Optional[str] = kr.get_password(SERVICE_NAME, key)
+    except Exception as e:
+        logger.error(f"Failed to look up credential source for {key}: {type(e).__name__}")
+        return None
+    if kr_value and sanitize_credential_value(kr_value):
+        return "keyring"
+    return None
+
+
 def delete_credential(key: str) -> bool:
     kr = _get_keyring()
     if kr is None:

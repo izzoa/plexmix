@@ -15,6 +15,7 @@ import pytest
 
 from plexmix.database.models import Artist, Album, Track, SyncHistory
 from plexmix.database.sqlite_manager import SQLiteManager
+from plexmix.plex.client import PlexReadReport
 from plexmix.plex.sync import SyncEngine
 
 
@@ -100,6 +101,16 @@ def _mock_plex_client(artists=None, albums=None, tracks=None) -> MagicMock:
     mock.get_all_albums.return_value = _batch_gen(albums or [])
     mock.get_all_tracks.return_value = _batch_gen(tracks or [])
     mock.validate_token.return_value = (True, "Connected to Test Server")
+    # What Plex listed: every item given here, and every read worked. The engine
+    # removes a track only when this listing leaves it out.
+    mock.read_report = PlexReadReport(
+        listed_track_keys=frozenset(track.plex_key for track in tracks or []),
+        listed={
+            "artists": len(artists or []),
+            "albums": len(albums or []),
+            "tracks": len(tracks or []),
+        },
+    )
 
     return mock
 
@@ -589,6 +600,7 @@ class TestRegenerateSync:
                 generate_embeddings=False,
                 progress_callback=None,
                 cancel_event=None,
+                allow_large_removals=False,
             )
 
 

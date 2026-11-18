@@ -29,7 +29,12 @@ from ..services.providers import (  # noqa: F401
 from ..config.settings import Settings, get_config_path  # noqa: F401
 from ..config import credentials  # noqa: F401
 
-app = typer.Typer(name="plexmix", help="AI-powered Plex playlist generator", add_completion=False)
+app = typer.Typer(
+    name="plexmix",
+    help="AI-powered Plex playlist generator",
+    add_completion=False,
+    pretty_exceptions_show_locals=False,
+)
 
 # Register sub-apps
 app.add_typer(config_app)

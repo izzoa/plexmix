@@ -1,5 +1,7 @@
 .states
 .web
+# Build-time copy of CHANGELOG.md shipped in the package (see publish.yml)
+src/plexmix/CHANGELOG.md
 assets/external/
 __pycache__/
 *.py[cod]

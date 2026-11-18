@@ -16,7 +16,7 @@ body {
   -moz-osx-font-smoothing: grayscale;
   overflow: hidden;
 }
-#root { height: 100vh; }
+#root { height: 100vh; height: 100dvh; }
 a { color: inherit; text-decoration: none; }
 button { font-family: inherit; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
@@ -28,6 +28,7 @@ button { font-family: inherit; }
 /* ---------- Density + accent tweak variables ---------- */
 :root {
   --rail-w: 76px;
+  --rail-item-w: 46px;        /* rail items, groups and logo link (start-aligned, D3) */
   --topbar-h: 60px;
   --page-pad-x: 44px;
   --page-pad-y: 36px;
@@ -36,6 +37,13 @@ button { font-family: inherit; }
   --section-gap: 32px;
   --glow-strength: 0.5;       /* multiplier the accent tweak scales */
   --cta-glow: var(--shadow-glow);
+  --cta-glow-hover: var(--shadow-glow-hover);
+  /* Tactile motion: transforms + shadows spring; colors stay quick and linear-ish */
+  --tactile: transform var(--duration-normal) var(--ease-spring),
+             box-shadow var(--duration-normal) var(--ease-spring),
+             background-color var(--duration-fast) var(--ease-default),
+             border-color var(--duration-fast) var(--ease-default),
+             color var(--duration-fast) var(--ease-default);
 }
 [data-density="compact"] {
   --page-pad-x: 32px;
@@ -44,57 +52,83 @@ button { font-family: inherit; }
   --card-pad: 14px;
   --section-gap: 22px;
 }
-[data-accent="subtle"]   { --cta-glow: none; --glow-strength: 0; }
-[data-accent="vivid"]    { --cta-glow: 0 0 28px var(--brand-glow); --glow-strength: 1; }
+[data-accent="subtle"]   { --cta-glow: var(--shadow-sm); --cta-glow-hover: var(--shadow-md); --glow-strength: 0; }
+[data-accent="vivid"]    { --cta-glow: 0 0 0 1px rgba(234, 88, 12, 0.42), 0 8px 26px rgba(249, 115, 22, 0.45);
+                           --cta-glow-hover: 0 0 0 1px rgba(234, 88, 12, 0.5), 0 12px 34px rgba(249, 115, 22, 0.55);
+                           --glow-strength: 1; }
+
+/* One focus treatment for every custom control (Radix parts: styles.css) */
+.btn:focus-visible, .icon-btn:focus-visible, .rail-item:focus-visible, .cmd-trigger:focus-visible,
+.avatar:focus-visible, .qa-link:focus-visible, .vibe-pill:focus-visible, .seg button:focus-visible,
+.tabs button:focus-visible, .opt-btn:focus-visible,
+.pl-card:focus-visible, .th-sort:focus-visible, .chip-btn:focus-visible, input[type=range]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
 
 /* ================================================================
    App shell — icon rail + main column
    ================================================================ */
-.shell { display: flex; height: 100vh; overflow: hidden; }
+/* The shell itself never scrolls: `clip` (after its `hidden` fallback) also forbids
+   programmatic scrolling, so focusing a control can never shift the rail or top bar.
+   Only .rail and .scroll scroll (webui-zoom-and-narrow-fit D2). */
+.shell { display: flex; height: 100vh; height: 100dvh; overflow: hidden; overflow: clip; }
 
+/* The rail scrolls itself when its controls are taller than the viewport (D2); its
+   labels are portalled Radix tooltips (navbar.py, styles.css), so the scroller never
+   clips them. Items are start-aligned at a fixed inset (D3), so a classic scrollbar only
+   takes the trailing inset, never the active bar. The 1px is the border-right: the inset
+   then equals the old centred offset, so the desktop rail is unchanged. Prefixed
+   backdrop-filter first: lightningcss (production builds) drops an unprefixed
+   backdrop-filter that is followed by its -webkit- twin.
+   The bar is the 6px ::-webkit-scrollbar (the shared gray-5 thumb), which fits the
+   trailing inset. scrollbar-width / scrollbar-color only apply where ::-webkit-scrollbar
+   is unsupported (Firefox): in Chrome 121+ either one switches the 6px bar off for the
+   native thin bar, 11px wide with classic scrollbars, which clipped the 56px rail's items. */
 .rail {
   position: relative; z-index: 60;
   width: var(--rail-w); flex-shrink: 0;
-  height: 100vh; padding: 16px 0 14px;
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  height: 100%; padding: 16px 0 14px;
+  padding-inline-start: calc((var(--rail-w) - var(--rail-item-w) - 1px) / 2);
+  display: flex; flex-direction: column; align-items: flex-start; gap: 6px;
+  overflow-y: auto; overflow-x: hidden;
   background: var(--glass-bg);
-  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
   border-right: 1px solid var(--glass-border);
 }
+.rail::-webkit-scrollbar { width: 6px; }
+@supports not selector(::-webkit-scrollbar) {
+  .rail { scrollbar-width: thin; scrollbar-color: var(--pm-gray-5) transparent; }
+}
+.rail-logo-link { display: flex; justify-content: center; width: var(--rail-item-w); flex-shrink: 0; }
 .rail-logo { width: 42px; height: 42px; border-radius: 12px; display: block; box-shadow: var(--shadow-sm); cursor: pointer; transition: transform .25s var(--ease-spring); }
 .rail-logo:hover { transform: scale(1.06) rotate(-3deg); }
-.rail-sep { width: 28px; height: 1px; background: var(--border-subtle); margin: 8px 0; flex-shrink: 0; }
+.rail-sep { width: 28px; height: 1px; background: var(--border-subtle); margin: 8px calc((var(--rail-item-w) - 28px) / 2); flex-shrink: 0; }
 .rail-spacer { flex: 1; }
-.rail-group { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.rail-group { display: flex; flex-direction: column; align-items: center; gap: 4px; width: var(--rail-item-w); }
 
 .rail-item {
-  position: relative; width: 46px; height: 42px;
+  position: relative; width: var(--rail-item-w); height: 42px; padding: 0; border: none; background: transparent; font: inherit;
   display: flex; align-items: center; justify-content: center;
   border-radius: var(--radius-md); color: var(--fg-3); cursor: pointer;
-  transition: color .15s var(--ease-default), background-color .15s var(--ease-default);
+  transition: var(--tactile);
+  scroll-margin-block: 6px;   /* focus scrolls the rail far enough to show the focus ring */
 }
-.rail-item:hover { background: var(--surface-sunken); color: var(--fg-1); }
-.rail-item.active { background: var(--brand-3); color: var(--brand-11); }
-[data-accent="vivid"] .rail-item.active { box-shadow: inset 0 0 0 1px var(--brand-6); }
+.rail-item:hover { background: var(--surface-sunken); color: var(--fg-1); transform: scale(1.05); }
+.rail-item.active { background: var(--brand-3); color: var(--brand-11);
+  box-shadow: 0 0 0 1px var(--brand-7), 0 4px 14px var(--brand-glow); }
+.rail-item.active:hover { transform: none; }
+[data-accent="subtle"] .rail-item.active { box-shadow: none; }
 .rail-item.active::before {
-  content: ""; position: absolute; left: -16px; top: 50%; transform: translateY(-50%);
-  width: 3px; height: 22px; border-radius: 2px; background: var(--brand-9);
+  content: ""; position: absolute; left: calc((var(--rail-item-w) - var(--rail-w)) / 2); top: 50%; transform: translateY(-50%);
+  width: 4px; height: 22px; border-radius: 4px; background: var(--brand-10);   /* ≥3:1 on glass */
 }
-.rail-tip {
-  position: absolute; left: calc(100% + 12px); top: 50%; transform: translateY(-50%) translateX(-4px);
-  background: var(--pm-gray-12); color: var(--pm-gray-1);
-  font-size: 12px; font-weight: 500; padding: 5px 9px; border-radius: var(--radius-sm);
-  white-space: nowrap; pointer-events: none; opacity: 0; transition: all .15s var(--ease-out);
-  z-index: 200; box-shadow: var(--shadow-md);
-}
-.rail-tip .k { font-family: var(--font-mono); font-size: 11px; opacity: .6; margin-left: 6px; }
-.rail-item:hover .rail-tip { opacity: 1; transform: translateY(-50%) translateX(0); }
 .rail-badge {
   position: absolute; top: 5px; right: 7px; width: 7px; height: 7px; border-radius: 50%;
   background: var(--pm-error); box-shadow: 0 0 0 2px var(--glass-bg);
 }
 
-.main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 
 /* ---------- Top bar ---------- */
 .topbar {
@@ -103,40 +137,47 @@ button { font-family: inherit; }
   padding: 0 var(--page-pad-x);
   border-bottom: 1px solid var(--border-subtle);
   background: var(--glass-bg);
-  backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
   position: relative; z-index: 40;
 }
-.topbar-title { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+/* The breadcrumb shrinks before any control; the page name stays on one line and
+   ellipsizes (its title attribute carries the full name). Above 768px the page name
+   keeps its width and the subtitle gives way; the zoom-fit block lets it shrink once the
+   subtitle is hidden. */
+.topbar-title { display: flex; align-items: baseline; gap: 10px; flex: 0 1 auto; min-width: 0; overflow: hidden; }
 .topbar-title .brand { font-family: var(--font-display); font-size: 19px; font-weight: 700; letter-spacing: -.01em; color: var(--brand-11); }
 .topbar-title .crumb-sep { font-family: var(--font-display); font-size: 17px; font-weight: 400; color: var(--fg-3); }
-.topbar-title .t { font-family: var(--font-display); font-size: 19px; font-weight: 700; letter-spacing: -.01em; }
+.topbar-title .brand, .topbar-title .crumb-sep { flex-shrink: 0; }
+.topbar-title .t { font-family: var(--font-display); font-size: 19px; font-weight: 700; letter-spacing: -.01em;
+  flex-shrink: 0; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar-title .s { font-size: 13px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .topbar-spacer { flex: 1; }
 
 .cmd-trigger {
-  display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 10px 0 12px;
-  background: var(--surface-raised); border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md); color: var(--fg-3); font-size: 13px; cursor: pointer;
-  transition: all .15s var(--ease-default); min-width: 210px;
+  display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 10px 0 14px;
+  background: var(--surface-app); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill); color: var(--fg-3); font-family: inherit; font-size: 13px; cursor: pointer;
+  transition: var(--tactile); min-width: 210px; flex-shrink: 0;
 }
-.cmd-trigger:hover { border-color: var(--border-strong); color: var(--fg-2); }
+.cmd-trigger:hover { border-color: var(--brand-7); color: var(--fg-2); box-shadow: var(--shadow-md); }
 .cmd-trigger .kbd { margin-left: auto; }
 .kbd {
   font-family: var(--font-mono); font-size: 11px; color: var(--fg-2);
   background: var(--surface-sunken); border: 1px solid var(--border-subtle);
-  border-radius: 5px; padding: 2px 6px; line-height: 1;
+  border-radius: var(--radius-pill); padding: 3px 8px; line-height: 1;
 }
 .icon-btn {
-  width: 34px; height: 34px; border-radius: var(--radius-md); border: 1px solid transparent;
+  width: 34px; height: 34px; border-radius: 50%; border: 1px solid transparent;
   background: transparent; color: var(--fg-2); cursor: pointer; display: flex;
-  align-items: center; justify-content: center; transition: all .15s var(--ease-default); flex-shrink: 0;
+  align-items: center; justify-content: center; transition: var(--tactile); flex-shrink: 0;
 }
-.icon-btn:hover { background: var(--surface-sunken); color: var(--fg-1); }
+.icon-btn:hover { background: var(--surface-sunken); color: var(--fg-1); transform: scale(1.08); }
 .avatar {
   width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0; cursor: pointer;
   background: linear-gradient(135deg, var(--brand-9), var(--brand-10));
-  color: #fff; font-family: var(--font-display); font-weight: 700; font-size: 13px;
+  color: var(--brand-ink); font-family: var(--font-display); font-weight: 700; font-size: 13px;
   display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow-sm);
+  border: none; padding: 0;
 }
 
 /* ---------- Page scroll area ---------- */
@@ -154,49 +195,53 @@ button { font-family: inherit; }
 
 /* indeterminate top loading bar */
 .loadbar { position: absolute; top: 0; left: 0; right: 0; height: 2px; background: transparent; overflow: hidden; z-index: 50; }
-.loadbar .ind { height: 100%; width: 30%; background: var(--brand-9); border-radius: 1px; animation: prog 1.3s var(--ease-default) infinite; }
+.loadbar .ind { height: 100%; width: 30%; background: var(--brand-10); border-radius: 1px; animation: prog 1.3s var(--ease-default) infinite; }
 @keyframes prog { 0% { transform: translateX(-110%); } 100% { transform: translateX(360%); } }
 
 /* ================================================================
    Reusable brand components (from the kit)
    ================================================================ */
-.btn { font-family: var(--font-body); font-weight: 500; border: none; cursor: pointer;
+.btn { font-family: var(--font-body); font-weight: 500; border: 1px solid transparent; cursor: pointer;
   border-radius: var(--radius-md); display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  transition: transform .1s var(--ease-default), background-color .15s, box-shadow .2s; white-space: nowrap; }
-.btn:active { transform: scale(.98); }
-.btn:disabled { opacity: .5; cursor: not-allowed; }
+  transition: var(--tactile); white-space: nowrap; }
+.btn:active:not(:disabled) { transform: scale(.96); }
+.btn:disabled { opacity: .5; cursor: not-allowed; box-shadow: none; }
 .btn-3 { height: 40px; padding: 0 16px; font-size: 14px; }
 .btn-4 { height: 50px; padding: 0 24px; font-size: 16px; }
 .btn-sm { height: 32px; padding: 0 12px; font-size: 13px; }
-.btn-primary { background: var(--brand-9); color: var(--brand-ink); }
-.btn-primary:hover:not(:disabled) { background: var(--brand-10); }
-.btn-primary.glow { box-shadow: var(--cta-glow); }
-.btn-primary.glow:hover:not(:disabled) { box-shadow: 0 0 26px var(--brand-glow); }
-.btn-blue { background: var(--pm-info); color: var(--on-solid); }
-.btn-blue:hover:not(:disabled) { filter: brightness(.95); }
-.btn-green { background: var(--pm-success); color: var(--success-ink); }
-.btn-green:hover:not(:disabled) { filter: brightness(.97); }
-.btn-soft { background: var(--surface-sunken); color: var(--fg-1); border: 1px solid var(--border-subtle); }
-.btn-soft:hover:not(:disabled) { background: var(--pm-gray-4); }
+/* Primary: the one orange action. Glows at rest, rises on hover, squashes on press. */
+.btn-primary { background: var(--brand-9); color: var(--brand-ink); box-shadow: var(--cta-glow); }
+.btn-primary:hover:not(:disabled) { background: var(--brand-10); box-shadow: var(--cta-glow-hover); transform: translateY(-1px); }
+.btn-primary:active:not(:disabled) { transform: scale(.96); box-shadow: var(--cta-glow); }
+.btn-blue { background: var(--info-solid); color: var(--on-solid); box-shadow: var(--shadow-sm); }
+.btn-blue:hover:not(:disabled) { filter: brightness(.95); transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.btn-green { background: var(--pm-success); color: var(--success-ink); box-shadow: var(--shadow-sm); }
+.btn-green:hover:not(:disabled) { filter: brightness(.97); transform: translateY(-1px); box-shadow: var(--shadow-md); }
+.btn-soft { background: var(--surface-raised); color: var(--fg-1); border-color: var(--border-strong); box-shadow: var(--shadow-sm); }
+.btn-soft:hover:not(:disabled) { border-color: var(--brand-7); box-shadow: var(--shadow-md); transform: translateY(-1px); }
 .btn-ghost { background: transparent; color: var(--fg-2); }
 .btn-ghost:hover:not(:disabled) { background: var(--surface-sunken); color: var(--fg-1); }
-.btn-outline { background: transparent; color: var(--fg-1); border: 1px solid var(--border-strong); }
-.btn-outline:hover:not(:disabled) { border-color: var(--brand-9); color: var(--brand-11); }
+.btn-outline { background: transparent; color: var(--fg-1); border-color: var(--border-strong); }
+.btn-outline:hover:not(:disabled) { border-color: var(--brand-9); color: var(--brand-11); transform: translateY(-1px); }
+/* Press must beat every variant's hover lift (a pressed button is also hovered) */
+.btn:active:not(:disabled), .btn:hover:active:not(:disabled) { transform: scale(.96); }
 .btn-icon { padding: 0; width: 32px; height: 32px; }
 
-.card { background: var(--surface-raised); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); }
-.tile { background: var(--surface-raised); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); padding: var(--card-pad); }
-.hover-lift { transition: transform .2s var(--ease-out), box-shadow .2s var(--ease-out), border-color .2s; }
-.hover-lift:hover { transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+/* Layered surfaces: cards rest on a soft shadow; the transparent border keeps
+   box sizes stable and shows up in forced-colors (high contrast) mode. */
+.card { background: var(--surface-raised); border: 1px solid transparent; border-radius: var(--radius-lg); box-shadow: var(--shadow-md); }
+.tile { background: var(--surface-raised); border: 1px solid transparent; border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: var(--card-pad); }
+.hover-lift { transition: var(--tactile); }
+.hover-lift:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg); }
 
-.badge { font-size: 11px; font-weight: 500; border-radius: var(--radius-sm); padding: 3px 8px; display: inline-flex; align-items: center; gap: 5px; line-height: 1.4; }
+.badge { font-size: 11px; font-weight: 500; border-radius: var(--radius-pill); padding: 3px 9px; display: inline-flex; align-items: center; gap: 5px; line-height: 1.4; }
 .badge-orange { background: var(--brand-3); color: var(--brand-11); }
 .badge-gray { background: var(--surface-sunken); color: var(--fg-2); }
-.badge-green { background: var(--success-bg); color: var(--pm-success); }
-.badge-blue { background: var(--info-bg); color: var(--pm-info); }
-.badge-purple { background: var(--purple-bg); color: var(--pm-purple); }
-.badge-red { background: var(--error-bg); color: var(--pm-error); }
-.badge-yellow { background: var(--warning-bg); color: var(--pm-warning); }
+.badge-green { background: var(--success-bg); color: var(--success-fg); }
+.badge-blue { background: var(--info-bg); color: var(--info-fg); }
+.badge-purple { background: var(--purple-bg); color: var(--purple-fg); }
+.badge-red { background: var(--error-bg); color: var(--error-fg); }
+.badge-yellow { background: var(--warning-bg); color: var(--warning-fg); }
 
 .mono { font-family: var(--font-mono); }
 .fg2 { color: var(--fg-2); } .fg3 { color: var(--fg-3); }
@@ -209,32 +254,49 @@ button { font-family: inherit; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
 
 .input, .textarea, .select { width: 100%; font-family: var(--font-body); font-size: 14px;
-  background: var(--surface-app); color: var(--fg-1);
-  border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 10px 12px; outline: none;
-  transition: border-color .15s, box-shadow .15s; }
+  background: var(--surface-raised); color: var(--fg-1);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md); padding: 10px 14px; outline: none;
+  box-shadow: var(--shadow-sm); transition: border-color .15s, box-shadow .15s; }
 .input::placeholder, .textarea::placeholder { color: var(--fg-3); }
-.input:focus, .textarea:focus, .select:focus { border-color: var(--brand-9); box-shadow: 0 0 0 3px var(--brand-glow); }
+.input:focus, .textarea:focus, .select:focus { border-color: var(--focus-ring); box-shadow: 0 0 0 4px var(--brand-glow), var(--shadow-sm); }
 .textarea { resize: none; line-height: 1.55; }
 .select { cursor: pointer; appearance: none; background-image: none; }
 .field-label { display: block; font-size: 13px; font-weight: 500; color: var(--fg-2); margin-bottom: 6px; }
 .field-help { font-size: 12px; color: var(--fg-3); margin-top: 6px; line-height: 1.5; }
 
-input[type="checkbox"] { accent-color: var(--brand-9); width: 16px; height: 16px; cursor: pointer; }
-input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer; }
+input[type="checkbox"] { accent-color: var(--brand-10); width: 16px; height: 16px; cursor: pointer; }
+input[type="range"] { accent-color: var(--brand-10); width: 100%; cursor: pointer; }
 
 /* ---------- Table ---------- */
 .tbl { width: 100%; border-collapse: collapse; }
 .tbl th { text-align: left; font-size: 12px; font-weight: 600; color: var(--fg-3); text-transform: uppercase; letter-spacing: .04em;
   padding: 10px 14px; border-bottom: 1px solid var(--border-subtle); white-space: nowrap; position: sticky; top: 0; background: var(--surface-raised); z-index: 1; }
-.tbl td { font-size: 14px; padding: var(--row-pad-y) 14px; border-bottom: 1px solid var(--border-subtle); }
+.tbl td { font-size: 14px; padding: var(--row-pad-y) 14px; border-bottom: 1px solid var(--border-subtle);
+  overflow-wrap: break-word; overflow-wrap: anywhere; }   /* a long token wraps in its cell, never widens the table */
 .tbl tbody tr { transition: background-color .12s var(--ease-default); }
 .tbl tbody tr:hover td { background: var(--surface-sunken); }
 .tbl tbody tr:last-child td { border-bottom: none; }
-.tbl-wrap { background: var(--surface-raised); border: 1px solid var(--border-subtle); border-radius: var(--radius-lg); overflow: hidden; }
+.tbl-wrap { background: var(--surface-raised); border: 1px solid transparent; border-radius: var(--radius-lg); box-shadow: var(--shadow-md); overflow: hidden; }
+/* Library table (pages/library.py): too wide for its box, it scrolls sideways inside it
+   instead of clipping columns. A modifier, not .tbl-wrap itself: the Generator results
+   share .tbl-wrap and their rows nudge 2px on hover, which would flash a scrollbar.
+   The bar stays the classic always-visible one from ::-webkit-scrollbar (8px here):
+   scrollbar-width would swap it for the native overlay bar, invisible at rest on macOS,
+   so only browsers without ::-webkit-scrollbar get the thin standard bar.
+   position: relative contains the cells' absolutely positioned bits (.sr-only labels,
+   checkbox inputs): their containing block would otherwise be .scroll, outside this
+   scroller, and they would still widen the page. */
+.tbl-scroll { overflow-x: auto; position: relative; }
+.tbl-scroll::-webkit-scrollbar { height: 8px; }
+.tbl-scroll::-webkit-scrollbar-track { margin-left: var(--radius-lg); margin-right: var(--radius-lg); }   /* clear the rounded corners */
+@supports not selector(::-webkit-scrollbar) { .tbl-scroll { scrollbar-width: thin; } }
+.tbl-scroll > .tbl { min-width: 36rem; }
+/* Muted text fails on sunken hover fills — lift it to fg-2 while hovered */
+.tbl tbody tr:hover .fg3, .hover-row:hover .fg3, .trk:hover .fg3 { color: var(--fg-2); }
 
 /* ---------- Progress ---------- */
-.pbar { height: 8px; background: var(--surface-sunken); border-radius: 4px; overflow: hidden; flex: 1; }
-.pfill { height: 100%; background: var(--brand-9); border-radius: 4px; transition: width .35s var(--ease-out); }
+.pbar { height: 8px; background: var(--surface-sunken); border-radius: var(--radius-pill); overflow: hidden; flex: 1; }
+.pfill { height: 100%; background: var(--brand-10); border-radius: var(--radius-pill); transition: width .35s var(--ease-out); }   /* brand-10: ≥3:1 on the sunken track */
 .pfill.indet { width: 35% !important; animation: prog 1.2s var(--ease-default) infinite; }
 
 /* ---------- Callout ---------- */
@@ -243,10 +305,10 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
 .callout .c-title { font-weight: 600; margin-bottom: 2px; }
 .callout .c-body { color: var(--fg-2); }
 .callout .c-body code, .codeinline { font-family: var(--font-mono); font-size: 12px; background: var(--surface-sunken); padding: 1px 6px; border-radius: var(--radius-sm); }
-.callout-info { background: var(--info-bg); color: var(--pm-info); }
-.callout-warning { background: var(--warning-bg); color: var(--pm-warning); }
-.callout-error { background: var(--error-bg); color: var(--pm-error); }
-.callout-success { background: var(--success-bg); color: var(--pm-success); }
+.callout-info { background: var(--info-bg); color: var(--info-fg); }
+.callout-warning { background: var(--warning-bg); color: var(--warning-fg); }
+.callout-error { background: var(--error-bg); color: var(--error-fg); }
+.callout-success { background: var(--success-bg); color: var(--success-fg); }
 
 /* ---------- Empty / skeleton ---------- */
 .empty { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 8px;
@@ -272,7 +334,7 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
 /* ---------- Album art swatch ---------- */
-.art { border-radius: var(--radius-sm); flex-shrink: 0; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; }
+.art { border-radius: var(--radius-sm); flex-shrink: 0; position: relative; overflow: hidden; display: flex; align-items: center; justify-content: center; box-shadow: var(--shadow-sm); }
 .art::after { content: ""; position: absolute; inset: 0; background: radial-gradient(circle at 30% 25%, rgba(255,255,255,.28), transparent 55%); }
 .art .gloss { position: relative; z-index: 1; width: 38%; height: 38%; border-radius: 50%; border: 2px solid rgba(255,255,255,.55); }
 .art .gloss::after { content:""; position:absolute; inset:38%; border-radius:50%; background: rgba(0,0,0,.35); }
@@ -281,29 +343,56 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
    PlexMix WebUI — Generator showpiece, command palette, page bits
    ================================================================ */
 
-/* ---------- Command palette ---------- */
-.cmdk-backdrop { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,.4);
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-  display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; animation: fadeIn .15s ease; }
+/* ── change 3: command palette (webui-input-responsiveness) ── */
+/* The palette is a Radix Themes Dialog: Overlay.rt-DialogOverlay > .rt-DialogScroll >
+   .rt-DialogScrollPadding > Content.rt-DialogContent.cmdk. These three hooks restyle it
+   (zoom-and-narrow-fit sizes the same hooks). plexmix.js (window.__pmPalette) sets
+   [hidden] on filtered rows/groups and aria-selected on the highlighted row. */
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-.cmdk { width: 560px; max-width: calc(100vw - 32px); background: var(--surface-raised);
-  border: 1px solid var(--border-subtle); border-radius: var(--radius-xl); box-shadow: var(--shadow-lg);
-  overflow: hidden; animation: scaleIn .2s var(--ease-spring); }
-.cmdk-input-row { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); }
-.cmdk-input { flex: 1; border: none; outline: none; background: transparent; font-family: var(--font-body);
+/* Prefixed first: the production CSS minifier (lightningcss) drops an unprefixed
+   backdrop-filter that is followed by its -webkit- twin, and Chromium ignores the
+   prefixed one, so the scrim lost its blur in `plexmix ui` builds. */
+.rt-DialogOverlay:has(.cmdk)::before { background: rgba(0,0,0,.4);
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+/* Palette fits the viewport (webui-zoom-and-narrow-fit D9): the top offset is capped at
+   80px and the bottom padding is 16px, and the panel's height is bounded by the space
+   between them, so the overlay never scrolls. The input row and footer keep their size;
+   .cmdk-list keeps its 380px desktop cap, shrinks below it on short viewports and is the
+   only scroller. Palette-scoped hooks only: other dialogs are untouched. */
+.rt-DialogScrollPadding:has(> .cmdk) { margin-top: 0; padding-top: min(12vh, 80px); padding-bottom: 16px; }
+.rt-DialogContent.cmdk { padding: 0; width: 560px; max-width: calc(100vw - 32px);
+  max-height: calc(100vh - min(12vh, 80px) - 16px); max-height: calc(100dvh - min(12vh, 80px) - 16px);
+  display: flex; flex-direction: column;
+  background: var(--surface-raised); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl); box-shadow: var(--shadow-lg); overflow: hidden; }
+.cmdk-input-row { display: flex; align-items: center; gap: 12px; padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); flex: none; }
+.cmdk-input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; font-family: var(--font-body);
   font-size: 16px; color: var(--fg-1); }
 .cmdk-input::placeholder { color: var(--fg-3); }
-.cmdk-list { max-height: 380px; overflow-y: auto; padding: 8px; }
+.cmdk-list { max-height: 380px; min-height: 0; flex: 0 1 auto; overflow-y: auto; padding: 8px; }
 .cmdk-group-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--fg-3); padding: 10px 10px 6px; }
 .cmdk-item { display: flex; align-items: center; gap: 12px; padding: 10px 10px; border-radius: var(--radius-md); cursor: pointer; }
+.cmdk-item[hidden], .cmdk-group[hidden] { display: none; }
 .cmdk-item .ci-ico { width: 30px; height: 30px; border-radius: var(--radius-sm); background: var(--surface-sunken); display: flex; align-items: center; justify-content: center; color: var(--fg-2); flex-shrink: 0; }
-.cmdk-item .ci-title { font-size: 14px; font-weight: 500; }
+.cmdk-item .ci-text { flex: 1; min-width: 0; }
+.cmdk-item .ci-title { font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
 .cmdk-item .ci-sub { font-size: 12px; color: var(--fg-3); }
-.cmdk-item.sel { background: var(--brand-3); }
-.cmdk-item.sel .ci-ico { background: var(--brand-9); color: var(--brand-ink); }
-.cmdk-item.sel .ci-title { color: var(--brand-11); }
-.cmdk-foot { display: flex; gap: 16px; padding: 10px 16px; border-top: 1px solid var(--border-subtle); font-size: 11px; color: var(--fg-3); }
-.cmdk-foot span { display: inline-flex; align-items: center; gap: 6px; }
+.cmdk-item[aria-selected="true"] { background: var(--brand-3); }
+.cmdk-item[aria-selected="true"] .ci-ico { background: var(--brand-10); color: var(--brand-ink); }   /* 3:1 selection cue on brand-3 */
+.cmdk-item[aria-selected="true"] .ci-title { color: var(--brand-11); }
+.cmdk-item[aria-selected="true"] .ci-sub { color: var(--fg-2); }   /* fg-3 drops below 4.5:1 on brand-3 */
+.cmdk-echo { font-weight: 600; }
+.cmdk-kbd { font-family: var(--font-mono); font-size: 11px; line-height: 1; color: var(--fg-2);
+  background: var(--surface-sunken); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-pill); padding: 3px 8px; flex-shrink: 0; white-space: nowrap; }
+.cmdk .cmdk-foot { display: flex; flex-wrap: wrap; gap: 16px; margin: 0; padding: 10px 16px;
+  border-top: 1px solid var(--border-subtle); font-size: 11px; line-height: 1.4; color: var(--fg-3); flex: none; }
+.cmdk .cmdk-foot span { display: inline-flex; align-items: center; gap: 6px; }
+/* Trigger shortcut label: "Ctrl K" unless plexmix.js marked the platform as mac. */
+.kbd-mac { display: none; }
+html[data-platform="mac"] .kbd-mac { display: inline; }
+html[data-platform="mac"] .kbd-other { display: none; }
+/* ── end change 3: command palette ── */
 
 /* ================================================================
    GENERATOR — the showpiece
@@ -314,23 +403,26 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
 .gen-hero { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   padding: 40px var(--page-pad-x) 64px; position: relative; }
 .gen-hero-glow { position: absolute; top: -10%; left: 50%; transform: translateX(-50%);
-  width: 760px; height: 460px; pointer-events: none;
+  width: min(760px, 100%); height: 460px; pointer-events: none;   /* capped, never clipped: the hero holds the CTA glow */
   background: radial-gradient(ellipse at 50% 0%, var(--brand-glow), transparent 62%);
   opacity: var(--glow-strength); }
 .gen-hero-inner { width: 100%; max-width: 720px; position: relative; z-index: 1; text-align: center; }
 .gen-kicker { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600;
-  color: var(--brand-11); background: var(--brand-3); padding: 5px 12px; border-radius: var(--radius-xl); margin-bottom: 22px; }
+  color: var(--brand-11); background: var(--brand-3); padding: 5px 12px; border-radius: var(--radius-pill); margin-bottom: 22px; }
 .gen-title { font-family: var(--font-display); font-size: 46px; font-weight: 700; line-height: 1.05; letter-spacing: -.025em; }
-.gen-title .accent { color: var(--brand-9); }
+.gen-title .accent { color: var(--brand-10); }   /* brand-9 is 2.7:1 on light; brand-10 clears 3:1 for large text */
 .gen-sub { font-size: 17px; color: var(--fg-2); margin-top: 16px; max-width: 540px; margin-left: auto; margin-right: auto; }
 
+/* No overflow:hidden — it would clip the Generate button's glow; children round themselves */
 .prompt-box { margin-top: 32px; text-align: left; background: var(--surface-raised);
   border: 1px solid var(--border-strong); border-radius: var(--radius-xl); box-shadow: var(--shadow-md);
-  transition: border-color .2s, box-shadow .2s; overflow: hidden; }
-.prompt-box.focus { border-color: var(--brand-9); box-shadow: 0 0 0 4px var(--brand-glow), var(--shadow-md); }
+  transition: border-color .2s, box-shadow .2s; }
+.prompt-box.focus { border-color: var(--focus-ring); box-shadow: 0 0 0 4px var(--brand-glow), var(--shadow-md); }
 .prompt-input { width: 100%; border: none; outline: none; resize: none; background: transparent;
   font-family: var(--font-body); font-size: 19px; line-height: 1.5; color: var(--fg-1); padding: 22px 22px 8px; min-height: 96px; }
 .prompt-input::placeholder { color: var(--fg-3); }
+/* Keep the scrollbar inside the box's 22px corner (the box no longer clips) */
+.prompt-input::-webkit-scrollbar-track { margin-top: 16px; margin-bottom: 4px; }
 .prompt-foot { display: flex; align-items: center; gap: 10px; padding: 12px 16px 14px; }
 .prompt-foot .opt-btn { display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 12px;
   border-radius: var(--radius-md); border: 1px solid var(--border-subtle); background: var(--surface-app);
@@ -342,29 +434,38 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
 
 .vibe-row { margin-top: 26px; display: flex; flex-wrap: wrap; gap: 9px; justify-content: center; }
 .vibe-pill { font-size: 13px; border: 1px solid var(--border-strong); background: var(--surface-raised);
-  color: var(--fg-2); border-radius: var(--radius-xl); padding: 8px 15px; cursor: pointer;
-  transition: all .15s var(--ease-default); }
-.vibe-pill:hover { border-color: var(--brand-7); color: var(--brand-11); background: var(--brand-2); transform: translateY(-1px); }
+  color: var(--fg-2); border-radius: var(--radius-pill); padding: 8px 15px; cursor: pointer;
+  box-shadow: var(--shadow-sm); transition: var(--tactile); }
+.vibe-pill:hover { border-color: var(--brand-7); color: var(--brand-11); background: var(--brand-2); transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .vibe-pill .em { font-style: normal; margin-right: 6px; opacity: .8; }
 
 /* advanced options panel */
 .adv-panel { margin-top: 16px; border-top: 1px solid var(--border-subtle); padding: 18px 20px 20px;
-  display: grid; grid-template-columns: 1fr 1fr; gap: 18px 28px; background: var(--surface-app); }
+  display: grid; grid-template-columns: 1fr 1fr; gap: 18px 28px; background: var(--surface-app);
+  border-radius: 0 0 calc(var(--radius-xl) - 1px) calc(var(--radius-xl) - 1px); }
 .adv-full { grid-column: 1 / -1; }
 .adv-label { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 500; color: var(--fg-2); margin-bottom: 9px; }
 .adv-label .val { font-family: var(--font-mono); font-size: 13px; color: var(--brand-11); }
-.seg { display: flex; gap: 4px; background: var(--surface-sunken); padding: 3px; border-radius: var(--radius-md); }
+.seg { display: flex; gap: 4px; background: var(--surface-sunken); padding: 4px; border-radius: var(--radius-pill); }
 .seg button { flex: 1; border: none; background: transparent; color: var(--fg-2); font-size: 12.5px; font-weight: 500;
-  padding: 7px 6px; border-radius: 6px; cursor: pointer; transition: all .15s; font-family: inherit; white-space: nowrap; }
-.seg button.on { background: var(--surface-raised); color: var(--brand-11); box-shadow: var(--shadow-sm); }
+  padding: 7px 10px; border-radius: var(--radius-pill); cursor: pointer; transition: var(--tactile); font-family: inherit; white-space: nowrap; }
+.seg button:hover { color: var(--fg-1); }
+.seg button:active { transform: scale(.96); }
+.seg button.on { background: var(--surface-raised); color: var(--brand-11);
+  box-shadow: inset 0 0 0 1px var(--brand-10), var(--shadow-md); }   /* copper ring: 3:1 selected cue */
 
 /* ---------- THINKING STAGE ---------- */
 .think { flex: 1; display: flex; flex-direction: column; align-items: center; padding: 28px var(--page-pad-x) 40px; }
 .think-inner { width: 100%; max-width: 860px; }
 .think-head { text-align: center; margin-bottom: 8px; }
-.think-query { display: inline-flex; align-items: center; gap: 9px; font-size: 15px; color: var(--fg-2); white-space: nowrap;
-  background: var(--surface-raised); border: 1px solid var(--border-subtle); border-radius: var(--radius-xl); padding: 8px 16px; }
-.think-query b { color: var(--fg-1); font-weight: 600; }
+.think-query { display: inline-flex; align-items: center; gap: 9px; font-size: 15px; color: var(--fg-2);
+  max-width: 100%; white-space: normal; text-align: start;
+  background: var(--surface-raised); border: 1px solid var(--border-subtle); border-radius: var(--radius-pill); padding: 8px 16px; box-shadow: var(--shadow-sm); }
+/* A long prompt wraps inside the pill, at most two lines; the full text stays in the DOM
+   and in the pill's title (pages/generator.py). */
+.think-query b { color: var(--fg-1); font-weight: 600;
+  min-width: 0; overflow-wrap: break-word; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 
 .viz-wrap { position: relative; margin: 24px 0 8px; height: 240px; border-radius: var(--radius-xl);
   background: var(--surface-raised); border: 1px solid var(--border-subtle); overflow: hidden; }
@@ -377,12 +478,12 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
 .phase-dot { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
   background: var(--surface-raised); border: 1.5px solid var(--border-strong); color: var(--fg-3); transition: all .3s var(--ease-out); z-index: 1; }
 .phase-node.active .phase-dot { background: var(--brand-9); border-color: var(--brand-9); color: var(--brand-ink); box-shadow: var(--shadow-glow); }
-.phase-node.done .phase-dot { background: var(--success-bg); border-color: var(--pm-success); color: var(--pm-success); }
+.phase-node.done .phase-dot { background: var(--success-bg); border-color: var(--success-fg); color: var(--success-fg); }
 .phase-label { font-size: 12px; font-weight: 500; color: var(--fg-3); text-align: center; transition: color .3s; }
 .phase-node.active .phase-label { color: var(--brand-11); font-weight: 600; }
 .phase-node.done .phase-label { color: var(--fg-2); }
-.phase-line { position: absolute; top: 17px; left: 50%; width: 100%; height: 2px; background: var(--border-subtle); z-index: 0; }
-.phase-line .fill { height: 100%; width: 0; background: var(--brand-9); transition: width .4s var(--ease-out); }
+.phase-line { position: absolute; top: 17px; left: 50%; width: 100%; height: 2px; background: var(--surface-sunken); z-index: 0; }   /* fill vs track ≥3:1 */
+.phase-line .fill { height: 100%; width: 0; background: var(--brand-10); transition: width .4s var(--ease-out); }
 .phase-node:last-child .phase-line { display: none; }
 
 .gen-progress { display: flex; align-items: center; gap: 14px; margin: 4px 0 16px; }
@@ -393,7 +494,7 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
 .genlog .ln { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.85; color: #c9c9cf; display: flex; gap: 10px; }
 .genlog .ln .pmt { color: var(--brand-9); }
 .genlog .ln .ok { color: var(--pm-success); }
-.genlog .ln .dim { color: #6e6e78; }
+.genlog .ln .dim { color: #8b8b95; }   /* ≥4.5:1 on the log background in both themes */
 .genlog .ln .warn { color: var(--pm-warning); }
 
 /* ---------- RESULTS ---------- */
@@ -404,46 +505,53 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
 .result-cover > div { width: 100%; height: 100%; }
 .result-meta { flex: 1; min-width: 0; }
 .result-meta .rk { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--accent-fg); }
-.result-meta h1 { font-family: var(--font-display); font-size: 30px; font-weight: 700; letter-spacing: -.02em; margin: 4px 0 8px; }
+.result-meta h1 { font-family: var(--font-display); font-size: 30px; font-weight: 700; letter-spacing: -.02em; margin: 4px 0 8px;
+  /* The prompt as the title: at most two lines, full text in the DOM and the title attribute. */
+  min-width: 0; overflow-wrap: break-word; overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .result-stats { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg-3); flex-wrap: wrap; }
 .result-stats span { white-space: nowrap; }
 .result-stats .mono { color: var(--fg-2); }
 .result-actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
 
-.trk { display: flex; align-items: center; gap: 14px; padding: 9px 12px; border-radius: var(--radius-md); transition: background-color .12s; }
-.trk:hover { background: var(--surface-sunken); }
+.trk { display: flex; align-items: center; gap: 14px; padding: 9px 12px; border-radius: var(--radius-md); transition: var(--tactile); }
+.trk:hover { background: var(--surface-sunken); transform: translateX(2px); }
+.trk:hover .tartist, .trk:hover .talbum, .trk:hover .tdur { color: var(--fg-2); }   /* fg-3 fails on sunken */
 .trk .tnum { font-family: var(--font-mono); font-size: 13px; color: var(--fg-3); width: 26px; text-align: right; flex-shrink: 0; }
-.trk .play { width: 26px; text-align: center; color: var(--brand-9); opacity: 0; flex-shrink: 0; }
-.trk:hover .tnum { display: none; }
-.trk:hover .play { opacity: 1; }
 .trk .tinfo { flex: 1; min-width: 0; }
 .trk .ttitle { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .trk .tartist { font-size: 12.5px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .trk .talbum { font-size: 13px; color: var(--fg-3); flex: 0 0 26%; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .trk .tdur { font-family: var(--font-mono); font-size: 13px; color: var(--fg-3); flex-shrink: 0; }
 .trk .trm { opacity: 0; flex-shrink: 0; }
-.trk:hover .trm { opacity: 1; }
-.trk .grip { color: var(--fg-3); cursor: grab; opacity: 0; flex-shrink: 0; }
-.trk:hover .grip { opacity: .7; }
+.trk:hover .trm, .trk:focus-within .trm, .trk .trm:focus-visible { opacity: 1; }
 
 /* ================================================================
    DASHBOARD / shared page widgets
    ================================================================ */
-.stat-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+/* Intrinsic grids: as many equal columns as fit at the minimum readable width, down to
+   one. min(…, 100%) lets a column narrower than the floor still fit; auto-fit collapses
+   unused tracks, so 4 tiles stay one row and 2 quick actions stay side by side on desktop. */
+.stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); gap: 16px; }
 .stat-tile { padding: var(--card-pad); display: flex; flex-direction: column; gap: 14px; }
-.stat-tile .ico { width: 38px; height: 38px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; }
+.stat-tile .ico { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
 .stat-tile .num { font-family: var(--font-mono); font-weight: 700; font-size: 28px; line-height: 1; }
 .stat-tile .lab { font-size: 13px; color: var(--fg-3); margin-top: 5px; }
 .stat-tile .delta { font-family: var(--font-mono); font-size: 12px; }
 
-.qa-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; }
-.qa { display: flex; align-items: center; gap: 14px; padding: var(--card-pad); cursor: pointer; border-left: 3px solid transparent; }
-.qa.primary { border-left-color: var(--brand-9); }
-.qa .ico { width: 42px; height: 42px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.qa .qt { font-size: 15px; font-weight: 600; font-family: var(--font-display); }
+.qa-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 14px; }
+.qa { display: flex; align-items: center; gap: 14px; padding: var(--card-pad); cursor: pointer; }
+/* The primary quick action is marked by a warm tint, not a colored side stripe */
+.qa.primary { background: var(--brand-2); }
+.qa.primary .qd { color: var(--fg-2); }   /* fg-3 drops below 4.5:1 on brand-2 */
+.qa .ico { width: 42px; height: 42px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.qa .qt { font-size: 15px; font-weight: 600; font-family: var(--font-display); color: var(--fg-1); }
+/* The card is wrapped in a Radix link: keep link color/hover out of the card */
+.qa-link, .qa-link:hover { color: inherit; text-decoration: none; }
+.qa-link { display: block; border-radius: var(--radius-lg); }
 .qa .qd { font-size: 13px; color: var(--fg-3); margin-top: 2px; }
-.qa .arrow { margin-left: auto; color: var(--fg-3); transition: transform .2s; }
-.qa:hover .arrow { transform: translateX(3px); color: var(--brand-9); }
+.qa .arrow { margin-left: auto; color: var(--fg-3); transition: var(--tactile); }
+.qa:hover .arrow { transform: translateX(5px); color: var(--accent-fg); }
 
 .statusbar { display: flex; align-items: center; gap: 22px; padding: 14px 18px; flex-wrap: wrap; }
 .statusbar .item { display: flex; align-items: center; gap: 9px; font-size: 13px; }
@@ -452,7 +560,7 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
 .vsep { width: 1px; height: 22px; background: var(--border-subtle); }
 
 /* playlist history cards */
-.pl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(248px, 1fr)); gap: 18px; }
+.pl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(248px, 100%), 1fr)); gap: 18px; }
 .pl-card { overflow: hidden; cursor: pointer; }
 .pl-cover { aspect-ratio: 1; display: grid; grid-template-columns: 1fr 1fr; position: relative; }
 .pl-cover > div { width: 100%; height: 100%; }
@@ -462,25 +570,32 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
 .pl-card .pl-meta { font-family: var(--font-mono); font-size: 12px; color: var(--fg-3); margin-top: 10px; }
 .pl-overlay { position: absolute; inset: 0; background: rgba(0,0,0,.55); display: flex; align-items: center; justify-content: center; gap: 8px;
   opacity: 0; transition: opacity .2s; }
+/* Keyboard parity is `.pl-card:focus-visible .pl-overlay` with the history card rules
+   below. Not :focus-within: the card is the button itself and holds nothing focusable, so
+   it would match mouse and programmatic focus too and leave the overlay up after a click. */
 .pl-card:hover .pl-overlay { opacity: 1; }
 .pl-overlay .pob { width: 40px; height: 40px; border-radius: 50%; background: rgba(255,255,255,.16); backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center; color: #fff; cursor: pointer; transition: background .15s; }
-.pl-overlay .pob:hover { background: var(--brand-9); }
+.pl-overlay .pob:hover { background: var(--brand-9); color: var(--brand-ink); }   /* white on orange is 2.8:1 */
 
 /* segmented tabs (settings) */
-.tabs { display: flex; gap: 4px; background: var(--surface-sunken); padding: 4px; border-radius: var(--radius-md); width: fit-content; }
+.tabs { display: flex; gap: 4px; background: var(--surface-sunken); padding: 4px; border-radius: var(--radius-pill); width: fit-content; }
 .tabs button { border: none; background: transparent; color: var(--fg-2); font-family: inherit; font-size: 13.5px; font-weight: 500;
-  padding: 8px 16px; border-radius: 6px; cursor: pointer; transition: all .15s; display: inline-flex; align-items: center; gap: 8px; }
-.tabs button.on { background: var(--surface-raised); color: var(--fg-1); box-shadow: var(--shadow-sm); }
+  padding: 8px 16px; border-radius: var(--radius-pill); cursor: pointer; transition: var(--tactile); display: inline-flex; align-items: center; gap: 8px; }
+.tabs button:active { transform: scale(.96); }
+.tabs button.on { background: var(--surface-raised); color: var(--fg-1);
+  box-shadow: inset 0 0 0 1px var(--brand-10), var(--shadow-md); }
 
 /* doctor check rows */
-.check { display: flex; align-items: center; gap: 14px; padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); }
+.check { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 16px 18px; border-bottom: 1px solid var(--border-subtle); }
 .check:last-child { border-bottom: none; }
-.check .ico { width: 38px; height: 38px; border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-.check .cinfo { flex: 1; min-width: 0; }
+.check .ico { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+/* 10rem basis: at narrow widths the state badge / fix button drops below the text
+   instead of squeezing it (webui-zoom-and-narrow-fit 12.3). */
+.check .cinfo { flex: 1 1 10rem; min-width: 0; }
 .check .cname { font-size: 14px; font-weight: 600; }
 .check .cdetail { font-size: 13px; color: var(--fg-3); margin-top: 2px; }
-.check .cdetail code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-sunken); padding: 1px 6px; border-radius: 4px; }
+.check .cdetail code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-sunken); color: var(--fg-2); padding: 1px 6px; border-radius: 4px; }
 
 /* toast */
 .toast-wrap { position: fixed; bottom: 24px; right: 24px; z-index: 400; display: flex; flex-direction: column; gap: 10px; }
@@ -492,25 +607,673 @@ input[type="range"] { accent-color: var(--brand-9); width: 100%; cursor: pointer
 /* filter bar */
 .filterbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
 .search { display: flex; align-items: center; gap: 9px; background: var(--surface-raised); border: 1px solid var(--border-strong);
-  border-radius: var(--radius-md); padding: 0 12px; height: 40px; flex: 1; min-width: 220px; max-width: 380px; }
+  border-radius: var(--radius-md); padding: 0 14px; height: 40px; flex: 1; min-width: min(220px, 100vw - var(--rail-w) - 2 * var(--page-pad-x)); max-width: 380px; box-shadow: var(--shadow-sm);
+  transition: border-color .15s, box-shadow .15s; }
+/* .search floor: 220px, or the page column (viewport - rail - gutters) when that is
+   narrower. Not min(220px, 100%): the filter bar is shrink-to-fit, where a % floor counts
+   as 0, so the desktop bar would size itself too narrow and wrap (webui-zoom-and-narrow-fit). */
+.search:focus-within { border-color: var(--focus-ring); box-shadow: 0 0 0 4px var(--brand-glow), var(--shadow-sm); }
 .search input { border: none; outline: none; background: transparent; flex: 1; font-family: inherit; font-size: 14px; color: var(--fg-1); }
 .search input::placeholder { color: var(--fg-3); }
+/* .minisel never outgrows its container (the Sync-mode select at 320 CSS px); the
+   Library/Tagging filter fields keep their own inline max-width. */
 .minisel { height: 40px; padding: 0 12px; border-radius: var(--radius-md); border: 1px solid var(--border-strong);
-  background: var(--surface-raised); color: var(--fg-1); font-family: inherit; font-size: 13.5px; cursor: pointer; }
+  background: var(--surface-raised); color: var(--fg-1); font-family: inherit; font-size: 13.5px; cursor: pointer;
+  box-shadow: var(--shadow-sm); max-width: min(240px, 100%); min-width: 0; }
+/* change 3 (webui-input-responsiveness): .minisel text fields (Library/Tagging filters) show
+   their only visible label as a placeholder, so it takes the AA muted token, like .search input. */
+.minisel::placeholder { color: var(--fg-3); }
+input.minisel { cursor: text; }
 
 /* modal */
 .modal-backdrop { position: fixed; inset: 0; z-index: 320; background: rgba(0,0,0,.6); backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center; padding: 24px; animation: fadeIn .15s ease; }
+/* No overflow:hidden (it clipped the footer button glow); the body scrolls instead */
 .modal { width: 100%; max-width: 620px; max-height: 86vh; background: var(--surface-raised); border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-xl); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; animation: scaleIn .22s var(--ease-spring); overflow: hidden; }
+  border-radius: var(--radius-xl); box-shadow: var(--shadow-lg); display: flex; flex-direction: column; animation: scaleIn .22s var(--ease-spring); }
 .modal-head { display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 16px; }
-.modal-body { padding: 0 24px; overflow-y: auto; }
-.modal-foot { display: flex; gap: 10px; padding: 18px 24px; border-top: 1px solid var(--border-subtle); margin-top: 16px; }
+.modal-body { padding: 0 24px; overflow-y: auto; min-height: 0; }
+.modal-foot { display: flex; flex-wrap: wrap; gap: 10px; padding: 18px 24px; border-top: 1px solid var(--border-subtle); margin-top: 16px; }
 
 /* ---- Redesign integration tweaks (PlexMix Reflex port) ---- */
 /* Focus glow without JS state (prototype toggled a .focus class). */
-.prompt-box:focus-within { border-color: var(--brand-9); box-shadow: 0 0 0 4px var(--brand-glow), var(--shadow-md); }
+.prompt-box:focus-within { border-color: var(--focus-ring); box-shadow: 0 0 0 4px var(--brand-glow), var(--shadow-md); }
 /* The Reflex scroll area already provides height; let the gen stage fill it. */
 .gen-stage { min-height: calc(100vh - var(--topbar-h)); }
-.hover-row { transition: background-color .12s var(--ease-default); }
+.hover-row { transition: background-color .12s var(--ease-default); border-radius: var(--radius-md); }
 .hover-row:hover { background: var(--surface-sunken); }
+
+/* ── Changelog body ── */
+/* Server-rendered release notes in the changelog dialog (rx.html, .changelog-body).
+   Tokens only: Copper Text for links, display face for headings, mono for code. */
+.changelog-body { color: var(--fg-2); font-size: 14px; line-height: 1.6; }
+.changelog-body h2 { font-family: var(--font-display); font-size: 18px; font-weight: 700; color: var(--fg-1);
+  margin: 24px 0 8px; padding-top: 16px; border-top: 1px solid var(--border-subtle); }
+.changelog-body h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.changelog-body h3 { font-family: var(--font-display); font-size: 14px; font-weight: 600; color: var(--fg-1); margin: 16px 0 6px; }
+.changelog-body p { margin: 8px 0; }
+.changelog-body ul { margin: 6px 0 12px; padding-left: 20px; }
+.changelog-body li { margin: 4px 0; }
+.changelog-body strong { color: var(--fg-1); }
+.changelog-body a { color: var(--accent-fg); text-decoration: underline; text-underline-offset: 2px; }
+.changelog-body a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-sm); }
+.changelog-body code { font-family: var(--font-mono); font-size: .9em; background: var(--surface-sunken);
+  padding: 1px 5px; border-radius: var(--radius-sm); }
+.changelog-body hr { border: 0; border-top: 1px solid var(--border-subtle); margin: 16px 0; }
+.changelog-body table { border-collapse: collapse; margin: 8px 0; }
+.changelog-body th, .changelog-body td { border: 1px solid var(--border-subtle); padding: 4px 8px; text-align: left; }
+
+/* ── change 2: a11y foundations (webui-keyboard-and-semantics) ── */
+/* Visually hidden, still in the accessibility tree (standard clip pattern). */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
+/* Skip link: the shell's first Tab stop. Off-canvas until focused. */
+.skip-link {
+  position: fixed; top: 12px; left: 12px; z-index: 500;
+  padding: 10px 16px; font-size: 14px; font-weight: 600; line-height: 1.2;
+  background: var(--surface-raised); color: var(--fg-1);
+  border-radius: var(--radius-md); box-shadow: var(--shadow-md);
+  transform: translateY(calc(-100% - 24px));
+}
+.skip-link:focus { transform: none; outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* Programmatic focus targets (skip link, route change, dialog fallback) draw no frame. */
+main:focus, #main-heading:focus { outline: none; }
+
+/* Exclusive choices: native radios styled as the segmented control
+   (components/seg_radio.py). Same look as .seg button / .seg button.on. */
+.seg-field { border: 0; margin: 0; padding: 0; min-width: 0; }
+.seg-field > legend { padding: 0; }
+.seg label { flex: 1; position: relative; display: flex; min-width: 0; cursor: pointer; }
+.seg label > span { flex: 1; display: flex; align-items: center; justify-content: center;
+  color: var(--fg-2); font-size: 12.5px; font-weight: 500; padding: 7px 10px;
+  border-radius: var(--radius-pill); transition: var(--tactile); white-space: nowrap; }
+.seg label:hover > span { color: var(--fg-1); }
+.seg label:active > span { transform: scale(.96); }
+.seg input:checked + span { background: var(--surface-raised); color: var(--brand-11);
+  box-shadow: inset 0 0 0 1px var(--brand-10), var(--shadow-md); }   /* copper ring: 3:1 selected cue */
+.seg input:focus-visible + span { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.seg input:disabled + span { opacity: .5; cursor: not-allowed; }
+@media (forced-colors: active) {
+  /* Shadows are dropped in forced colors: mark the selected segment with a system fill. */
+  .seg input:checked + span { forced-color-adjust: none; background: Highlight; color: HighlightText; }
+}
+
+/* Danger: destructive confirms only (Delete, Cancel task). Error tint, never the CTA glow.
+   Text contrast: 5.55:1 light, 5.27:1 dark. */
+.btn-danger { background: var(--error-bg); color: var(--error-fg); border-color: var(--pm-error); box-shadow: var(--shadow-sm); }
+.btn-danger:hover:not(:disabled) { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+/* ── end change 2: a11y foundations ── */
+
+/* ── change 2: generator (webui-keyboard-and-semantics) ── */
+/* The Options panel is always rendered (aria-controls target) and collapsed with the
+   native hidden attribute; keep its display: grid from re-showing it. */
+.adv-panel[hidden] { display: none; }
+/* Track ordering is a seg_radio_group: its legend (.field-label) keeps .adv-label's gap. */
+.adv-panel .seg-field > legend { margin-bottom: 9px; }
+/* The thinking stage's query pill is now the stage h1: keep the pill's type, not h1's. */
+h1.think-query { font-family: inherit; font-weight: inherit; line-height: inherit; letter-spacing: inherit; margin: 0; }
+/* Generated tracks are an <ol>: no markers, no UA margins (padding is set inline). */
+.trk-list { list-style: none; margin: 0; }
+/* ── end change 2: generator ── */
+
+/* ── change 2: library table (webui-keyboard-and-semantics) ── */
+/* Sortable column headers: th[aria-sort] > button.th-sort (pages/library.py).
+   The button is reset to read as the header text; the focus ring is the shared rule. */
+.th-sort { display: inline-flex; align-items: center; gap: 6px; margin: -2px -4px; padding: 2px 4px;
+  background: none; border: 0; border-radius: var(--radius-sm); cursor: pointer;
+  font: inherit; color: inherit; text-transform: inherit; letter-spacing: inherit; white-space: nowrap;
+  transition: color .12s var(--ease-default); }
+.th-sort:hover { color: var(--fg-1); }
+.tbl th[aria-sort="ascending"] .th-sort, .tbl th[aria-sort="descending"] .th-sort { color: var(--fg-2); }
+.tbl th[aria-sort="ascending"] .th-sort:hover, .tbl th[aria-sort="descending"] .th-sort:hover { color: var(--fg-1); }
+
+/* Per-track enrichment chips (decorative; the cell carries an sr-only label).
+   Present is a filled tint, absent a dashed outline: they differ in more than color. */
+.enr-set { display: inline-flex; align-items: center; gap: 4px; vertical-align: middle; }
+.enr { display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 22px; height: 22px; border-radius: var(--radius-sm); border: 1px solid transparent; }
+.enr-on { background: var(--success-bg); color: var(--success-fg); }
+.enr-off { background: transparent; border: 1px dashed var(--border-strong); color: var(--fg-3); }
+@media (forced-colors: active) {
+  /* Tints are dropped in forced colors: keep present solid-filled, absent dashed. */
+  .enr-on { forced-color-adjust: none; background: CanvasText; color: Canvas; border-color: CanvasText; }
+  .enr-off { border-color: CanvasText; color: CanvasText; }
+}
+/* ── end change 2: library table ── */
+
+/* ── change 2: tagging, doctor, dashboard (webui-keyboard-and-semantics) ── */
+/* Inline tag editor (pages/tagging.py): a fieldset whose legend keeps the track
+   identity on screen, three labelled fields, help text and the Save/Cancel pair. */
+.tag-edit { width: 100%; }
+.tag-edit-fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
+.tag-edit-fieldset > legend { padding: 0; margin-bottom: 10px; font-size: 13px; color: var(--fg-3); }
+.tag-edit-fieldset > legend .tag-edit-title { font-size: 14px; font-weight: 500; color: var(--fg-1); }
+.tag-edit-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+.tag-edit-field { min-width: 0; }
+.tag-edit-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.tag-edit-foot .field-help { margin-top: 0; margin-right: auto; }
+
+/* Doctor checks and Dashboard recent playlists are lists for assistive tech:
+   no bullets or indents. Check names are h3s that keep the old row type. */
+.doctor-checks, .recent-list { list-style: none; margin: 0; }
+.doctor-checks { padding: 0; }
+.check .cname { font-family: inherit; line-height: inherit; }
+.doctor-fix-pbar { margin-top: 8px; }
+/* ── end change 2: tagging, doctor, dashboard ── */
+
+/* ── change 2: history (webui-keyboard-and-semantics) ── */
+/* Playlist cover swatch (components/playlist_cover.py): four decorative quadrants
+   picked by cover_variant(prompt, or name). Tokens only. The container class
+   (.pl-cover on History cards, .result-cover on Generator results) gives the 2x2 grid. */
+.cover-v0 > span, .cover-v1 > span, .cover-v2 > span,
+.cover-v3 > span, .cover-v4 > span, .cover-v5 > span { display: block; min-width: 0; min-height: 0; }
+.cover-v0 > span:nth-child(1) { background: linear-gradient(135deg, var(--brand-9), var(--brand-10)); }
+.cover-v0 > span:nth-child(2) { background: linear-gradient(135deg, var(--brand-7), var(--brand-9)); }
+.cover-v0 > span:nth-child(3) { background: linear-gradient(135deg, var(--brand-10), var(--brand-12)); }
+.cover-v0 > span:nth-child(4) { background: linear-gradient(135deg, var(--brand-5), var(--brand-7)); }
+.cover-v1 > span:nth-child(1) { background: linear-gradient(135deg, var(--brand-3), var(--brand-5)); }
+.cover-v1 > span:nth-child(2) { background: linear-gradient(135deg, var(--brand-5), var(--brand-7)); }
+.cover-v1 > span:nth-child(3) { background: linear-gradient(135deg, var(--brand-6), var(--brand-8)); }
+.cover-v1 > span:nth-child(4) { background: linear-gradient(135deg, var(--brand-4), var(--brand-6)); }
+.cover-v2 > span:nth-child(1) { background: linear-gradient(135deg, var(--brand-11), var(--brand-12)); }
+.cover-v2 > span:nth-child(2) { background: linear-gradient(135deg, var(--brand-8), var(--brand-10)); }
+.cover-v2 > span:nth-child(3) { background: linear-gradient(135deg, var(--brand-10), var(--brand-11)); }
+.cover-v2 > span:nth-child(4) { background: linear-gradient(135deg, var(--brand-12), var(--brand-11)); }
+.cover-v3 > span:nth-child(1) { background: linear-gradient(135deg, var(--pm-gray-12), var(--pm-gray-11)); }
+.cover-v3 > span:nth-child(2) { background: linear-gradient(135deg, var(--brand-9), var(--brand-10)); }
+.cover-v3 > span:nth-child(3) { background: linear-gradient(135deg, var(--pm-gray-10), var(--pm-gray-12)); }
+.cover-v3 > span:nth-child(4) { background: linear-gradient(135deg, var(--pm-gray-8), var(--pm-gray-10)); }
+.cover-v4 > span:nth-child(1) { background: linear-gradient(135deg, var(--pm-gray-4), var(--pm-gray-6)); }
+.cover-v4 > span:nth-child(2) { background: linear-gradient(135deg, var(--brand-4), var(--brand-6)); }
+.cover-v4 > span:nth-child(3) { background: linear-gradient(135deg, var(--brand-6), var(--brand-8)); }
+.cover-v4 > span:nth-child(4) { background: linear-gradient(135deg, var(--pm-gray-6), var(--pm-gray-8)); }
+.cover-v5 > span:nth-child(1) { background: linear-gradient(135deg, var(--brand-9), var(--brand-8)); }
+.cover-v5 > span:nth-child(2) { background: linear-gradient(135deg, var(--brand-3), var(--brand-5)); }
+.cover-v5 > span:nth-child(3) { background: linear-gradient(135deg, var(--brand-12), var(--brand-10)); }
+.cover-v5 > span:nth-child(4) { background: linear-gradient(135deg, var(--pm-gray-11), var(--pm-gray-12)); }
+
+/* History cards are real buttons inside a list (pages/history.py); content is spans. */
+ul.pl-grid { list-style: none; margin: 0; padding: 0; }
+ul.pl-grid > li { display: flex; min-width: 0; }
+.pl-card { appearance: none; -webkit-appearance: none; font: inherit; color: inherit; text-align: left;
+  padding: 0; margin: 0; width: 100%; display: flex; flex-direction: column; }
+.pl-card .pl-art { position: relative; display: block; }
+.pl-card .pl-body, .pl-card .pl-name, .pl-card .pl-facts,
+.pl-card .pl-meta, .pl-card .pl-artists { display: block; }
+.pl-card .pl-mood { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.pl-card .pl-artists { font-size: 12.5px; color: var(--fg-2); margin-top: 4px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The overlay is an "Open" affordance (activating the card opens the dialog), never play. */
+.pl-card:focus-visible .pl-overlay { opacity: 1; }
+.pl-overlay .pl-open { color: var(--on-solid); font-size: 13px; font-weight: 600; }
+
+/* Playlist detail: a Radix Dialog. Two-class selectors win over Radix's padding/type scale. */
+.rt-BaseDialogContent.pl-dialog { padding: 0; display: flex; flex-direction: column; max-height: 86vh; }
+.pl-dialog .modal-head { gap: 12px; }
+.pl-dialog .pl-dialog-heading { min-width: 0; }
+.pl-dialog .pl-dialog-title { font-family: var(--font-display); font-size: 23px; font-weight: 700;
+  line-height: 1.2; letter-spacing: -.01em; margin: 0; }
+.pl-dialog .pl-dialog-desc { margin: 6px 0 0; font-size: 13.5px; line-height: 1.5; color: var(--fg-2); }
+.pl-dialog .pl-dialog-mood { display: block; color: var(--accent-fg); }
+.pl-dialog .pl-dialog-stats { display: block; font-family: var(--font-mono); font-size: 12.5px; }
+ol.pl-tracks { list-style: none; margin: 0; }
+.pl-trk { display: flex; align-items: center; gap: 8px; padding: 8px 4px; border-bottom: 1px solid var(--border-subtle); }
+.pl-trk .pos { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg-3); width: 26px; text-align: right; flex-shrink: 0; }
+.pl-trk .info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.pl-trk .ttl { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pl-trk .art { font-size: 13px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pl-trk .dur { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg-3); flex-shrink: 0; margin-right: 4px; }
+.pl-trk .icon-btn:disabled { opacity: .4; cursor: not-allowed; }
+.pl-trk .icon-btn:disabled:hover { background: transparent; color: var(--fg-2); transform: none; }
+/* ── end change 2: history ── */
+
+/* ── change 3: library filters (webui-input-responsiveness) ── */
+/* From/To year (pages/library.py): four-digit fields, about 96 px wide. The number
+   spinner is hidden (stepping from an empty year is meaningless and it would clip
+   the placeholder); ArrowUp/ArrowDown still step the value. */
+.minisel.lib-year { width: 96px; appearance: textfield; -moz-appearance: textfield; }
+.minisel.lib-year::-webkit-inner-spin-button,
+.minisel.lib-year::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+/* ── end change 3: library filters ── */
+
+/* ── change 3: generator (webui-input-responsiveness) ── */
+/* Inline field message: Body Small in --error-fg (Solid-or-Text rule), e.g. the
+   Generator's "Describe a vibe first." under the prompt box after a blank submit. */
+.field-hint { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; font-size: 13px;
+  line-height: 1.5; color: var(--error-fg); text-align: left; }
+.field-hint svg { flex-shrink: 0; }
+/* Under the prompt box the hint lines up with the prompt text (22px padding + 1px edge). */
+.prompt-hint .field-hint { padding: 0 23px; }
+/* ── end change 3: generator ── */
+
+/* ── change 4: library (webui-honest-status-and-first-run) ── */
+/* Bulk actions bar (pages/library.py): rendered after the track table and sticky
+   to the bottom of the .scroll container, so it stays reachable while the table
+   scrolls, and appearing below the rows never moves the rows above it. */
+.bulkbar { position: sticky; bottom: 16px; z-index: 2; box-shadow: var(--shadow-lg);
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 16px; width: 100%; }
+.bulkbar .bulkbar-count { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; }
+/* Action bar plus its role=alert / role=status regions: no gap between them, so an
+   empty region takes no space; a callout inside one sets its own offset. */
+.lib-actions { display: flex; flex-direction: column; width: 100%; min-width: 0; }
+.lib-actions .callout { margin-top: 10px; }
+.lib-callout-text { flex: 1 1 auto; min-width: 0; }
+.lib-callout-action { margin-top: 8px; }
+/* Sync's AI-tagging note: its own line under the sync controls. */
+.lib-sync-note { flex-basis: 100%; margin: 0; font-size: 13px; line-height: 1.5; color: var(--fg-3); }
+/* Track table loading placeholder. */
+.lib-skeleton { display: flex; flex-direction: column; gap: 12px; padding: 18px 16px; }
+.lib-skeleton .skeleton { height: 18px; }
+/* Dialog copy: one line per fact (scope, then consequence). */
+.lib-dialog-line { display: block; }
+.lib-dialog-line + .lib-dialog-line { margin-top: 8px; }
+/* Tag dialog: the Add/Replace choice and the replace count under it. */
+.lib-bulk-mode { margin-top: 16px; }
+.lib-bulk-existing { margin-top: 10px; font-size: 13px; line-height: 1.5; color: var(--fg-2); }
+.lib-bulk-existing.callout { color: var(--warning-fg); }
+/* ── end change 4: library ── */
+
+/* ── change 4: settings (webui-honest-status-and-first-run) ── */
+/* One Save/Discard bar (pages/settings.py): the last item of the page column and
+   sticky to the bottom of the .scroll container, so it stays in view however long
+   the open section is. Text and actions wrap onto their own lines when narrow. */
+.savebar { position: sticky; bottom: 16px; z-index: 3; align-self: stretch; width: 100%;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; padding: 12px 16px 12px 20px;
+  background: var(--surface-raised); border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-lg); }
+.savebar-text { flex: 1 1 220px; min-width: 0; }
+.savebar-title { margin: 0; font-size: 14px; font-weight: 600; line-height: 1.4; color: var(--fg-1); }
+.savebar-sections { margin: 2px 0 0; font-size: 13px; line-height: 1.5; color: var(--fg-2); overflow-wrap: anywhere; }
+.savebar-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+/* ── end change 4: settings ── */
+
+/* ── change 4: tagging (webui-honest-status-and-first-run) ── */
+/* Count card (pages/tagging.py): the match readout, then Tag tracks with the
+   visible reason it is disabled. Wraps onto two lines when narrow. */
+.tag-count { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 14px;
+  padding: 16px 18px; width: 100%; }
+.tag-count-text { flex: 1 1 220px; min-width: 0; font-size: 14px; line-height: 1.5; }
+.tag-count-num { font-weight: 700; }
+.tag-count-note { color: var(--fg-2); }
+.tag-start { display: flex; flex-direction: column; align-items: flex-end; gap: 6px;
+  margin-left: auto; max-width: 100%; }
+.tag-reason { max-width: 300px; font-size: 13px; line-height: 1.4; color: var(--fg-2); text-align: right; }
+.tag-reason:empty { display: none; }
+/* Preview/start/job problems under the card; the region itself stays mounted. */
+.tag-notice { margin-top: 10px; }
+.tag-notice-main { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.tag-notice-action { display: inline-block; margin-top: 6px; font-weight: 600; color: inherit;
+  text-decoration: underline; text-underline-offset: 2px; }
+.tag-notice-dismiss { flex-shrink: 0; margin: -4px -6px -4px 0; }
+/* Recently tagged: loading rows until the first load completes. */
+.tag-skel-row { display: flex; flex-direction: column; gap: 8px; padding: 14px;
+  border-bottom: 1px solid var(--border-subtle); }
+.tag-skel-title { height: 14px; width: min(260px, 60%); }
+.tag-skel-meta { height: 12px; width: min(160px, 40%); }
+/* ── end change 4: tagging ── */
+
+/* ── change 4: dashboard & history (webui-honest-status-and-first-run) ── */
+/* Header readout above the coverage tiles: "5,943 tracks · synced 2 h ago". */
+.cov-head { margin: 0; font-size: 14px; line-height: 1.5; color: var(--fg-2); display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 6px; }
+.cov-total { font-family: var(--font-mono); font-weight: 600; color: var(--fg-1); }
+.cov-skel-head { display: inline-block; width: 220px; max-width: 100%; height: 14px; }
+/* Coverage readouts (pages/dashboard.py): label, mono count + share, meter, link. */
+.cov-tile { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.cov-top { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cov-top .ico { width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.cov-label { font-size: 13px; font-weight: 500; color: var(--fg-2); min-width: 0; overflow-wrap: anywhere; }
+.cov-figs { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
+.cov-num { font-family: var(--font-mono); font-weight: 700; font-size: 26px; line-height: 1.1; color: var(--fg-1); }
+.cov-pct { font-family: var(--font-mono); font-size: 13px; color: var(--fg-2); }
+.cov-meter { flex: none; width: 100%; height: 6px; }
+.cov-word { margin: 0; font-size: 14px; font-weight: 600; color: var(--fg-2); }
+.cov-note { margin: 0; font-size: 12.5px; line-height: 1.45; color: var(--fg-3); }
+.cov-link { align-self: flex-start; font-size: 13px; font-weight: 500; color: var(--accent-fg); border-radius: var(--radius-sm); }
+.cov-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+.cov-skel-num { width: 64%; height: 26px; }
+.cov-skel-bar { width: 100%; height: 6px; border-radius: var(--radius-pill); }
+
+/* Readiness status strip: dot, "AI: OpenAI · gpt-5-mini", state words, cause,
+   "checked 4 min ago" and the state's action. Wraps instead of overflowing. */
+.statusbar .st-item { flex-wrap: wrap; min-width: 0; row-gap: 4px; }
+.st-text { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; row-gap: 2px; min-width: 0; }
+.st-name { min-width: 0; overflow-wrap: anywhere; }
+.st-model { font-size: 12.5px; }
+.st-state { font-weight: 500; color: var(--fg-2); }
+.st-cause { color: var(--fg-2); flex-basis: 100%; overflow-wrap: anywhere; }
+.st-when { font-size: 12px; color: var(--fg-3); }
+.st-action { font-size: 13px; font-weight: 500; color: var(--accent-fg); border-radius: var(--radius-sm); }
+.st-action:hover { text-decoration: underline; text-underline-offset: 2px; }
+.st-skel { display: inline-block; width: 110px; height: 12px; }
+
+/* First-run checklist: a headed section whose steps form an ordered list.
+   Only the current step's button is primary; the current/running row gets the
+   Peach Mist tint, so its muted text lifts to --fg-2 (Muted Floor rule). */
+.setup { padding: var(--card-pad); }
+.setup-head { margin-bottom: 8px; }
+.setup-h { font-size: 17px; font-weight: 700; line-height: 1.3; }
+.setup-intro { margin: 4px 0 0; font-size: 13px; color: var(--fg-2); }
+ol.setup-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.setup-step { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px 14px; padding: 12px; border-radius: var(--radius-md); }
+.setup-step.is-current, .setup-step.is-running { background: var(--brand-2); }
+.setup-mark { width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-size: 13px; font-weight: 600; background: var(--surface-sunken); color: var(--fg-2); }
+.setup-step.is-done .setup-mark { background: var(--success-bg); color: var(--success-fg); }
+.setup-step.is-current .setup-mark, .setup-step.is-running .setup-mark { background: var(--brand-3); color: var(--accent-fg); }
+.setup-body { flex: 1 1 240px; min-width: 0; }
+.setup-title-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.setup-title { font-size: 15px; font-weight: 600; line-height: 1.35; color: var(--fg-1); }
+.setup-step.is-done .setup-title { color: var(--fg-2); }
+.setup-desc { margin: 2px 0 0; font-size: 13px; line-height: 1.5; color: var(--fg-2); overflow-wrap: anywhere; }
+.setup-note { margin: 4px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--fg-3); overflow-wrap: anywhere; }
+.setup-step.is-current .setup-note, .setup-step.is-running .setup-note,
+.setup-step.is-current .fg3, .setup-step.is-running .fg3 { color: var(--fg-2); }
+.setup-action { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; flex: 0 1 auto; margin-left: auto; }
+.setup-progress { margin-top: 10px; }
+.setup-progress-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 12px; margin-bottom: 6px; }
+.setup-msg { font-size: 13px; font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.setup-pct { font-size: 13px; }
+.setup-progress .pbar { flex: none; width: 100%; }
+.setup-notice { margin: 6px 0 0; font-size: 13px; color: var(--fg-2); }
+.setup-error .callout { margin-top: 10px; }
+.setup-error-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+
+/* Recent playlist rows are links into History (/history?playlist=<id>). */
+.recent-link { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; padding: 10px 12px; color: inherit; }
+.recent-link:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.recent-name { flex: 1 1 160px; min-width: 0; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+.recent-count { font-size: 13px; }
+.recent-date { font-size: 12px; }
+.cov-link:focus-visible, .st-action:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* History: placeholder cards while the first load runs, and the empty/error actions. */
+.hist-skel-card { display: flex; flex-direction: column; overflow: hidden; }
+.hist-skel-art { aspect-ratio: 1; width: 100%; border-radius: 0; }
+.hist-skel-body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 8px; }
+.hist-skel-line { height: 14px; width: 80%; }
+.hist-skel-short { width: 50%; }
+.hist-empty-action { margin-top: 8px; }
+.hist-error-action { margin-top: 8px; }
+/* A callout's text column and its row of links (dimension mismatch, unreadable
+   settings, the embed-all notice on the Dashboard and the Library page). */
+.notice-text { flex: 1 1 auto; min-width: 0; }
+.notice-links { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+/* ── end change 4: dashboard & history ── */
+
+/* ── change 4: generator (webui-honest-status-and-first-run) ── */
+/* Readiness line under the prompt foot (pages/generator.py _ready_line): track count,
+   embedding provider, mono model + dimension, state and where the prompt goes, then
+   the cause row (title, body, action) while generation is blocked or an earlier run
+   failed. Plain inline flow, so it wraps at any width. */
+.ready-line { padding: 0 16px 14px; font-size: 13px; line-height: 1.5; color: var(--fg-2); }
+.ready-line .rl-facts { margin: 0; overflow-wrap: anywhere; }
+.ready-line .rl-facts .dot { vertical-align: middle; margin: 0 7px 2px 0; }
+.ready-line .mono { font-size: 12px; }
+.ready-line .rl-state { font-weight: 600; color: var(--fg-1); }
+.ready-line .rl-issue { margin: 6px 0 0; overflow-wrap: anywhere; }
+.ready-line .rl-title { display: block; font-weight: 600; color: var(--fg-1); }
+.ready-line .rl-body { margin-right: 8px; }
+.ready-line .rl-action { margin-right: 12px; font-weight: 500; color: var(--accent-fg); white-space: nowrap; }
+.ready-line .rl-action:hover { color: var(--accent-fg); }
+.ready-line .rl-skeleton { display: block; height: 14px; width: min(100%, 360px); }
+
+/* Applied filters without an Options control (rerun/template): removable pills in the
+   prompt box, outside the Options panel. Peach Wash + Burnt Copper (accent badge). */
+.chip-x-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 0 16px 12px; }
+.chip-x-label { font-size: 12px; font-weight: 500; color: var(--fg-2); }
+.chip-x-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.chip-x { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; min-height: 28px;
+  padding: 2px 2px 2px 11px; border-radius: var(--radius-pill); background: var(--brand-3);
+  color: var(--brand-11); font-size: 12px; font-weight: 500; line-height: 1.4; }
+.chip-x .chip-x-value { font-size: 11.5px; overflow-wrap: anywhere; }
+.chip-x-btn { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0;
+  width: 24px; height: 24px; padding: 0; border: none; border-radius: 50%; background: transparent;
+  color: inherit; cursor: pointer; transition: background-color .15s; }
+.chip-x-btn:hover { background: var(--brand-4); }
+.chip-x-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* The failure callout (#gen-error): title, body, one action link (+ "Switch back")
+   and a Dismiss button. Links take the callout's semantic text colour. */
+#gen-error-region .c-main { flex: 1; min-width: 0; }
+#gen-error-region .c-actions { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 6px; }
+#gen-error-region .c-action, #gen-error-region .c-action:hover { color: inherit; font-weight: 600; }
+#gen-error-region .c-dismiss { width: 28px; height: 28px; margin: -4px -6px -4px 0; color: inherit; }
+/* ── end change 4: generator ── */
+
+/* ── change 4: doctor (webui-honest-status-and-first-run) ── */
+/* Group labels above the Connections and Library checks lists (pages/doctor.py). */
+.doctor-group-label { margin: 6px 2px -6px; }
+/* Rows wrap at narrow widths: the state and actions drop below the text. The text
+   column's basis (10rem) lives on the base `.check .cinfo` rule (webui-zoom-and-narrow-fit). */
+.doctor-checks .check { flex-wrap: wrap; }
+.check .cdetail .mono { color: var(--fg-2); }
+.check .cdetail strong { color: var(--fg-1); font-weight: 600; }
+/* One plain line on why the check matters. */
+.check .cwhy { font-size: 12.5px; line-height: 1.5; color: var(--fg-3); margin-top: 4px; }
+.check .cact { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end;
+  gap: 8px; margin-left: auto; min-width: 0; }
+/* "Another fix is running": the visible reason next to a disabled fix button. */
+.check .cbusy { flex-basis: 100%; text-align: right; font-size: 12px; color: var(--fg-3); }
+/* A failed fix stays on its row with the action that fixes the cause. */
+.check .cerr { margin-top: 8px; padding: 8px 12px; gap: 8px; }
+.check .cerr .c-ico { display: inline-flex; margin-top: 3px; }
+.check .cerr a { color: inherit; font-weight: 600; text-decoration: underline; margin-left: 6px; }
+/* The running fix's own button: focusable but inert (aria-disabled + aria-busy). */
+.check .btn[aria-disabled="true"] { opacity: .5; cursor: progress; box-shadow: none; transform: none; }
+/* Unknown fix total: the kit's indeterminate loadbar, in flow inside the callout. */
+.loadbar.doctor-fix-loadbar { position: relative; height: 8px; margin-top: 8px; z-index: auto;
+  background: var(--surface-sunken); border-radius: var(--radius-pill); }
+.loadbar.doctor-fix-loadbar .ind { border-radius: var(--radius-pill); }
+/* ── end change 4: doctor ── */
+
+/* === Zoom & narrow fit === */
+/* webui-zoom-and-narrow-fit: every page at 200% browser zoom and down to 320 CSS px
+   (design D1 breakpoints: max-width 768/640/480px, max-height 600px). One sub-block per
+   owner for its media-query rules; tokens only (tests/ui/test_reflow_fit.py checks this
+   section for colour literals). Changes to existing base rules stay where the rule lives. */
+
+/* --- zoom-fit: shell --- */
+/* Compact top bar (D4): the ⌘K trigger collapses to an icon. Its label is hidden
+   visually, never with display: none, so it stays the trigger's accessible name. The
+   decorative shortcut hint and the subtitle go; once the subtitle is hidden the page name
+   may shrink and ellipsize. */
+@media (max-width: 768px) {
+  .topbar { gap: 10px; }
+  .topbar-title .s { display: none; }
+  .topbar-title .t { flex-shrink: 1; }
+  .cmd-trigger { min-width: 0; width: 36px; padding: 0; justify-content: center; border-radius: 50%; }
+  .cmd-trigger .kbd { display: none; }
+  .cmd-trigger .cmd-label {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+}
+
+/* Narrow gutters; the "PlexMix /" prefix is hidden visually but still read out, so the
+   breadcrumb's accessible text stays "PlexMix / <Page>" (D1, D4). */
+@media (max-width: 640px) {
+  :root, :root[data-density] { --page-pad-x: 16px; --page-pad-y: 20px; }
+  .topbar-title .brand, .topbar-title .crumb-sep {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+  }
+  .topbar-title .t { font-size: 17px; }
+}
+
+/* Narrow rail (D1): 56px wide; top-bar controls 32px. Items are 35px wide (not D1's 40px)
+   so a focused item's whole focus ring (2px, 2px offset) stays in view while the rail
+   scrolls: 10px inset + 35px item + 4px ring = 49px, exactly the room left of the 6px
+   rail scrollbar (56 - 1px border - 6px). With 40px items the ring's right side sat
+   under the scrollbar. */
+@media (max-width: 480px) {
+  :root { --rail-w: 56px; --rail-item-w: 35px; }
+  .rail-logo { width: 34px; height: 34px; }
+  .topbar .cmd-trigger, .topbar .icon-btn, .topbar .avatar { width: 32px; height: 32px; }
+}
+
+/* Compact rail rhythm on short viewports (D1): about 439px tall, so it fits 720x450
+   without scrolling; anything shorter scrolls the rail (D2). 36px items still clear the
+   24px target-size minimum. overscroll-behavior lives here, where the rail scrolls: on
+   the base rule it makes Chromium composite the (non-scrolling) desktop rail, which
+   re-rasterizes its shadows and breaks pixel identity at 1440x900. Above 600px the rail
+   scrolls by at most a few px (Log out shown, under ~615px tall), and the shell and the
+   page behind it cannot scroll, so a scroll there has nowhere to chain to anyway. */
+@media (max-height: 600px) {
+  .rail { gap: 3px; padding-top: 10px; padding-bottom: 10px; overscroll-behavior: contain; }
+  .rail-group { gap: 2px; }
+  .rail-item { height: 36px; }
+  .rail-sep { margin-top: 4px; margin-bottom: 4px; }
+  .rail-logo { width: 34px; height: 34px; }
+}
+
+/* --- zoom-fit: pages --- */
+/* Recently tagged rows (pages/tagging.py): title column, tags and Edit wrap onto
+   further lines instead of crushing the title. Tags render spaced ("a, b") so they break. */
+.tag-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.tag-row-title { flex: 1 1 12rem; min-width: 0; }
+/* Up to 40% of the row: a short list keeps its own width (as before), a long one wraps. */
+.tag-row-tags { flex: 0 1 auto; max-width: 40%; min-width: 0; overflow-wrap: break-word; overflow-wrap: anywhere; font-size: 13px; }
+
+/* Library table edge shadows (spec "a visible scroll indication"): wherever the table is on
+   screen, a shadow on a side shows that more columns lie that way. The scrollbar alone
+   sits under the last row, a page or more below the fold. Classic scroll shadows: an edge
+   gradient on each side of the box (`scroll`), hidden by a cover in the box's own colour
+   that moves with the table (`local`) while the table sits against that edge, so only a
+   side with hidden columns shows one. They paint under the cells (transparent except the
+   sticky header and a hovered row) and stop short of the rounded corners, where the
+   covers (clipped to the inner radius) would not reach them under the 1px border.
+   Only at 768px and below: the 36rem table overflows its box only under about 750 CSS
+   px, and the extra background layers re-antialias the box's corners by one level, so
+   the desktop keeps the plain background. */
+@media (max-width: 768px) {
+  .tbl-scroll {
+    background:
+      linear-gradient(to right, var(--surface-raised) 16px, transparent 40px) left / 40px 100% no-repeat local,
+      linear-gradient(to left, var(--surface-raised) 16px, transparent 40px) right / 40px 100% no-repeat local,
+      linear-gradient(to right, var(--border-strong), transparent)
+        left center / 12px calc(100% - 2 * var(--radius-lg)) no-repeat scroll,
+      linear-gradient(to left, var(--border-strong), transparent)
+        right center / 12px calc(100% - 2 * var(--radius-lg)) no-repeat scroll,
+      var(--surface-raised);
+  }
+}
+
+@media (max-width: 640px) {
+  /* Generator: idle hero, Options, results header and track rows wrap instead of
+     pushing past the right edge. */
+  .gen-title { font-size: 34px; }
+  .prompt-foot, .result-head { flex-wrap: wrap; }
+  .adv-panel { grid-template-columns: 1fr; }
+  .seg { flex-wrap: wrap; border-radius: var(--radius-lg); }   /* a wrapped track reads as a box, not a blob */
+  /* Segments size to their label so a row that can't hold them all wraps
+     (.seg button is the legacy markup; the ordering control is .seg label). */
+  .seg button, .seg label { flex: 1 1 auto; }
+  .result-cover { width: 88px; height: 88px; }
+  .result-meta { flex-basis: 100%; }   /* the title sits under the cover */
+  .trk { flex-wrap: wrap; }
+  /* The album keeps its own line under the title: number + art + two row gaps. */
+  .trk .talbum { order: 1; flex: 1 0 100%; padding-inline-start: calc(26px + 38px + 28px); }
+  /* Tagging: the tag list takes its own line under the title. */
+  .tag-row-tags { flex-basis: 100%; max-width: none; }
+}
+
+@media (max-width: 480px) {
+  /* Track rows below ~400 CSS px of row: line one keeps only the number, title/artist
+     and remove; album and duration share line two under the title. The 38px art
+     swatch is the same decorative gradient on every row, so it steps aside rather than
+     leave the title a few pixels wide. Album basis (100% - 5rem) always overflows
+     line one and leaves room for the duration on line two. */
+  .trk > .tnum + * { display: none; }
+  .trk .talbum { flex: 1 1 calc(100% - 5rem); padding-inline-start: calc(26px + 14px); }
+  .trk .tdur { order: 2; }
+}
+
+/* No hover on this device: the remove-track button is always shown. */
+@media (hover: none) {
+  .trk .trm { opacity: 1; }
+}
+
+/* --- zoom-fit: settings --- */
+/* The narrow Settings tab strip (thin scrollbar, scroll snap) lives in styles.css §5, inside
+   the ≤768px .settings-tabs block it extends (design D11). No rules here. */
+
+/* --- zoom-fit: carryover --- */
+/* Native checkboxes and radios (Tagging "Untagged only", Library "Has audio analysis")
+   get the same 2px focus ring as every custom control (shared rule near the top), not the
+   browser's 1px default. The segmented control's radios are .sr-only (clipped), so their
+   ring stays on the visible span (.seg input:focus-visible + span). */
+input[type=checkbox]:focus-visible, input[type=radio]:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* --- zoom-fit: sweep --- */
+/* Doctor (12.3): the hero wraps (pages/doctor.py: flexWrap on the hero, a 12rem basis
+   on its text), and check rows wrap via the base `.check` / `.check .cinfo` rules. */
+
+/* Dashboard status strip (12.4): the three readouts keep their own width when they fit
+   and share the row when they don't, wrapping their text inside each readout, so a long
+   cause ("Can't reach your Plex server at …") never pushes Embeddings onto a row of its
+   own. Below 1120px (three readouts would drop under ~17rem each) they reflow into as
+   many equal columns as fit, down to one, and the separators go. */
+.statusbar {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(min(17rem, 100%), 1fr));
+  gap: 16px 22px; width: 100%;
+}
+.statusbar .vsep { display: none; }
+.statusbar .st-text { flex: 1 1 9rem; }       /* the dot and icon stay beside the text */
+.statusbar .st-action { margin-inline-start: auto; }
+@media (min-width: 1120px) {
+  /* One row: each readout is at most its natural width; a long one gives way first. */
+  .statusbar {
+    grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: minmax(0, max-content);
+    justify-content: start; width: auto;
+  }
+  .statusbar .vsep { display: block; }
+}
+
+/* Reflex's "Built with Reflex" badge (off in rxconfig.py; these rules apply if it returns):
+   `a[href="https://reflex.dev"]`, a child of the Radix theme root, position: fixed 1rem
+   from the bottom right, 0.75rem + 18px tall, icon only below 62em and icon + text from
+   62em. It lands on the end of the sticky Library bulk bar and Settings save bar, so while
+   it is there those bars keep their buttons out of that corner (--page-pad-x is the
+   smallest distance from a bar's end to the viewport edge). */
+.radix-themes:has(> a[href="https://reflex.dev"]) {
+  --badge-reserve: calc(1rem + 0.75rem + 18px + 8px);
+}
+@media (min-width: 62em) {
+  .radix-themes:has(> a[href="https://reflex.dev"]) {
+    /* + gap and the "Built with Reflex" text (8.25rem allows for wider fallback fonts) */
+    --badge-reserve: calc(1rem + 0.75rem + 18px + 0.375rem + 8.25rem + 8px);
+  }
+}
+.radix-themes:has(> a[href="https://reflex.dev"]) .bulkbar,
+.radix-themes:has(> a[href="https://reflex.dev"]) .savebar {
+  padding-inline-end: max(16px, calc(var(--badge-reserve) - var(--page-pad-x)));
+}
+
+/* Sticky bars never hide focus (WCAG 2.2 SC 2.4.11): while the bulk bar or save bar is
+   shown, Tab and scrollIntoView stop short of it. --pm-sticky-bar-h is the bar's height,
+   kept up to date by assets/plexmix.js block 6 (which also brings the row or field the
+   user just used back above a bar that appears over it); 16px is the bars' bottom
+   offset, 8px the gap. */
+.scroll:has(.bulkbar), .scroll:has(.savebar) {
+  scroll-padding-bottom: calc(var(--pm-sticky-bar-h, 64px) + 16px + 8px);
+}
+
+/* --- zoom-fit: live-a --- */
+/* Dashboard setup checklist (fresh install) at 320 CSS px with a classic scrollbar: a step
+   leaves its action about 156px, and "Build search index" (icon + label on one line) needs
+   176px, so it pushed the card 4px past .scroll. At 480px and below a step's button wraps
+   its label onto a second line and grows taller instead of widening the card. */
+@media (max-width: 480px) {
+  .setup-action { max-width: 100%; }
+  .setup-action .btn { max-width: 100%; white-space: normal; text-align: center; }
+  .setup-action .btn-3 { height: auto; min-height: 40px; padding-block: 6px; }
+}
+
+/* === end zoom & narrow fit === */

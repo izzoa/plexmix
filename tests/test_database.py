@@ -1,7 +1,15 @@
 import pytest
+import re
+import sqlite3
 import tempfile
+import threading
+from contextlib import closing
+from datetime import datetime
 from pathlib import Path
+from typing import Any, Iterator, Optional
 
+from plexmix.database import backup as backup_module
+from plexmix.database.backup import BackupError, backup_library
 from plexmix.database.sqlite_manager import SQLiteManager
 from plexmix.database.models import Artist, Album, Track, Embedding, SyncHistory, Playlist
 
@@ -856,3 +864,626 @@ def test_get_audio_features_by_track_ids_empty(db_manager):
 def test_get_audio_features_nonexistent(db_manager):
     result = db_manager.get_audio_features(99999)
     assert result is None
+
+
+class TestGetTracksEnrichmentColumns:
+    """get_tracks exposes per-track audio and MusicBrainz state for the Library table.
+
+    ``has_musicbrainz`` uses the same definition as the library-wide count
+    (``musicbrainz_recording_id IS NOT NULL``), not ``musicbrainz_enriched_at``,
+    which is stamped even when the lookup found no match.
+    """
+
+    @staticmethod
+    def _seed(db_manager: SQLiteManager, specs: list[tuple[str, str, str]]) -> dict[str, int]:
+        """Insert tracks as (plex_key, title, artist_name); returns plex_key -> track id."""
+        ids: dict[str, int] = {}
+        for plex_key, title, artist_name in specs:
+            artist_id = db_manager.insert_artist(
+                Artist(plex_key=f"artist-{artist_name}", name=artist_name)
+            )
+            album_id = db_manager.insert_album(
+                Album(
+                    plex_key=f"album-{artist_name}", title=f"{artist_name} LP", artist_id=artist_id
+                )
+            )
+            ids[plex_key] = db_manager.insert_track(
+                Track(plex_key=plex_key, title=title, artist_id=artist_id, album_id=album_id)
+            )
+        return ids
+
+    @staticmethod
+    def _rows_by_key(db_manager: SQLiteManager, **kwargs: Any) -> dict[str, dict]:
+        return {row["plex_key"]: row for row in db_manager.get_tracks(limit=50, **kwargs)}
+
+    def test_plain_track_has_neither_flag(self, db_manager: SQLiteManager) -> None:
+        self._seed(db_manager, [("t1", "Plain", "Artist")])
+        row = self._rows_by_key(db_manager)["t1"]
+        assert row["has_audio_features"] == 0
+        assert row["has_musicbrainz"] == 0
+
+    def test_track_with_audio_features_is_flagged(self, db_manager: SQLiteManager) -> None:
+        ids = self._seed(db_manager, [("t1", "Analyzed", "Artist"), ("t2", "Raw", "Artist")])
+        db_manager.insert_audio_features(ids["t1"], {"tempo": 120.0, "key": "C"})
+
+        rows = self._rows_by_key(db_manager)
+        assert rows["t1"]["has_audio_features"] == 1
+        assert rows["t2"]["has_audio_features"] == 0
+
+    def test_track_with_recording_id_is_flagged(self, db_manager: SQLiteManager) -> None:
+        ids = self._seed(db_manager, [("t1", "Matched", "Artist")])
+        db_manager.update_track_musicbrainz(ids["t1"], recording_id="rec-0001")
+
+        assert self._rows_by_key(db_manager)["t1"]["has_musicbrainz"] == 1
+
+    def test_enriched_at_without_recording_id_is_not_flagged(
+        self, db_manager: SQLiteManager
+    ) -> None:
+        ids = self._seed(db_manager, [("t1", "Looked up", "Artist")])
+        # A lookup that found no match still stamps musicbrainz_enriched_at.
+        db_manager.update_track_musicbrainz(ids["t1"], recording_id=None)
+        cursor = db_manager.get_connection().cursor()
+        cursor.execute(
+            "SELECT musicbrainz_enriched_at, musicbrainz_recording_id FROM tracks WHERE id = ?",
+            (ids["t1"],),
+        )
+        enriched_at, recording_id = cursor.fetchone()
+        assert enriched_at is not None and recording_id is None
+
+        assert self._rows_by_key(db_manager)["t1"]["has_musicbrainz"] == 0
+
+    def test_musicbrainz_flag_matches_library_wide_count(self, db_manager: SQLiteManager) -> None:
+        ids = self._seed(
+            db_manager,
+            [("t1", "A", "Artist"), ("t2", "B", "Artist"), ("t3", "C", "Artist")],
+        )
+        db_manager.update_track_musicbrainz(ids["t1"], recording_id="rec-1")
+        db_manager.update_track_musicbrainz(ids["t2"], recording_id=None)
+
+        rows = db_manager.get_tracks(limit=50)
+        assert sum(row["has_musicbrainz"] for row in rows) == (
+            db_manager.get_musicbrainz_enrichment_count()
+        )
+        assert db_manager.get_musicbrainz_enrichment_count() == 1
+
+    def test_tags_flag_matches_library_wide_count(self, db_manager: SQLiteManager) -> None:
+        """The Library row's Tags chip (enrichment_flags over get_tracks rows) agrees
+        with count_untagged_tracks, including whitespace-only and NULL tags."""
+        from plexmix.ui.utils.a11y import enrichment_flags
+        from plexmix.ui.utils.helpers import str_dict
+
+        ids = self._seed(
+            db_manager,
+            [
+                ("t1", "Tagged", "Artist"),
+                ("t2", "Blank", "Artist"),
+                ("t3", "Space", "Artist"),
+                ("t4", "Never", "Artist"),
+            ],
+        )
+        db_manager.update_track_tags(ids["t1"], tags="chill, late night")
+        db_manager.update_track_tags(ids["t2"], tags="")
+        db_manager.update_track_tags(ids["t3"], tags=" ")
+
+        flags = [enrichment_flags(str_dict(row)) for row in db_manager.get_tracks(limit=50)]
+        untagged = sum(1 for f in flags if f["enr_tags"] == "0")
+        assert untagged == db_manager.count_untagged_tracks() == 2
+
+    def test_flags_are_one_row_per_track_with_filters(self, db_manager: SQLiteManager) -> None:
+        ids = self._seed(db_manager, [("t1", "Analyzed", "Artist"), ("t2", "Raw", "Artist")])
+        db_manager.insert_audio_features(ids["t1"], {"tempo": 100.0})
+        # Re-analysis replaces the row; it must not duplicate the track.
+        db_manager.insert_audio_features(ids["t1"], {"tempo": 101.0})
+
+        rows = db_manager.get_tracks(limit=50, has_audio=True)
+        assert [row["plex_key"] for row in rows] == ["t1"]
+        assert rows[0]["has_audio_features"] == 1
+        # Existing columns are unchanged.
+        assert {"tags", "has_embedding", "artist_name", "album_title"} <= set(rows[0].keys())
+
+    def test_artist_sort_spans_pages_and_reverses(self, db_manager: SQLiteManager) -> None:
+        self._seed(
+            db_manager,
+            [("t1", "x", "Charlie"), ("t2", "y", "Alpha"), ("t3", "z", "Bravo")],
+        )
+        first = db_manager.get_tracks(limit=2, offset=0, sort_column="artist")
+        second = db_manager.get_tracks(limit=2, offset=2, sort_column="artist")
+        assert [r["artist_name"] for r in first + second] == ["Alpha", "Bravo", "Charlie"]
+
+        desc = db_manager.get_tracks(limit=50, sort_column="artist", sort_ascending=False)
+        assert [r["artist_name"] for r in desc] == ["Charlie", "Bravo", "Alpha"]
+
+    def test_name_sorts_ignore_case(self, db_manager: SQLiteManager) -> None:
+        self._seed(
+            db_manager,
+            [
+                ("t1", "zebra", "Miles Davis"),
+                ("t2", "Apple", "bill evans"),
+                ("t3", "mango", "Ahmad Jamal"),
+                ("t4", "Banana", "ZZ Top"),
+            ],
+        )
+        asc = db_manager.get_tracks(limit=50, sort_column="artist")
+        assert [r["artist_name"] for r in asc] == [
+            "Ahmad Jamal",
+            "bill evans",
+            "Miles Davis",
+            "ZZ Top",
+        ]
+        desc = db_manager.get_tracks(limit=50, sort_column="artist", sort_ascending=False)
+        assert [r["artist_name"] for r in desc] == [
+            "ZZ Top",
+            "Miles Davis",
+            "bill evans",
+            "Ahmad Jamal",
+        ]
+        titles = db_manager.get_tracks(limit=50, sort_column="title")
+        assert [r["title"] for r in titles] == ["Apple", "Banana", "mango", "zebra"]
+
+    def test_unknown_sort_column_falls_back_to_title(self, db_manager: SQLiteManager) -> None:
+        self._seed(db_manager, [("t1", "b", "X"), ("t2", "A", "Y")])
+        rows = db_manager.get_tracks(limit=50, sort_column="t.id; DROP TABLE tracks")
+        assert [r["title"] for r in rows] == ["A", "b"]
+
+
+# ============================================================================
+# Playlist top artists (History card identity, webui-keyboard-and-semantics)
+# ============================================================================
+
+
+class TestPlaylistTopArtists:
+    """``SQLiteManager.get_playlist_top_artists``: one grouped read, top N in Python."""
+
+    @staticmethod
+    def _artist(db_manager: SQLiteManager, name: str) -> tuple[int, int]:
+        """Insert an artist with one album; return ``(artist_id, album_id)``."""
+        key = name.lower().replace(" ", "-")
+        artist_id = db_manager.insert_artist(Artist(plex_key=f"ta-{key}", name=name))
+        album_id = db_manager.insert_album(
+            Album(plex_key=f"tal-{key}", title=f"{name} LP", artist_id=artist_id)
+        )
+        return artist_id, album_id
+
+    def _playlist(
+        self, db_manager: SQLiteManager, name: str, artist_counts: list[tuple[str, int]]
+    ) -> int:
+        """Create a playlist holding ``count`` tracks by each named artist.
+
+        Artists are created once per test and reused across playlists.
+        """
+        ids: dict[str, tuple[int, int]] = self.__dict__.setdefault("_artist_ids", {})
+        track_ids: list[int] = []
+        for artist_name, count in artist_counts:
+            if artist_name not in ids:
+                ids[artist_name] = self._artist(db_manager, artist_name)
+            artist_id, album_id = ids[artist_name]
+            for i in range(count):
+                track_ids.append(
+                    db_manager.insert_track(
+                        Track(
+                            plex_key=f"tt-{name}-{artist_name}-{i}",
+                            title=f"{artist_name} {i}",
+                            artist_id=artist_id,
+                            album_id=album_id,
+                        )
+                    )
+                )
+        pid = db_manager.insert_playlist(Playlist(name=name, created_by_ai=True))
+        db_manager.add_tracks_to_playlist(pid, track_ids)
+        return pid
+
+    def test_empty_db_returns_empty_dict(self, db_manager: SQLiteManager) -> None:
+        assert db_manager.get_playlist_top_artists() == {}
+
+    def test_ordered_by_frequency(self, db_manager: SQLiteManager) -> None:
+        pid = self._playlist(
+            db_manager, "Jazz", [("Chet Baker", 2), ("Bill Evans", 5), ("Miles Davis", 3)]
+        )
+        assert db_manager.get_playlist_top_artists() == {
+            pid: ["Bill Evans", "Miles Davis", "Chet Baker"]
+        }
+
+    def test_ties_broken_by_name(self, db_manager: SQLiteManager) -> None:
+        pid = self._playlist(
+            db_manager, "Ties", [("Zed", 2), ("Alpha", 2), ("Mike", 2), ("Bravo", 1)]
+        )
+        assert db_manager.get_playlist_top_artists() == {pid: ["Alpha", "Mike", "Zed"]}
+
+    def test_ties_broken_by_name_ignoring_case(self, db_manager: SQLiteManager) -> None:
+        pid = self._playlist(db_manager, "Case", [("beta", 1), ("Alpha", 1), ("Gamma", 1)])
+        assert db_manager.get_playlist_top_artists() == {pid: ["Alpha", "beta", "Gamma"]}
+
+    def test_limit_honored(self, db_manager: SQLiteManager) -> None:
+        pid = self._playlist(db_manager, "Many", [("A", 4), ("B", 3), ("C", 2), ("D", 1)])
+        assert db_manager.get_playlist_top_artists() == {pid: ["A", "B", "C"]}
+        assert db_manager.get_playlist_top_artists(limit=1) == {pid: ["A"]}
+        assert db_manager.get_playlist_top_artists(limit=10) == {pid: ["A", "B", "C", "D"]}
+        assert db_manager.get_playlist_top_artists(limit=0) == {}
+
+    def test_playlist_without_tracks_is_absent(self, db_manager: SQLiteManager) -> None:
+        full = self._playlist(db_manager, "Full", [("Solo", 2)])
+        empty = db_manager.insert_playlist(Playlist(name="Empty", created_by_ai=False))
+        top = db_manager.get_playlist_top_artists()
+        assert top == {full: ["Solo"]}
+        assert empty not in top
+
+    def test_playlists_are_independent(self, db_manager: SQLiteManager) -> None:
+        first = self._playlist(db_manager, "One", [("Shared", 1), ("Only One", 3)])
+        second = self._playlist(db_manager, "Two", [("Shared", 4), ("Only Two", 1)])
+        assert db_manager.get_playlist_top_artists() == {
+            first: ["Only One", "Shared"],
+            second: ["Shared", "Only Two"],
+        }
+
+    def test_repeated_track_counts_each_occurrence(self, db_manager: SQLiteManager) -> None:
+        a_id, a_album = self._artist(db_manager, "Repeat")
+        b_id, b_album = self._artist(db_manager, "Twice")
+        rep = db_manager.insert_track(
+            Track(plex_key="rep-1", title="Again", artist_id=a_id, album_id=a_album)
+        )
+        tw1 = db_manager.insert_track(
+            Track(plex_key="tw-1", title="One", artist_id=b_id, album_id=b_album)
+        )
+        tw2 = db_manager.insert_track(
+            Track(plex_key="tw-2", title="Two", artist_id=b_id, album_id=b_album)
+        )
+        pid = db_manager.insert_playlist(Playlist(name="Loop", created_by_ai=False))
+        db_manager.add_tracks_to_playlist(pid, [rep, tw1, rep, tw2, rep])
+        assert db_manager.get_playlist_top_artists() == {pid: ["Repeat", "Twice"]}
+
+
+# ── webui-honest-status-and-first-run 9.1: tag reads and missing-embedding counts ──
+
+
+class TestTagsAndMissingEmbeddings:
+    """``get_tags_for_tracks``, ``count_tracks_without_embeddings`` and
+    ``get_tracks_without_embeddings`` (parameterised; used by Library bulk tags and
+    the whole-library "Build search index" flow)."""
+
+    @staticmethod
+    def _tracks(db_manager: SQLiteManager, n: int) -> list[int]:
+        artist_id = db_manager.insert_artist(Artist(plex_key="a-tm", name="Artist"))
+        album_id = db_manager.insert_album(
+            Album(plex_key="al-tm", title="Album", artist_id=artist_id)
+        )
+        return [
+            db_manager.insert_track(
+                Track(plex_key=f"tm-{i}", title=f"Song {i}", artist_id=artist_id, album_id=album_id)
+            )
+            for i in range(n)
+        ]
+
+    @staticmethod
+    def _embed(db_manager: SQLiteManager, track_id: int, model: str = "Local") -> None:
+        db_manager.insert_embedding(
+            Embedding(track_id=track_id, embedding_model=model, embedding_dim=2, vector=[0.1, 0.2])
+        )
+
+    def test_get_tags_for_tracks_returns_stored_columns(self, db_manager: SQLiteManager) -> None:
+        a, b, c = self._tracks(db_manager, 3)
+        db_manager.update_track_tags(a, tags="chill,piano", environments="study", instruments="")
+        db_manager.update_track_tags(b, tags="Upbeat, Dance")
+        tags = db_manager.get_tags_for_tracks([a, b, c])
+        assert tags[a] == {"tags": "chill,piano", "environments": "study", "instruments": ""}
+        assert tags[b]["tags"] == "Upbeat, Dance"
+        assert tags[b]["environments"] is None
+        assert tags[c] == {"tags": None, "environments": None, "instruments": None}
+
+    def test_get_tags_for_tracks_ignores_unknown_and_duplicate_ids(
+        self, db_manager: SQLiteManager
+    ) -> None:
+        (a,) = self._tracks(db_manager, 1)
+        db_manager.update_track_tags(a, tags="x")
+        assert db_manager.get_tags_for_tracks([]) == {}
+        assert db_manager.get_tags_for_tracks([a, a, 999_999]) == {
+            a: {"tags": "x", "environments": None, "instruments": None}
+        }
+
+    def test_get_tags_for_tracks_is_parameterised(self, db_manager: SQLiteManager) -> None:
+        """Ids go through bound parameters: a string id that is not a number fails
+        int() rather than ever reaching the SQL text."""
+        (a,) = self._tracks(db_manager, 1)
+        with pytest.raises(ValueError):
+            db_manager.get_tags_for_tracks([a, "1) OR 1=1 --"])  # type: ignore[list-item]
+        assert db_manager.get_tags_for_tracks([str(a)]) == {  # type: ignore[list-item]
+            a: {"tags": None, "environments": None, "instruments": None}
+        }
+
+    def test_get_tags_for_tracks_chunks_large_selections(self, db_manager: SQLiteManager) -> None:
+        ids = self._tracks(db_manager, 1200)
+        db_manager.update_track_tags(ids[-1], tags="last")
+        tags = db_manager.get_tags_for_tracks(ids)
+        assert len(tags) == 1200
+        assert tags[ids[-1]]["tags"] == "last"
+
+    def test_count_without_embeddings_any_model(self, db_manager: SQLiteManager) -> None:
+        ids = self._tracks(db_manager, 5)
+        assert db_manager.count_tracks_without_embeddings() == 5
+        self._embed(db_manager, ids[0], "Local")
+        self._embed(db_manager, ids[1], "Gemini")
+        self._embed(db_manager, ids[1], "Local")  # two models: still one embedded track
+        assert db_manager.count_tracks_without_embeddings() == 3
+        total = len(db_manager.get_all_tracks())
+        assert (
+            db_manager.count_tracks_with_embeddings() + db_manager.count_tracks_without_embeddings()
+            == total
+        )
+
+    def test_count_without_embeddings_scoped_to_a_model(self, db_manager: SQLiteManager) -> None:
+        ids = self._tracks(db_manager, 3)
+        self._embed(db_manager, ids[0], "Local")
+        self._embed(db_manager, ids[1], "Gemini")
+        assert db_manager.count_tracks_without_embeddings("Local") == 2
+        assert db_manager.count_tracks_without_embeddings("Gemini") == 2
+        assert db_manager.count_tracks_without_embeddings("Cohere") == 3
+
+    def test_count_without_embeddings_empty_library(self, db_manager: SQLiteManager) -> None:
+        assert db_manager.count_tracks_without_embeddings() == 0
+        assert db_manager.get_tracks_without_embeddings() == []
+
+    def test_get_tracks_without_embeddings(self, db_manager: SQLiteManager) -> None:
+        ids = self._tracks(db_manager, 4)
+        self._embed(db_manager, ids[1])
+        self._embed(db_manager, ids[3], "Gemini")
+        missing = db_manager.get_tracks_without_embeddings()
+        assert [t.id for t in missing] == [ids[0], ids[2]]
+        assert all(isinstance(t, Track) for t in missing)
+        assert [t.id for t in db_manager.get_tracks_without_embeddings("Local")] == [
+            ids[0],
+            ids[2],
+            ids[3],
+        ]
+
+
+# ── fix-cli-secrets-and-data-loss 2.6: a partial sync counts as the last sync ──
+
+
+def test_last_sync_time_counts_partial(db_manager: SQLiteManager) -> None:
+    """A partial sync read Plex and saved its changes (it only kept unread tracks or
+    held a removal back), so the "last sync" date must move. Failed and interrupted
+    syncs still do not count."""
+
+    def record(day: int, status: str) -> None:
+        db_manager.insert_sync_record(
+            SyncHistory(sync_date=datetime(2026, 11, day, 12, 0, 0), status=status)
+        )
+
+    record(1, "partial")
+    only_partial = db_manager.get_last_sync_time()
+    assert only_partial is not None and only_partial.startswith("2026-11-01")
+
+    record(2, "success")
+    record(3, "partial")
+    record(4, "failed")
+    record(5, "interrupted")
+    last_sync = db_manager.get_last_sync_time()
+    assert last_sync is not None and last_sync.startswith("2026-11-03")
+
+
+# ── fix-cli-secrets-and-data-loss 2.4: the backup made before a large removal ──
+
+
+@pytest.fixture
+def library_db(tmp_path: Path) -> Iterator[SQLiteManager]:
+    """A database opened the way PlexMix opens it (write-ahead log on), alone in a folder.
+
+    A backup is written beside the database, so these tests do not use ``db_manager``:
+    its file sits in the shared temporary folder.
+    """
+    manager = SQLiteManager(str(tmp_path / "plexmix.db"))
+    manager.connect()
+    # No automatic checkpoint: what a test writes stays in the write-ahead log, which
+    # is the state a plain file copy gets wrong.
+    manager.get_connection().execute("PRAGMA wal_autocheckpoint=0")
+    yield manager
+    manager.close()
+
+
+def _add_tracks(db: SQLiteManager, count: int, prefix: str = "bk") -> None:
+    artist_id = db.insert_artist(Artist(plex_key=f"{prefix}-artist", name="Artist"))
+    album_id = db.insert_album(
+        Album(plex_key=f"{prefix}-album", title="Album", artist_id=artist_id)
+    )
+    for i in range(count):
+        db.insert_track(
+            Track(
+                plex_key=f"{prefix}-{i}", title=f"Song {i}", artist_id=artist_id, album_id=album_id
+            )
+        )
+
+
+def _count_tracks_in_copy(db_file: Path) -> int:
+    with closing(sqlite3.connect(str(db_file))) as copy:
+        count: int = copy.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+    return count
+
+
+def _backup_folders(db: SQLiteManager) -> list[Path]:
+    backups = db.db_path.parent / "backups"
+    return sorted(backups.iterdir()) if backups.exists() else []
+
+
+def test_backup_library_copies_database_and_index(
+    library_db: SQLiteManager, tmp_path: Path
+) -> None:
+    _add_tracks(library_db, 3)
+    index_path = tmp_path / "embeddings.index"
+    index_path.write_bytes(b"index-bytes")
+    index_path.with_suffix(".metadata").write_bytes(b"metadata-bytes, a little longer")
+
+    result = backup_library(library_db, index_path)
+
+    assert result.folder.parent == tmp_path / "backups"
+    assert re.fullmatch(r"\d{8}_\d{6}", result.folder.name)
+    files = sorted(result.folder.iterdir())
+    assert [f.name for f in files] == ["embeddings.index", "embeddings.metadata", "plexmix.db"]
+    assert result.size_bytes == sum(f.stat().st_size for f in files)
+    assert (result.folder / "embeddings.index").read_bytes() == b"index-bytes"
+    assert (result.folder / "embeddings.metadata").read_bytes() == (
+        b"metadata-bytes, a little longer"
+    )
+    # The tracks were still in the write-ahead log, so the database file alone was
+    # smaller than the copy: copying only that file would have lost them.
+    copied_db = result.folder / "plexmix.db"
+    assert library_db.db_path.stat().st_size < copied_db.stat().st_size
+    assert _count_tracks_in_copy(copied_db) == 3
+    # The library itself is untouched.
+    assert library_db.count_tracks() == 3
+
+
+@pytest.mark.parametrize(
+    "index_files, expected",
+    [
+        (None, ["plexmix.db"]),
+        ([], ["plexmix.db"]),
+        (["embeddings.index"], ["embeddings.index", "plexmix.db"]),
+    ],
+    ids=["no-index-path", "no-index-files", "index-without-metadata"],
+)
+def test_backup_library_copies_only_the_index_files_that_exist(
+    library_db: SQLiteManager,
+    tmp_path: Path,
+    index_files: Optional[list[str]],
+    expected: list[str],
+) -> None:
+    _add_tracks(library_db, 1)
+    for name in index_files or []:
+        (tmp_path / name).write_bytes(b"index-bytes")
+    index_path = None if index_files is None else tmp_path / "embeddings.index"
+
+    result = backup_library(library_db, index_path)
+
+    files = sorted(result.folder.iterdir())
+    assert [f.name for f in files] == expected
+    assert result.size_bytes == sum(f.stat().st_size for f in files)
+    assert _count_tracks_in_copy(result.folder / "plexmix.db") == 1
+
+
+@pytest.mark.parametrize(
+    "raised, expected",
+    [
+        (OSError(28, "No space left on device"), BackupError),
+        (KeyboardInterrupt(), KeyboardInterrupt),
+    ],
+    ids=["copy-fails", "ctrl-c"],
+)
+def test_backup_library_failure_leaves_no_partial_folder(
+    library_db: SQLiteManager,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: BaseException,
+    expected: type[BaseException],
+) -> None:
+    _add_tracks(library_db, 2)
+    index_path = tmp_path / "embeddings.index"
+    index_path.write_bytes(b"index-bytes")
+    database_copied_first = []
+
+    def failing_copy(source: Any, target: Any) -> None:
+        database_copied_first.append((Path(target).parent / "plexmix.db").exists())
+        raise raised
+
+    monkeypatch.setattr(backup_module.shutil, "copy2", failing_copy)
+
+    with pytest.raises(expected) as caught:
+        backup_library(library_db, index_path)
+
+    # The folder already held the database copy when the index copy failed.
+    assert database_copied_first == [True]
+    assert _backup_folders(library_db) == []
+    if expected is BackupError:
+        assert "No space left on device" in str(caught.value)
+        assert caught.value.__cause__ is raised
+    # The library itself is untouched.
+    assert library_db.count_tracks() == 2
+    assert index_path.read_bytes() == b"index-bytes"
+
+
+def test_backup_library_twice_in_one_second_keeps_both(
+    library_db: SQLiteManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(backup_module, "_timestamp", lambda: "20261118_101500")
+
+    _add_tracks(library_db, 1, prefix="first")
+    first = backup_library(library_db, None)
+    _add_tracks(library_db, 2, prefix="second")
+    second = backup_library(library_db, None)
+    third = backup_library(library_db, None)
+
+    assert [result.folder.name for result in (first, second, third)] == [
+        "20261118_101500",
+        "20261118_101500_2",
+        "20261118_101500_3",
+    ]
+    assert _backup_folders(library_db) == [first.folder, second.folder, third.folder]
+    # The earlier backup was not overwritten by the later ones.
+    assert _count_tracks_in_copy(first.folder / "plexmix.db") == 1
+    assert _count_tracks_in_copy(second.folder / "plexmix.db") == 3
+    assert _count_tracks_in_copy(third.folder / "plexmix.db") == 3
+
+
+def test_backup_library_refuses_inside_an_open_transaction(library_db: SQLiteManager) -> None:
+    """SQLite's online backup waits without end for its own connection's transaction,
+    so the backup must refuse at once."""
+    _add_tracks(library_db, 1)
+
+    with library_db.deferred_commits():
+        library_db.insert_artist(Artist(plex_key="uncommitted", name="Uncommitted"))
+        with pytest.raises(BackupError, match="not committed"):
+            backup_library(library_db, None)
+
+    assert _backup_folders(library_db) == []
+
+
+def test_backup_library_gives_up_when_the_database_stays_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database that another connection keeps locked ends in BackupError, not in an
+    endless wait."""
+    db_path = tmp_path / "plexmix.db"
+    manager = SQLiteManager(str(db_path))
+    # Rollback-journal mode and no busy wait: an exclusive lock blocks the copy at once.
+    manager.conn = sqlite3.connect(str(db_path), timeout=0)
+    manager.conn.row_factory = sqlite3.Row
+    manager.create_tables()
+    locker = sqlite3.connect(str(db_path), timeout=0, check_same_thread=False)
+    locker.execute("BEGIN EXCLUSIVE")
+    # Safety net: if the wait limit were ignored, this releases the lock, the backup
+    # completes and the test fails. It does not hang.
+    release = threading.Timer(10, locker.rollback)
+    release.start()
+    monkeypatch.setattr(backup_module, "_LOCK_WAIT_SECONDS", 0.0)
+
+    try:
+        with pytest.raises(BackupError, match="stayed locked"):
+            backup_library(manager, None)
+        assert _backup_folders(manager) == []
+    finally:
+        release.cancel()
+        release.join()
+        locker.close()
+        manager.close()
+
+
+def test_backup_library_reports_a_backup_folder_that_cannot_be_created(
+    library_db: SQLiteManager, tmp_path: Path
+) -> None:
+    _add_tracks(library_db, 1)
+    in_the_way = tmp_path / "backups"
+    in_the_way.write_text("a file where the backups folder would go")
+
+    with pytest.raises(BackupError, match="Could not write a backup") as caught:
+        backup_library(library_db, None)
+
+    assert isinstance(caught.value.__cause__, OSError)
+    assert in_the_way.read_text() == "a file where the backups folder would go"
+    assert library_db.count_tracks() == 1
+
+
+def test_backup_library_without_a_database_file_creates_nothing(tmp_path: Path) -> None:
+    manager = SQLiteManager(str(tmp_path / "plexmix.db"))
+
+    with pytest.raises(BackupError, match="no database file"):
+        backup_library(manager, None)
+
+    assert list(tmp_path.iterdir()) == []

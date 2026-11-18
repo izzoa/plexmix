@@ -27,7 +27,7 @@ def tag_badges(tags_str) -> rx.Component:
                         "",
                     ),
                     size="1",
-                    color="var(--pm-gray-9)",
+                    color="var(--fg-2)",
                     weight="medium",
                 ),
                 rx.fragment(),
@@ -36,7 +36,7 @@ def tag_badges(tags_str) -> rx.Component:
             gap="1",
             align="center",
         ),
-        rx.text("-", size="2", color="var(--pm-gray-9)"),
+        rx.text("-", size="2", color="var(--fg-2)"),
     )
 
 
@@ -166,7 +166,7 @@ def track_table_row(track: dict[str, str], is_selected: bool, on_toggle: Callabl
             rx.cond(
                 track["genre"],
                 rx.text(track["genre"], size="2"),
-                rx.text("-", size="2", color="var(--pm-gray-9)"),
+                rx.text("-", size="2", color="var(--fg-2)"),
             ),
             class_name="hide-mobile",
         ),
@@ -174,7 +174,7 @@ def track_table_row(track: dict[str, str], is_selected: bool, on_toggle: Callabl
             rx.cond(
                 track["year"],
                 rx.text(track["year"], size="2"),
-                rx.text("-", size="2", color="var(--pm-gray-9)"),
+                rx.text("-", size="2", color="var(--fg-2)"),
             ),
             class_name="hide-mobile",
         ),

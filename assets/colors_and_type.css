@@ -54,8 +54,8 @@
   --brand-7:  #e09b5e;
   --brand-8:  #d68034;
   --brand-9:  #F97316;   /* primary brand orange */
-  --brand-10: #EA580C;   /* hover / pressed */
-  --brand-11: #b55f18;   /* accent text on light */
+  --brand-10: #EA580C;   /* hover / pressed; large accent text (3.5:1) */
+  --brand-11: #a5520f;   /* accent text on light — 5.4:1 on app, 4.7:1 on brand-3 */
   --brand-12: #5c2d0f;
   --brand-glow: rgba(249, 115, 22, 0.15);
 
@@ -72,22 +72,33 @@
   --pm-gray-6:  #d9d9d9;
   --pm-gray-7:  #cecece;
   --pm-gray-8:  #bbbbbb;
-  --pm-gray-9:  #8d8d8d;
-  --pm-gray-10: #838383;
+  --pm-gray-9:  #737373;   /* muted text — 4.6:1 on app/raised (never on sunken) */
+  --pm-gray-10: #6b6b6b;
   --pm-gray-11: #646464;
   --pm-gray-12: #202020;
 
-  /* --- Semantic --- */
+  /* --- Semantic solids (fills, dots, bars — not text) --- */
   --pm-success: #22C55E;
   --pm-warning: #EAB308;
   --pm-error:   #EF4444;
   --pm-info:    #3B82F6;
   --pm-purple:  #A855F7;   /* accent-only (e.g. MusicBrainz stat) */
 
+  /* --- Semantic text/icons on light surfaces and on their tints (≥4.5:1) --- */
+  --success-fg: #166534;
+  --warning-fg: #854d0e;
+  --error-fg:   #b91c1c;
+  --info-fg:    #1d4ed8;
+  --purple-fg:  #7e22ce;
+
   /* --- Ink: text that sits on a saturated fill (theme-independent) --- */
   --brand-ink:   #1f1208;  /* on orange (--brand-9) buttons */
   --success-ink: #06240f;  /* on green (--pm-success) buttons */
   --on-solid:    #ffffff;  /* on blue / error / info fills */
+  --info-solid:  #2563eb;  /* blue button fill — white text 5.2:1 (pm-info is 3.7:1) */
+
+  /* --- Focus indicator (≥3:1 against every surface) --- */
+  --focus-ring: #c2410c;
 
   /* --- Tints: soft icon-chip / callout backgrounds (light) --- */
   --brand-bg:   var(--brand-3);
@@ -102,26 +113,24 @@
   --plexmix-orange-hover: var(--brand-10);
   --plexmix-orange-light: var(--brand-glow);
 
-  /* --- Layout --- */
-  --navbar-width: 220px;
-  --content-max-width: 1200px;
-
   /* --- Spacing (4px grid) --- */
   --space-1: 4px;   --space-2: 8px;   --space-3: 12px;  --space-4: 16px;
   --space-5: 20px;  --space-6: 24px;  --space-8: 32px;  --space-10: 40px;
   --space-12: 48px; --space-16: 64px;
 
-  /* --- Border radius --- */
-  --radius-sm: 6px;
-  --radius-md: 8px;
-  --radius-lg: 12px;
-  --radius-xl: 16px;
+  /* --- Border radius (warm & tactile: soft, never sharp) --- */
+  --radius-sm:   8px;    /* kbd, album art, small chips */
+  --radius-md:   12px;   /* buttons, inputs, rail items */
+  --radius-lg:   18px;   /* cards, tiles, tables, top bar */
+  --radius-xl:   22px;   /* dialogs, palette, prompt box */
+  --radius-pill: 999px;  /* badges, segmented controls, vibe pills, ⌘K trigger */
 
-  /* --- Shadows --- */
-  --shadow-sm:   0 1px 2px rgba(0, 0, 0, 0.05);
-  --shadow-md:   0 4px 12px rgba(0, 0, 0, 0.08);
-  --shadow-lg:   0 8px 24px rgba(0, 0, 0, 0.12);
-  --shadow-glow: 0 0 20px var(--brand-glow);
+  /* --- Shadows (layered: surfaces rest on a soft warm shadow) --- */
+  --shadow-sm:   0 1px 2px rgba(60, 30, 10, 0.06);
+  --shadow-md:   0 1px 2px rgba(60, 30, 10, 0.06), 0 4px 14px rgba(60, 30, 10, 0.07);
+  --shadow-lg:   0 4px 8px rgba(60, 30, 10, 0.06), 0 18px 40px rgba(60, 30, 10, 0.12);
+  --shadow-glow: 0 0 0 1px rgba(234, 88, 12, 0.30), 0 6px 18px rgba(249, 115, 22, 0.32);
+  --shadow-glow-hover: 0 0 0 1px rgba(234, 88, 12, 0.36), 0 10px 26px rgba(249, 115, 22, 0.42);
 
   /* --- Motion --- */
   --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
@@ -138,7 +147,7 @@
 
   /* --- Surface aliases (resolve light/dark) --- */
   --surface-app:    var(--pm-gray-1);   /* page background */
-  --surface-raised: var(--pm-gray-2);   /* cards, tiles, bars */
+  --surface-raised: #ffffff;            /* cards, tiles, bars (dark: gray-2) */
   --surface-sunken: var(--pm-gray-3);   /* code blocks, hover rows */
   --border-subtle:  var(--pm-gray-4);
   --border-strong:  var(--pm-gray-6);
@@ -153,7 +162,7 @@
 }
 
 /* ================================================================
-   2. DARK MODE (product default)
+   2. DARK MODE (opt-in via .dark on <html>)
    ================================================================ */
 .dark,
 [data-theme="dark"] {
@@ -178,14 +187,26 @@
   --pm-gray-6:  #71717A;
   --pm-gray-7:  #A1A1AA;
   --pm-gray-8:  #D4D4D8;
-  --pm-gray-9:  #6e6e6e;
-  --pm-gray-10: #7a7a7a;
+  --pm-gray-9:  #939393;   /* muted text — 4.9:1 even on sunken */
+  --pm-gray-10: #a3a3a3;
   --pm-gray-11: #b0b0b0;
   --pm-gray-12: #FAFAFA;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.3);
+  --surface-raised: var(--pm-gray-2);
+
+  --success-fg: #4ade80;
+  --warning-fg: #facc15;
+  --error-fg:   #f87171;
+  --info-fg:    #60a5fa;
+  --purple-fg:  #c084fc;
+
+  --focus-ring: #F97316;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 0 0 1px rgba(255, 255, 255, 0.06), 0 6px 18px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 0 0 1px rgba(255, 255, 255, 0.09), 0 18px 44px rgba(0, 0, 0, 0.65);
+  --shadow-glow: 0 0 0 1px rgba(249, 115, 22, 0.40), 0 6px 22px rgba(249, 115, 22, 0.30);
+  --shadow-glow-hover: 0 0 0 1px rgba(249, 115, 22, 0.50), 0 10px 30px rgba(249, 115, 22, 0.40);
 
   --accent-fg: var(--brand-11);
 

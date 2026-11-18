@@ -8,7 +8,9 @@ from ..services.providers import build_embedding_generator as _build_embedding_g
 from ..services.sync_service import build_vector_index
 from ..services.tagging_service import generate_embeddings_for_tracks, rebuild_vector_index
 
-embeddings_app = typer.Typer(name="embeddings", help="Embedding generation")
+embeddings_app = typer.Typer(
+    name="embeddings", help="Embedding generation", pretty_exceptions_show_locals=False
+)
 console = Console()
 
 

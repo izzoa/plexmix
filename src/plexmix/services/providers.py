@@ -5,11 +5,15 @@ provider construction logic inline.
 """
 
 import logging
-from typing import Any, Dict, Optional
+import re
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Tuple
 
 from plexmix.config import credentials
+from plexmix.config.credentials import InvalidAPIKeyError
 from plexmix.config.settings import Settings
 from plexmix.ai import get_ai_provider
+from plexmix.services.readiness import Cause
 from plexmix.utils.embeddings import EmbeddingGenerator
 
 logger = logging.getLogger(__name__)
@@ -151,12 +155,173 @@ def build_ai_provider(
         return None
 
 
-def build_embedding_generator(settings: Settings) -> Optional[EmbeddingGenerator]:
-    """Build an EmbeddingGenerator from settings, resolving API keys automatically.
+@dataclass(frozen=True)
+class ProviderFailure:
+    """Why an embedding provider could not be built (or would not start).
 
-    Returns ``None`` if the provider requires an API key that isn't configured, or
-    if construction fails (e.g. missing optional dependency, local model load
-    error) — callers treat None as "embeddings unavailable".
+    ``cause`` is a :class:`plexmix.services.readiness.Cause`. ``provider`` is the
+    provider id from settings (``"local"``, ``"openai"`` …). ``package`` names the
+    missing Python package for ``Cause.MISSING_DEPENDENCY`` (for example
+    ``"sentence-transformers"``), otherwise ``""``. ``detail`` is the underlying
+    error text with any resolved API key redacted, for logs and as input to the
+    UI's plain-language error helper; it is never user-facing copy on its own.
+    """
+
+    cause: Cause
+    provider: str
+    package: str = ""
+    detail: str = ""
+
+
+# Python module name -> pip distribution name, for ImportErrors that carry
+# ``exc.name`` instead of an "X not installed" message.
+_MODULE_PACKAGES: Dict[str, str] = {
+    "sentence_transformers": "sentence-transformers",
+    "google": "google-genai",
+    "openai": "openai",
+    "cohere": "cohere",
+    "torch": "torch",
+    "transformers": "transformers",
+}
+
+_NOT_INSTALLED_RE = re.compile(r"^\s*([A-Za-z0-9_.\-\[\]]+) not installed", re.I)
+_LOCAL_MODEL_FAILURE_PREFIXES = (
+    "Failed to load local model",
+    "Failed to start local embedding worker",
+)
+_MISSING_CONFIG_PREFIXES = (
+    "Endpoint URL required",
+    "Model name required",
+    "Unknown provider",
+)
+_DETAIL_MAX_CHARS = 300
+
+
+def _missing_package(exc: ImportError) -> str:
+    """Return the pip package an ImportError is about ("" if it can't be told)."""
+    match = _NOT_INSTALLED_RE.match(str(exc))
+    if match:
+        return match.group(1)
+    name = getattr(exc, "name", None) or ""
+    if not name:
+        return ""
+    root = name.split(".")[0]
+    return _MODULE_PACKAGES.get(root, root.replace("_", "-"))
+
+
+def _failure_detail(exc: BaseException, *secrets: Optional[str]) -> str:
+    """Return the exception text with any known secret redacted and length capped."""
+    text = str(exc) or type(exc).__name__
+    for secret in secrets:
+        if secret and len(secret) >= 4:
+            text = text.replace(secret, "[redacted]")
+    text = " ".join(text.split())
+    if len(text) > _DETAIL_MAX_CHARS:
+        text = text[: _DETAIL_MAX_CHARS - 1] + "…"
+    return text
+
+
+def _classify_embedding_exception(
+    exc: BaseException, provider: str, *secrets: Optional[str]
+) -> ProviderFailure:
+    """Map an EmbeddingGenerator construction error to a typed failure."""
+    detail = _failure_detail(exc, *secrets)
+    if isinstance(exc, InvalidAPIKeyError):
+        return ProviderFailure(Cause.INVALID_CREDENTIALS, provider, detail=detail)
+    if isinstance(exc, ImportError):
+        return ProviderFailure(
+            Cause.MISSING_DEPENDENCY, provider, package=_missing_package(exc), detail=detail
+        )
+    message = str(exc).strip()
+    if isinstance(exc, RuntimeError) and message.startswith(_LOCAL_MODEL_FAILURE_PREFIXES):
+        return ProviderFailure(Cause.MODEL_LOAD_FAILED, provider, detail=detail)
+    if isinstance(exc, ValueError):
+        if message.startswith("API key required"):
+            return ProviderFailure(Cause.MISSING_API_KEY, provider, detail=detail)
+        if message.startswith(_MISSING_CONFIG_PREFIXES):
+            return ProviderFailure(Cause.MISSING_CONFIG, provider, detail=detail)
+    return ProviderFailure(Cause.UNKNOWN, provider, detail=detail)
+
+
+def diagnose_embedding_provider(
+    settings: Settings,
+    *,
+    key_present: Optional[bool] = None,
+    local_deps: Optional[bool] = None,
+) -> Optional[ProviderFailure]:
+    """Cheaply tell whether the configured embedding provider can start.
+
+    Builds nothing: it checks key presence for providers that need one, the
+    ``sentence_transformers`` package for Local (``importlib.util.find_spec``) and
+    the endpoint/model for Custom. Returns ``None`` when nothing is known to be
+    wrong (which is not proof that the provider works).
+
+    ``key_present`` and ``local_deps`` let a caller that already collected those
+    facts (the readiness evaluator) skip the credential and package lookups.
+    """
+    from plexmix.services.registry import EMBEDDING_PROVIDERS, requires_embedding_api_key
+
+    provider = (settings.embedding.default_provider or "").strip().lower()
+    if provider != "local" and provider not in EMBEDDING_PROVIDERS:
+        return ProviderFailure(
+            Cause.MISSING_CONFIG, provider, detail=f"Unknown embedding provider: {provider}"
+        )
+
+    if requires_embedding_api_key(provider):
+        if key_present is None:
+            key_present = bool(resolve_embedding_api_key(provider))
+        if not key_present:
+            return ProviderFailure(Cause.MISSING_API_KEY, provider)
+
+    if provider == "local":
+        if local_deps is None:
+            import importlib.util
+
+            try:
+                local_deps = importlib.util.find_spec("sentence_transformers") is not None
+            except (ImportError, ValueError):
+                local_deps = False
+        if not local_deps:
+            return ProviderFailure(
+                Cause.MISSING_DEPENDENCY,
+                provider,
+                package="sentence-transformers",
+                detail="sentence-transformers not installed",
+            )
+
+    if provider == "custom":
+        if not settings.embedding.custom_endpoint:
+            return ProviderFailure(
+                Cause.MISSING_CONFIG,
+                provider,
+                detail="Endpoint URL required for custom embedding provider",
+            )
+        if not (settings.embedding.custom_model or settings.embedding.model):
+            return ProviderFailure(
+                Cause.MISSING_CONFIG,
+                provider,
+                detail="Model name required for custom embedding provider",
+            )
+    return None
+
+
+def build_embedding_generator_with_reason(
+    settings: Settings,
+) -> Tuple[Optional[EmbeddingGenerator], Optional[ProviderFailure]]:
+    """Build an EmbeddingGenerator, or say why it could not be built.
+
+    Returns ``(generator, None)`` on success and ``(None, failure)`` otherwise:
+
+    - the provider needs an API key and none is stored → ``Cause.MISSING_API_KEY``;
+    - an ``ImportError`` → ``Cause.MISSING_DEPENDENCY`` with the package name;
+    - a ``RuntimeError`` "Failed to load local model …" (or the local worker
+      failing to start) → ``Cause.MODEL_LOAD_FAILED``;
+    - a key the transport can't send → ``Cause.INVALID_CREDENTIALS``;
+    - a missing Custom endpoint/model or unknown provider → ``Cause.MISSING_CONFIG``;
+    - anything else → ``Cause.UNKNOWN``.
+
+    Construction failures are logged once ("Embedding provider init failed: …",
+    with any resolved key redacted); a missing key is not logged.
     """
     provider = settings.embedding.default_provider
     api_key = resolve_embedding_api_key(provider)
@@ -164,7 +329,7 @@ def build_embedding_generator(settings: Settings) -> Optional[EmbeddingGenerator
     from plexmix.services.registry import requires_embedding_api_key
 
     if requires_embedding_api_key(provider) and not api_key:
-        return None
+        return None, ProviderFailure(Cause.MISSING_API_KEY, provider)
 
     kwargs: Dict[str, Any] = {
         "provider": provider,
@@ -180,9 +345,24 @@ def build_embedding_generator(settings: Settings) -> Optional[EmbeddingGenerator
         kwargs["custom_dimension"] = settings.embedding.custom_dimension
 
     try:
-        return EmbeddingGenerator(**kwargs)
+        return EmbeddingGenerator(**kwargs), None
     except Exception as exc:
-        # Don't let ValueError/ImportError/RuntimeError escape the documented
-        # "returns None" contract and crash CLI callers.
-        logger.warning("Embedding provider init failed: %s", exc)
-        return None
+        # Don't let ValueError/ImportError/RuntimeError escape: classify them so
+        # the Web UI can name the real cause instead of "check your API keys".
+        failure = _classify_embedding_exception(
+            exc, provider, api_key, kwargs.get("custom_api_key")
+        )
+        logger.warning("Embedding provider init failed: %s", failure.detail)
+        return None, failure
+
+
+def build_embedding_generator(settings: Settings) -> Optional[EmbeddingGenerator]:
+    """Build an EmbeddingGenerator from settings, resolving API keys automatically.
+
+    Returns ``None`` if the provider requires an API key that isn't configured, or
+    if construction fails (e.g. missing optional dependency, local model load
+    error) — callers treat None as "embeddings unavailable". Use
+    :func:`build_embedding_generator_with_reason` to learn why.
+    """
+    generator, _failure = build_embedding_generator_with_reason(settings)
+    return generator

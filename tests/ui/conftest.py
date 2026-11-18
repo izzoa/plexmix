@@ -117,6 +117,33 @@ rx_mock.alert_dialog.description = Mock
 rx_mock.alert_dialog.cancel = Mock
 rx_mock.alert_dialog.action = Mock
 
+
+# Mock client-storage and client-side event APIs.
+# rx.Cookie returns its default so a class attribute annotated ``str`` stays a plain str.
+def mock_cookie(default="", *args, **kwargs):
+    """Mock rx.Cookie — returns the default value."""
+    return default
+
+
+rx_mock.Cookie = mock_cookie
+rx_mock.LocalStorage = mock_cookie
+rx_mock.SessionStorage = mock_cookie
+
+
+def mock_remove_cookie(key, options=None):
+    """Mock rx.remove_cookie — returns an inspectable marker tuple."""
+    return ("remove_cookie", key)
+
+
+def mock_set_value(ref, value):
+    """Mock rx.set_value — returns an inspectable marker tuple."""
+    return ("set_value", ref, value)
+
+
+rx_mock.remove_cookie = mock_remove_cookie
+rx_mock.set_value = mock_set_value
+rx_mock.html = Mock
+
 # Mock breakpoints
 rx_mock.breakpoints = Mock(return_value="responsive")
 

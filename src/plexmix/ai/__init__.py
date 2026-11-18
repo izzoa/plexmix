@@ -18,6 +18,11 @@ from plexmix.services.registry import (
 
 logger = logging.getLogger(__name__)
 
+_INVALID_LOCAL_TOKEN_MESSAGE = (
+    "Local endpoint auth token contains invalid characters (a space, a line break or "
+    "a non-ASCII character). Enter it again."
+)
+
 # Provider name → constructor (avoids long if/elif chain)
 _CLOUD_CONSTRUCTORS = {
     "gemini": lambda api_key, model, temp: GeminiProvider(api_key, model, temp),
@@ -80,6 +85,21 @@ def get_ai_provider(
     # Local provider
     if provider_name == "local":
         model = model or LOCAL_LLM_DEFAULT_MODEL
+        # The token is sent as a request header, so it gets the treatment API keys
+        # get: the ends are stripped, then a token that cannot be sent is refused.
+        # An endpoint without a token is a normal setup, and validate_api_key
+        # accepts an empty or missing one. Only endpoint mode sends the token, so a
+        # leftover one does not stop the builtin model.
+        local_auth_token = sanitize_credential_value(local_auth_token)
+        if (local_mode or "builtin") == "endpoint":
+            try:
+                validate_api_key(local_auth_token, "local")
+            except ValueError as invalid:
+                # Callers build a provider quietly and carry on without one, so the
+                # reason is logged here. The text is fixed and never holds the token.
+                # type(invalid) is InvalidAPIKeyError, as for the other providers.
+                logger.error(_INVALID_LOCAL_TOKEN_MESSAGE)
+                raise type(invalid)(_INVALID_LOCAL_TOKEN_MESSAGE) from None
         return LocalLLMProvider(
             model=model,
             temperature=temperature,

@@ -1,0 +1,549 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-16T23:05:00Z",
+  "title": "Design System: PlexMix",
+  "extensions": {
+    "colorMeta": {
+      "amp-glow": {
+        "role": "primary",
+        "displayName": "Amp Glow Orange",
+        "canonical": "#F97316",
+        "tonalRamp": [
+          "#5c2d0f",
+          "#a5520f",
+          "#EA580C",
+          "#F97316",
+          "#e09b5e",
+          "#f3c9a8",
+          "#fceadd",
+          "#fef8f4"
+        ]
+      },
+      "amp-glow-hover": {
+        "role": "primary",
+        "displayName": "Amp Glow Hover",
+        "canonical": "#EA580C",
+        "darkValue": "#f5933d"
+      },
+      "burnt-copper": {
+        "role": "primary",
+        "displayName": "Burnt Copper",
+        "canonical": "#a5520f",
+        "darkValue": "#ffb366",
+        "tonalRamp": [
+          "#3a1c06",
+          "#5c2d0f",
+          "#7d3e0d",
+          "#a5520f",
+          "#c97a3a",
+          "#e3a877",
+          "#f5d5b8",
+          "#fdf0e4"
+        ]
+      },
+      "burnt-copper-deep": {
+        "role": "primary",
+        "displayName": "Burnt Copper Deep",
+        "canonical": "#5c2d0f",
+        "darkValue": "#ffdfc7"
+      },
+      "peach-wash": {
+        "role": "primary",
+        "displayName": "Peach Wash",
+        "canonical": "#fceadd",
+        "darkValue": "#3d2212"
+      },
+      "peach-mist": {
+        "role": "primary",
+        "displayName": "Peach Mist",
+        "canonical": "#fdf3ec",
+        "darkValue": "#2a180d"
+      },
+      "copper-edge": {
+        "role": "primary",
+        "displayName": "Copper Edge",
+        "canonical": "#e09b5e",
+        "darkValue": "#b06b3d"
+      },
+      "brand-ink": {
+        "role": "primary",
+        "displayName": "Brand Ink",
+        "canonical": "#1f1208"
+      },
+      "focus-ring": {
+        "role": "primary",
+        "displayName": "Focus Ring",
+        "canonical": "#c2410c",
+        "darkValue": "#F97316"
+      },
+      "studio-paper": {
+        "role": "neutral",
+        "displayName": "Studio Paper",
+        "canonical": "#fcfcfc",
+        "darkValue": "#09090B",
+        "tonalRamp": [
+          "#202020",
+          "#646464",
+          "#737373",
+          "#bbbbbb",
+          "#d9d9d9",
+          "#e8e8e8",
+          "#f0f0f0",
+          "#fcfcfc"
+        ]
+      },
+      "studio-white": {
+        "role": "neutral",
+        "displayName": "Studio White",
+        "canonical": "#ffffff",
+        "darkValue": "#18181B"
+      },
+      "studio-sunken": {
+        "role": "neutral",
+        "displayName": "Studio Sunken",
+        "canonical": "#f0f0f0",
+        "darkValue": "#27272A"
+      },
+      "border-subtle": {
+        "role": "neutral",
+        "displayName": "Border Subtle",
+        "canonical": "#e8e8e8",
+        "darkValue": "#3F3F46"
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "Border Strong",
+        "canonical": "#d9d9d9",
+        "darkValue": "#71717A"
+      },
+      "soot": {
+        "role": "neutral",
+        "displayName": "Soot",
+        "canonical": "#202020",
+        "darkValue": "#FAFAFA"
+      },
+      "soot-secondary": {
+        "role": "neutral",
+        "displayName": "Soot Secondary",
+        "canonical": "#646464",
+        "darkValue": "#b0b0b0"
+      },
+      "soot-muted": {
+        "role": "neutral",
+        "displayName": "Soot Muted",
+        "canonical": "#737373",
+        "darkValue": "#939393"
+      },
+      "soot-night": {
+        "role": "neutral",
+        "displayName": "Soot Night (dark app)",
+        "canonical": "#09090B",
+        "tonalRamp": [
+          "#09090B",
+          "#18181B",
+          "#27272A",
+          "#3F3F46",
+          "#52525B",
+          "#71717A",
+          "#A1A1AA",
+          "#FAFAFA"
+        ]
+      },
+      "soot-panel": {
+        "role": "neutral",
+        "displayName": "Soot Panel (dark raised)",
+        "canonical": "#18181B"
+      },
+      "soot-well": {
+        "role": "neutral",
+        "displayName": "Soot Well (dark sunken)",
+        "canonical": "#27272A"
+      },
+      "copper-glow-dark": {
+        "role": "primary",
+        "displayName": "Copper Glow (dark accent text)",
+        "canonical": "#ffb366"
+      },
+      "success": {
+        "role": "semantic",
+        "displayName": "Signal Green",
+        "canonical": "#22C55E",
+        "tonalRamp": [
+          "#14532d",
+          "#166534",
+          "#15803d",
+          "#22C55E",
+          "#4ade80",
+          "#86efac",
+          "#bbf7d0",
+          "#f0fdf4"
+        ]
+      },
+      "success-text": {
+        "role": "semantic",
+        "displayName": "Signal Green Text",
+        "canonical": "#166534",
+        "darkValue": "#4ade80"
+      },
+      "warning": {
+        "role": "semantic",
+        "displayName": "Meter Amber",
+        "canonical": "#EAB308",
+        "tonalRamp": [
+          "#713f12",
+          "#854d0e",
+          "#a16207",
+          "#EAB308",
+          "#facc15",
+          "#fde047",
+          "#fef08a",
+          "#fefce8"
+        ]
+      },
+      "warning-text": {
+        "role": "semantic",
+        "displayName": "Meter Amber Text",
+        "canonical": "#854d0e",
+        "darkValue": "#facc15"
+      },
+      "error": {
+        "role": "semantic",
+        "displayName": "Clip Red",
+        "canonical": "#EF4444",
+        "tonalRamp": [
+          "#7f1d1d",
+          "#991b1b",
+          "#b91c1c",
+          "#EF4444",
+          "#f87171",
+          "#fca5a5",
+          "#fecaca",
+          "#fef2f2"
+        ]
+      },
+      "error-text": {
+        "role": "semantic",
+        "displayName": "Clip Red Text",
+        "canonical": "#b91c1c",
+        "darkValue": "#f87171"
+      },
+      "info": {
+        "role": "semantic",
+        "displayName": "Plex Blue",
+        "canonical": "#3B82F6",
+        "tonalRamp": [
+          "#1e3a8a",
+          "#1e40af",
+          "#1d4ed8",
+          "#3B82F6",
+          "#60a5fa",
+          "#93c5fd",
+          "#bfdbfe",
+          "#eff6ff"
+        ]
+      },
+      "info-text": {
+        "role": "semantic",
+        "displayName": "Plex Blue Text",
+        "canonical": "#1d4ed8",
+        "darkValue": "#60a5fa"
+      },
+      "purple": {
+        "role": "semantic",
+        "displayName": "MusicBrainz Purple",
+        "canonical": "#A855F7",
+        "tonalRamp": [
+          "#581c87",
+          "#6b21a8",
+          "#7e22ce",
+          "#A855F7",
+          "#c084fc",
+          "#d8b4fe",
+          "#e9d5ff",
+          "#faf5ff"
+        ]
+      },
+      "purple-text": {
+        "role": "semantic",
+        "displayName": "MusicBrainz Purple Text",
+        "canonical": "#7e22ce",
+        "darkValue": "#c084fc"
+      },
+      "info-solid": {
+        "role": "semantic",
+        "displayName": "Plex Blue Button",
+        "canonical": "#2563eb"
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "The Generator hero question only."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Page titles; result titles at 30px."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Section heads; card titles use Space Grotesk 600 at 15–16px; top-bar wordmark and page name at 19px."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default UI text and inputs."
+      },
+      "body-small": {
+        "displayName": "Body Small",
+        "purpose": "Helper text, meta lines, descriptions."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Uppercase table headers and palette group labels. Never a kicker above a heading."
+      },
+      "data": {
+        "displayName": "Data",
+        "purpose": "Mono readouts: durations, timestamps, model ids, dimensions, commands."
+      },
+      "stat": {
+        "displayName": "Stat",
+        "purpose": "Stat-tile numerals."
+      }
+    },
+    "shadows": [
+      {
+        "name": "shadow-sm",
+        "value": "0 1px 2px rgba(60,30,10,0.06)",
+        "darkValue": "0 1px 2px rgba(0,0,0,0.5)",
+        "purpose": "Resting shadow for inputs, soft buttons, vibe pills, album art."
+      },
+      {
+        "name": "shadow-md",
+        "value": "0 1px 2px rgba(60,30,10,0.06), 0 4px 14px rgba(60,30,10,0.07)",
+        "darkValue": "0 0 0 1px rgba(255,255,255,0.06), 0 6px 18px rgba(0,0,0,0.5)",
+        "purpose": "Resting card shadow: cards, tiles, tables, top bar, selected segments."
+      },
+      {
+        "name": "shadow-lg",
+        "value": "0 4px 8px rgba(60,30,10,0.06), 0 18px 40px rgba(60,30,10,0.12)",
+        "darkValue": "0 0 0 1px rgba(255,255,255,0.09), 0 18px 44px rgba(0,0,0,0.65)",
+        "purpose": "Hovered cards and floating layers: palette, modals, toasts."
+      },
+      {
+        "name": "shadow-glow",
+        "value": "0 0 0 1px rgba(234,88,12,0.30), 0 6px 18px rgba(249,115,22,0.32)",
+        "darkValue": "0 0 0 1px rgba(249,115,22,0.40), 0 6px 22px rgba(249,115,22,0.30)",
+        "purpose": "Primary CTA glow at rest; active phase dot."
+      },
+      {
+        "name": "shadow-glow-hover",
+        "value": "0 0 0 1px rgba(234,88,12,0.36), 0 10px 26px rgba(249,115,22,0.42)",
+        "darkValue": "0 0 0 1px rgba(249,115,22,0.50), 0 10px 30px rgba(249,115,22,0.40)",
+        "purpose": "Primary CTA glow on hover."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-spring",
+        "value": "cubic-bezier(0.175, 0.885, 0.32, 1.275)",
+        "purpose": "Tactile transforms and shadows: hover rises, press squash, rail scale."
+      },
+      {
+        "name": "ease-default",
+        "value": "cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "Color, background and border changes."
+      },
+      {
+        "name": "ease-out",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "Entrances, progress fills, phase-tracker fills."
+      },
+      {
+        "name": "duration-fast",
+        "value": "150ms",
+        "purpose": "Color changes."
+      },
+      {
+        "name": "duration-normal",
+        "value": "250ms",
+        "purpose": "Tactile transform/shadow feedback."
+      },
+      {
+        "name": "duration-slow",
+        "value": "400ms",
+        "purpose": "Entrances (fade-up)."
+      },
+      {
+        "name": "press-scale",
+        "value": "scale(0.96)",
+        "purpose": "Button and segment press."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "mobile-split",
+        "value": "768px"
+      },
+      {
+        "name": "narrow",
+        "value": "640px"
+      },
+      {
+        "name": "narrow-rail",
+        "value": "480px"
+      },
+      {
+        "name": "short-viewport-max-height",
+        "value": "600px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one orange action per view: glows at rest, rises on hover, squashes on press.",
+      "html": "<button class=\"ds-btn-primary\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z\"/><path d=\"M20 3v4\"/><path d=\"M22 5h-4\"/></svg>Generate</button>",
+      "css": ".ds-btn-primary { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; font-weight: 500; background: var(--brand-9, #F97316); color: var(--brand-ink, #1f1208); border: 1px solid transparent; border-radius: var(--radius-md, 12px); box-shadow: var(--shadow-glow, 0 0 0 1px rgba(234,88,12,.30), 0 6px 18px rgba(249,115,22,.32)); cursor: pointer; transition: transform 250ms cubic-bezier(.175,.885,.32,1.275), box-shadow 250ms cubic-bezier(.175,.885,.32,1.275), background-color 150ms cubic-bezier(.4,0,.2,1); } .ds-btn-primary:hover { background: var(--brand-10, #EA580C); box-shadow: var(--shadow-glow-hover, 0 0 0 1px rgba(234,88,12,.36), 0 10px 26px rgba(249,115,22,.42)); transform: translateY(-1px); } .ds-btn-primary:active { transform: scale(.96); } .ds-btn-primary:focus-visible { outline: 2px solid var(--focus-ring, #c2410c); outline-offset: 2px; }"
+    },
+    {
+      "name": "Soft Button",
+      "kind": "button",
+      "refersTo": "button-soft",
+      "description": "Secondary actions such as Sync library: white, outlined, resting on a small shadow.",
+      "html": "<button class=\"ds-btn-soft\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8\"/><path d=\"M21 3v5h-5\"/><path d=\"M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16\"/><path d=\"M8 16H3v5\"/></svg>Sync library</button>",
+      "css": ".ds-btn-soft { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; font-weight: 500; background: var(--surface-raised, #ffffff); color: var(--fg-1, #202020); border: 1px solid var(--border-strong, #d9d9d9); border-radius: var(--radius-md, 12px); box-shadow: var(--shadow-sm, 0 1px 2px rgba(60,30,10,.06)); cursor: pointer; transition: transform 250ms cubic-bezier(.175,.885,.32,1.275), box-shadow 250ms cubic-bezier(.175,.885,.32,1.275), border-color 150ms cubic-bezier(.4,0,.2,1); } .ds-btn-soft:hover { border-color: var(--brand-7, #e09b5e); box-shadow: var(--shadow-md, 0 1px 2px rgba(60,30,10,.06), 0 4px 14px rgba(60,30,10,.07)); transform: translateY(-1px); } .ds-btn-soft:active { transform: scale(.96); } .ds-btn-soft:focus-visible { outline: 2px solid var(--focus-ring, #c2410c); outline-offset: 2px; }"
+    },
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "Tertiary actions such as Export M3U; turns copper on hover.",
+      "html": "<button class=\"ds-btn-outline\">Export M3U</button>",
+      "css": ".ds-btn-outline { display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; font-weight: 500; background: transparent; color: var(--fg-1, #202020); border: 1px solid var(--border-strong, #d9d9d9); border-radius: var(--radius-md, 12px); cursor: pointer; transition: transform 250ms cubic-bezier(.175,.885,.32,1.275), border-color 150ms cubic-bezier(.4,0,.2,1), color 150ms cubic-bezier(.4,0,.2,1); } .ds-btn-outline:hover { border-color: var(--brand-9, #F97316); color: var(--brand-11, #a5520f); transform: translateY(-1px); } .ds-btn-outline:active { transform: scale(.96); } .ds-btn-outline:focus-visible { outline: 2px solid var(--focus-ring, #c2410c); outline-offset: 2px; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "White field on a small shadow; focus swaps to the focus-ring border with a 4px orange wash.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">Playlist name</span><input class=\"ds-input\" placeholder=\"rainy day melancholy\"></label>",
+      "css": ".ds-field { display: block; width: 320px; } .ds-field-label { display: block; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13px; font-weight: 500; color: var(--fg-2, #646464); margin-bottom: 6px; } .ds-input { width: 100%; box-sizing: border-box; height: 40px; padding: 10px 14px; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 14px; color: var(--fg-1, #202020); background: var(--surface-raised, #ffffff); border: 1px solid var(--border-strong, #d9d9d9); border-radius: var(--radius-md, 12px); box-shadow: var(--shadow-sm, 0 1px 2px rgba(60,30,10,.06)); outline: none; transition: border-color 150ms, box-shadow 150ms; } .ds-input::placeholder { color: var(--fg-3, #737373); } .ds-input:focus { border-color: var(--focus-ring, #c2410c); box-shadow: 0 0 0 4px var(--brand-glow, rgba(249,115,22,.15)), var(--shadow-sm, 0 1px 2px rgba(60,30,10,.06)); }"
+    },
+    {
+      "name": "Rail Navigation",
+      "kind": "nav",
+      "refersTo": "rail-item-active",
+      "description": "Icon rail items: idle muted, hover scales up, active is copper on peach with a ring, glow and a left indicator bar.",
+      "html": "<nav class=\"ds-rail\" aria-label=\"Main\"><button type=\"button\" class=\"ds-rail-item\" aria-label=\"Dashboard\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect width=\"7\" height=\"9\" x=\"3\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"14\" y=\"3\" rx=\"1\"/><rect width=\"7\" height=\"9\" x=\"14\" y=\"12\" rx=\"1\"/><rect width=\"7\" height=\"5\" x=\"3\" y=\"16\" rx=\"1\"/></svg></button><button type=\"button\" class=\"ds-rail-item ds-active\" aria-current=\"page\" aria-label=\"Generator\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z\"/><path d=\"M20 3v4\"/><path d=\"M22 5h-4\"/></svg></button><button type=\"button\" class=\"ds-rail-item\" aria-label=\"Library\"><svg width=\"18\" height=\"18\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m16 6 4 14\"/><path d=\"M12 6v14\"/><path d=\"M8 8v12\"/><path d=\"M4 4v16\"/></svg></button></nav>",
+      "css": ".ds-rail { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 76px; padding: 16px 0; background: rgba(255,255,255,.8); backdrop-filter: blur(18px); border-right: 1px solid rgba(0,0,0,.08); } .ds-rail-item { position: relative; width: 46px; height: 42px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-md, 12px); color: var(--fg-3, #737373); transition: transform 250ms cubic-bezier(.175,.885,.32,1.275), box-shadow 250ms cubic-bezier(.175,.885,.32,1.275), background-color 150ms, color 150ms; } .ds-rail-item:hover { background: var(--surface-sunken, #f0f0f0); color: var(--fg-1, #202020); transform: scale(1.05); } .ds-rail-item.ds-active { background: var(--brand-3, #fceadd); color: var(--brand-11, #a5520f); box-shadow: 0 0 0 1px var(--brand-7, #e09b5e), 0 4px 14px var(--brand-glow, rgba(249,115,22,.15)); transform: none; } .ds-rail-item.ds-active::before { content: ''; position: absolute; left: -15px; top: 50%; transform: translateY(-50%); width: 4px; height: 22px; border-radius: 4px; background: var(--brand-10, #EA580C); } .ds-rail-item:focus-visible { outline: 2px solid var(--focus-ring, #c2410c); outline-offset: 2px; }"
+    },
+    {
+      "name": "Badges",
+      "kind": "chip",
+      "refersTo": "badge-accent",
+      "description": "Pill badges: semantic tint fill with the hue's readable text shade; accent badge for mood tags.",
+      "html": "<div class=\"ds-badges\"><span class=\"ds-badge ds-b-ok\"><span class=\"ds-dot\"></span>Embedded</span><span class=\"ds-badge ds-b-warn\">Tags stale</span><span class=\"ds-badge ds-b-err\">Not configured</span><span class=\"ds-badge ds-b-info\">Save to Plex</span><span class=\"ds-badge ds-b-pur\">MusicBrainz</span><span class=\"ds-badge ds-b-or\">rainy · mellow · piano</span><span class=\"ds-badge ds-b-gray\">Idle</span></div>",
+      "css": ".ds-badges { display: flex; flex-wrap: wrap; gap: 8px; } .ds-badge { display: inline-flex; align-items: center; gap: 5px; font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 11px; font-weight: 500; line-height: 1.4; padding: 3px 9px; border-radius: var(--radius-pill, 999px); } .ds-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--pm-success, #22C55E); } .ds-b-ok { background: var(--success-bg, rgba(34,197,94,.14)); color: var(--success-fg, #166534); } .ds-b-warn { background: var(--warning-bg, rgba(234,179,8,.16)); color: var(--warning-fg, #854d0e); } .ds-b-err { background: var(--error-bg, rgba(239,68,68,.12)); color: var(--error-fg, #b91c1c); } .ds-b-info { background: var(--info-bg, rgba(59,130,246,.12)); color: var(--info-fg, #1d4ed8); } .ds-b-pur { background: var(--purple-bg, rgba(168,85,247,.14)); color: var(--purple-fg, #7e22ce); } .ds-b-or { background: var(--brand-3, #fceadd); color: var(--brand-11, #a5520f); } .ds-b-gray { background: var(--surface-sunken, #f0f0f0); color: var(--fg-2, #646464); }"
+    },
+    {
+      "name": "Stat Tile",
+      "kind": "card",
+      "refersTo": "card",
+      "description": "Dashboard stat card: circular icon chip, mono numeral, muted label; rests on the card shadow and lifts on hover.",
+      "html": "<div class=\"ds-stat\"><div class=\"ds-stat-ico\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M9 18V5l12-2v13\"/><circle cx=\"6\" cy=\"18\" r=\"3\"/><circle cx=\"18\" cy=\"16\" r=\"3\"/></svg></div><div class=\"ds-stat-num\">12,480</div><div class=\"ds-stat-lab\">Tracks</div></div>",
+      "css": ".ds-stat { width: 220px; box-sizing: border-box; display: flex; flex-direction: column; gap: 14px; padding: 20px; background: var(--surface-raised, #ffffff); border: 1px solid transparent; border-radius: var(--radius-lg, 18px); box-shadow: var(--shadow-md, 0 1px 2px rgba(60,30,10,.06), 0 4px 14px rgba(60,30,10,.07)); transition: transform 250ms cubic-bezier(.175,.885,.32,1.275), box-shadow 250ms cubic-bezier(.175,.885,.32,1.275); } .ds-stat:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg, 0 4px 8px rgba(60,30,10,.06), 0 18px 40px rgba(60,30,10,.12)); } .ds-stat-ico { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--brand-3, #fceadd); color: var(--brand-11, #a5520f); } .ds-stat-num { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 28px; font-weight: 700; line-height: 1; color: var(--fg-1, #202020); } .ds-stat-lab { font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13px; color: var(--fg-3, #737373); margin-top: -8px; }"
+    },
+    {
+      "name": "Primary Quick Action",
+      "kind": "card",
+      "refersTo": "quick-action-primary",
+      "description": "Dashboard shortcut card; the primary one is marked by a Peach Mist tint (never a side stripe).",
+      "html": "<button class=\"ds-qa\"><span class=\"ds-qa-ico\"><svg width=\"20\" height=\"20\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z\"/><path d=\"M20 3v4\"/><path d=\"M22 5h-4\"/></svg></span><span class=\"ds-qa-text\"><span class=\"ds-qa-title\">Generate Playlist</span><span class=\"ds-qa-desc\">Describe a vibe, get a mix</span></span><span class=\"ds-qa-arrow\"><svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 12h14\"/><path d=\"m12 5 7 7-7 7\"/></svg></span></button>",
+      "css": ".ds-qa { width: 380px; display: flex; align-items: center; gap: 14px; padding: 20px; text-align: left; font: inherit; color: var(--fg-1, #202020); background: var(--brand-2, #fdf3ec); border: 1px solid transparent; border-radius: var(--radius-lg, 18px); box-shadow: var(--shadow-md, 0 1px 2px rgba(60,30,10,.06), 0 4px 14px rgba(60,30,10,.07)); cursor: pointer; transition: transform 250ms cubic-bezier(.175,.885,.32,1.275), box-shadow 250ms cubic-bezier(.175,.885,.32,1.275); } .ds-qa:hover { transform: translateY(-3px); box-shadow: var(--shadow-lg, 0 4px 8px rgba(60,30,10,.06), 0 18px 40px rgba(60,30,10,.12)); } .ds-qa:focus-visible { outline: 2px solid var(--focus-ring, #c2410c); outline-offset: 2px; } .ds-qa-ico { width: 42px; height: 42px; flex-shrink: 0; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--brand-9, #F97316); color: var(--brand-ink, #1f1208); } .ds-qa-text { display: flex; flex-direction: column; gap: 2px; flex: 1; } .ds-qa-title { font-family: 'Space Grotesk', system-ui, sans-serif; font-size: 15px; font-weight: 600; } .ds-qa-desc { font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 13px; color: var(--fg-2, #646464); } .ds-qa-arrow { color: var(--fg-3, #737373); display: inline-flex; transition: transform 250ms cubic-bezier(.175,.885,.32,1.275), color 150ms; } .ds-qa:hover .ds-qa-arrow { transform: translateX(5px); color: var(--brand-11, #a5520f); }"
+    },
+    {
+      "name": "Segmented Control",
+      "kind": "custom",
+      "refersTo": "segmented-option-on",
+      "description": "Pill track in the sunken well; the selected option is a white pill on the card shadow with copper text and a 1px Amp Glow Hover ring.",
+      "html": "<div class=\"ds-seg\" role=\"group\" aria-label=\"Density\"><button class=\"ds-seg-on\" aria-pressed=\"true\">Comfortable</button><button aria-pressed=\"false\">Compact</button></div>",
+      "css": ".ds-seg { display: inline-flex; gap: 4px; padding: 4px; background: var(--surface-sunken, #f0f0f0); border-radius: var(--radius-pill, 999px); } .ds-seg button { font-family: 'IBM Plex Sans', system-ui, sans-serif; font-size: 12.5px; font-weight: 500; padding: 7px 14px; border: none; border-radius: var(--radius-pill, 999px); background: transparent; color: var(--fg-2, #646464); cursor: pointer; transition: transform 250ms cubic-bezier(.175,.885,.32,1.275), box-shadow 250ms cubic-bezier(.175,.885,.32,1.275), color 150ms; } .ds-seg button:hover { color: var(--fg-1, #202020); } .ds-seg button:active { transform: scale(.96); } .ds-seg button.ds-seg-on { background: var(--surface-raised, #ffffff); color: var(--brand-11, #a5520f); box-shadow: inset 0 0 0 1px var(--brand-10, #EA580C), var(--shadow-md, 0 1px 2px rgba(60,30,10,.06), 0 4px 14px rgba(60,30,10,.07)); } .ds-seg button:focus-visible { outline: 2px solid var(--focus-ring, #c2410c); outline-offset: 2px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Studio Console",
+    "overview": "PlexMix is an instrument panel for your own music library. Readouts are precise. Track counts, durations, model ids and timestamps sit in IBM Plex Mono. Status dots, phase trackers and progress bars report what the pipeline is actually doing. One lit signal, Amp Glow orange, marks what is live or primary. The controls around those readouts are warm and tactile. Corners are soft (12px controls, 18px cards). Surfaces rest on warm-tinted shadows. Buttons rise on hover and squash on press with a small spring. The primary action glows like a powered-on amp.\n\nThe web UI is an Operate surface. Scanability and consistency come before expression, and the personality lives in the details: the copper-on-peach active state, the glowing primary button, mono numerals, the springy press. It is light-first, with a full dark mode that keeps the same structure. Density is comfortable by default, with a compact preference. The Generator is the one showpiece: an animated \"AI thinking\" stage (particle vector field, four-phase tracker, streaming terminal log). Everything else supports it.\n\nRejected and removed: dark-mode brand values leaking into light mode (dark-brown active states and a pale `#ffb366` wordmark on white), orange `#F97316` used as text, and colored left-edge stripes on cards.",
+    "keyCharacteristics": [
+      "Light-first warm off-white, with one orange signal and copper for orange text.",
+      "Soft radii: 8 / 12 / 18 / 22px, plus pills for badges, segmented controls and filter chips.",
+      "Layered depth: white surfaces resting on warm two-layer shadows, lifting on hover.",
+      "Tactile spring motion on transforms and shadows; quick 150ms color changes.",
+      "Mono for every number, duration, id and command.",
+      "A glass icon rail and top bar, with a ⌘K command palette as the navigation backbone."
+    ],
+    "rules": [
+      {
+        "name": "The Copper Text Rule",
+        "body": "Orange words and icons are Burnt Copper (Copper Glow in dark). Amp Glow is a fill for large shapes, and thin indicators use Amp Glow Hover. The single text exception is display-size type in Amp Glow Hover.",
+        "section": "colors"
+      },
+      {
+        "name": "The One Orange Rule",
+        "body": "Radix components use the PlexMix ramp, not Radix's own orange. `styles.css` maps Radix `--accent-1…12`, the alpha steps `--accent-a1…a12`, `--accent-surface`, `--accent-contrast` (Brand Ink), the indicator/track colors and `--focus-8` onto brand tokens. It also maps Radix `--radius-1…6` onto the PlexMix radius scale. Style Radix parts through these mappings, never with per-component `border-radius` or color overrides.",
+        "section": "colors"
+      },
+      {
+        "name": "The Light-Is-Light Rule",
+        "body": "Dark token values apply only under `.dark` / `[data-theme=\"dark\"]` on `<html>`. Never key them to the Radix theme root (`[data-is-root-theme]`), which exists in both color modes. That selector is how the light theme once rendered dark-brown active states.",
+        "section": "colors"
+      },
+      {
+        "name": "The Solid-or-Text Rule",
+        "body": "`--pm-success|warning|error|info|purple` paint fills, dots and bars. Words and icons use the matching `--*-fg` token.",
+        "section": "colors"
+      },
+      {
+        "name": "The Muted Floor Rule",
+        "body": "Muted text (`soot-muted`) sits only on Paper or White. On wells, tints, Peach Wash or hover fills it lifts to Soot Secondary.",
+        "section": "colors"
+      },
+      {
+        "name": "The Mono-for-Data Rule",
+        "body": "Anything you could measure or type into a terminal is set in Plex Mono: `12,480`, `3:42`, `2026-05-29 14:08`, `gemini-3.5-flash`, `384d`, `plexmix create \"…\"`. Prose, labels and buttons never are.",
+        "section": "typography"
+      },
+      {
+        "name": "The Resting Shadow Rule",
+        "body": "Raised surfaces always carry a shadow at rest, and deepen it on interaction. A raised surface with only a border is the old flat system.",
+        "section": "elevation"
+      },
+      {
+        "name": "The Glass-Is-Chrome Rule",
+        "body": "Backdrop blur belongs to the rail, the top bar and overlay scrims. Content surfaces are opaque.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** use Burnt Copper (`--accent-fg` / `--brand-11`) for every orange word or icon, and Amp Glow (`--brand-9`) only for fills, bars and indicators.",
+      "**Do** pair every semantic solid with its text shade: `--success-fg`, `--warning-fg`, `--error-fg`, `--info-fg`, `--purple-fg`.",
+      "**Do** give raised surfaces a resting shadow (`--shadow-md`) and lift interactive ones to `--shadow-lg` with a −3px rise on hover.",
+      "**Do** spring transforms and shadows (250ms `--ease-spring`) and keep color changes at 150ms. `prefers-reduced-motion` disables all of it.",
+      "**Do** set numbers, durations, timestamps, model ids and commands in IBM Plex Mono.",
+      "**Do** use the 2px `--focus-ring` outline with 2px offset on every interactive element.",
+      "**Do** keep dark values under `.dark` on `<html>` only.",
+      "**Do** use Amp Glow Hover (`--brand-10`) for thin indicators (progress, tracks, selection rings, active bars) so they clear 3:1 on light surfaces.",
+      "**Do** make every clickable element a real `<button>` or `<a>` (with an `aria-label` when it is icon-only). A clickable `<div>` cannot take keyboard focus."
+    ],
+    "donts": [
+      "**Don't** use `#F97316` as text or icon color on light surfaces (2.7:1), or white text on it (2.8:1).",
+      "**Don't** put muted text (`--fg-3`) on Studio Sunken, Peach Wash, Peach Mist or semantic tints. Use `--fg-2`.",
+      "**Don't** mark emphasis with a colored left or right border stripe on cards, rows or callouts. Use a tint, the glow or weight.",
+      "**Don't** use a zero-offset colored halo as a shadow. Glows carry a vertical offset.",
+      "**Don't** target `[data-is-root-theme]` or other always-present Radix attributes for theme-specific tokens.",
+      "**Don't** add gradients beyond the incumbent few (the orange logo tile, the login and Generator hero glows, the avatar, album-art placeholders).",
+      "**Don't** add new kicker pills or eyebrow labels above headings. The Generator's \"AI Playlist Generator\" kicker is the one incumbent instance.",
+      "**Don't** use emoji in app chrome. Icons are Lucide line icons at a 2px stroke."
+    ]
+  }
+}

@@ -78,6 +78,9 @@ jobs:
       with:
         version: latest
 
+    - name: Bundle changelog into the package
+      run: cp CHANGELOG.md src/plexmix/CHANGELOG.md
+
     - name: Build package
       run: poetry build
 

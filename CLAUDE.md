@@ -70,10 +70,15 @@ poetry run plexmix --help
 #### Run the Reflex UI
 
 ```bash
+# Development (hot reload)
+poetry run plexmix ui --dev
+
+# Production build (what users and the Docker image get)
 poetry run plexmix ui
 ```
 
 Notes:
+- `plexmix ui` now serves the **production build by default** (`--prod` is still accepted): it builds the frontend before serving, so startup is slow and code edits need a restart. Use `--dev` for hot reload while developing.
 - Default UI frontend is `http://localhost:3000`
 - Reflex backend defaults to `http://localhost:8000`
 
@@ -96,6 +101,9 @@ poetry run mypy src
 
 Rules:
 - **Never log secrets** (tokens/API keys) and never write them into repo files.
+- **CLI error reports must not show variable values.** Every `typer.Typer(...)` in `src/plexmix/cli/` passes `pretty_exceptions_show_locals=False`. Without it, Typer prints local variables when a command crashes, and they hold the Plex token, API keys and the UI password. Pass it on any new sub-app too; `tests/test_cli_secret_output.py` checks every app registered under the main one.
+- **Settings errors must not repeat a value.** `Settings` (in `model_config`) and every section class (in its inner `Config`) in `src/plexmix/config/settings.py` keep `hide_input_in_errors`, so a validation error names the setting and not the value that was rejected. Give a new section class the same flag; `tests/test_config.py` checks every section.
+- **Print or log a server address, or an error text from Plex, only through `plexmix.utils.redaction`**: `mask_url_credentials(address)` for an address and `mask_urls_in_text(text)` for an error text. A Plex URL can hold a user name and password, and PlexAPI repeats the URL in its errors. Inside `PlexClient`, format a caught exception with `self._safe_error_text(e)`, which uses the same masking and also removes the client's own token and the credentials of its own address. Never let a PlexAPI error leave `PlexClient` (no bare `raise`): the CLI's error report prints its text, address included. Log the safe text, and raise `PlexReadInterrupted` (a `PlexFetchError`) `from None`: its message is one fixed sentence with no text from Plex.
 - When adding new settings:
   - Update the Pydantic models in `src/plexmix/config/settings.py`
   - Update UI settings plumbing in `src/plexmix/ui/states/settings_state.py` (load/save + validations)
@@ -176,6 +184,12 @@ Rule for changes:
 Best practices:
 - Keep DB writes **parameterized** and inside the `SQLiteManager` APIs.
 - If you add expensive work, add a progress hook and make it cancellable.
+- **A sync removes tracks only inside `SyncEngine`, and only when Plex's listing leaves them out.** The removal step (`_remove_tracks_plex_no_longer_lists`) and `remove_unlisted_tracks(confirmed_count, held_keys)` are the only places. Both compare the database with the keys Plex listed (`PlexClient.read_report.listed_track_keys`), never with the tracks that were read. Do not add another place that deletes tracks because they are "not in Plex". A removal of more than 50 tracks and more than 5 percent of the library (`removal_needs_confirmation`) is held in `SyncEngine.outcome.held` unless the caller passes `allow_large_removals=True`, and it is applied only after `backup_library` (`src/plexmix/database/backup.py`) has made a copy. Pass `True` only when the user asked for it (`--allow-removals`). To apply a held removal, pass `outcome.held_keys` with the count: a track that went missing after the user was asked is then kept. Pass `None` when the keys are not known (the count alone is then checked); an empty set, or keys that are not text, are refused. An engine without a vector index object gets `saved_index_path` and `saved_index_dimension`, so that the backup holds the index files; never open the saved index before that backup (a load that fails destroys the file).
+- **A removal is applied whole or not at all, and it is recorded before anything else can stop the run.** The deletes are one transaction (`SyncEngine._delete_rows`). A cancel request, an error or Ctrl+C before the commit undoes all of them, so check `cancel_event` only through that method and never commit between deletes. A confirmed removal writes its history row in the same transaction. Right after the commit the engine records the removal (`outcome.removed`, or `last_removal` for `remove_unlisted_tracks`), and only then updates the vector index (`_drop_vectors`, which does not raise and finishes the update after Ctrl+C). Keep that order. A caller whose run raised reads those values to say what was already saved: `outcome.compared`, `outcome.added`, `outcome.updated`, `outcome.removed` and `outcome.backup_folder` after a sync, `last_removal` after an interrupted `remove_unlisted_tracks`. `remove_unlisted_tracks` returns a result for every failure except Ctrl+C (`REMOVAL_FAILED` when the tracks could not be deleted); a result with a `backup_folder` is shown with that folder, also when nothing was removed.
+- **A sync's connection check raises a built-in `ConnectionError` before anything is read or written.** Its text ends with "Nothing was changed." (or with "The library was not synced." for the check that `regenerate_sync` runs after it has cleared the tags and embeddings). A `ConnectionError` that arrives after `outcome.compared` is true comes from a later stage (an embedding provider, for one) and must not be reported as Plex or as a sync that changed nothing (`_stopped_before_any_change` in `sync_cmd.py`).
+- **In the web UI a held removal belongs to the library its sync compared.** `LibraryState` remembers the hold with a digest of the database path, the Plex address and the Plex library (`hold_scope`). `confirm_removal` ends the hold without a removal when the settings name another one. The 2-second poll shows the notice only to a caller that passes `access_allowed()`.
+- **A failed read never removes anything.** A track that Plex listed but that could not be read is kept as it is. Only an item without a title (`EmptyTitleError`) is "skipped"; any other error of a read counts as a failed read. When Plex stops answering or cannot list the library, `PlexClient` raises `PlexReadInterrupted` (a `PlexFetchError`) and `incremental_sync` writes nothing. Its message is one plain sentence with no text from Plex; the masked error text goes to the log only. Catch `PlexFetchError`, show that sentence, and do not report success. An empty listing, an unknown listing and too many failed reads also remove nothing. The engine accepts only a real `PlexReadReport`, so a fake Plex client in a test must set `read_report`. After a run, report from `SyncEngine.outcome` (`SyncOutcome`), and show a success line only when `outcome.is_partial` is false.
+- **Other CLI code calls `run_incremental_sync(...)` (`src/plexmix/cli/sync_cmd.py`), never a Typer command function** (`sync_incremental`, `sync_full`, `sync_regenerate`). A Typer command that is called as a plain function gets a truthy `OptionInfo` placeholder for every option the caller leaves out, which switches options such as audio analysis on. `run_incremental_sync` returns `True` only when the sync printed its success line, so print your own "completed" line only then. `tests/test_cli_commands.py::test_cli_modules_never_call_sync_commands_as_functions` checks the rule.
 
 #### AI providers
 
@@ -228,6 +242,8 @@ Patterns used throughout states (e.g., `AppState`, `LibraryState`, `GeneratorSta
 Cancellation conventions:
 - Sync: per-session cancel events keyed by `self.router.session.client_token` (see `LibraryState`)
 - Tagging: a `threading.Event` stored on state (`TaggingState._cancel_event`)
+- Session liveness (used by `JobManager.reap_disconnected` to cancel orphaned per-tab work and drop unsaved Settings secret drafts, swept on page loads and every 30 s) relies on Reflex's internal `event_namespace.token_to_sid` via `src/plexmix/ui/session_liveness.py`; recheck it on every Reflex upgrade (if it breaks, liveness reads as unknown and nothing is reaped).
+- `AppState._reset_client_storage` overrides a built-in Reflex method (called on every hydrate) so a reload re-checks sign-in from the boot screen; it carries Reflex's private `__override_base_method__` marker, so recheck it on Reflex upgrades too (the render smoke fails at import if the marker stops being honoured).
 
 Best practices:
 - Don’t do heavy work inside UI render functions; keep logic in state methods.
@@ -345,3 +361,4 @@ Screenshots for the README use composite "hero" images (browser chrome + gradien
 - Don’t print/log secrets.
 - Prefer `logging` over `print()` in library code. (CLI user output should go through Rich `Console`.)
 - Prefer small, focused diffs; when refactoring, keep behavior stable and add tests.
+- A scratch profile (a temporary `PLEXMIX_DATA_DIR` for a test or a manual run) must contain its own `config.yaml`; an empty file is enough. When that folder has none, `Settings.load_from_file()` falls back to the real `~/.plexmix/config.yaml` in the home directory, so the run reads the user's real settings.

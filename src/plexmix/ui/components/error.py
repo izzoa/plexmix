@@ -59,7 +59,7 @@ def inline_error(message: str) -> rx.Component:
     """Inline error message for form validation."""
     return rx.text(
         message,
-        color="var(--pm-error)",
+        color="var(--error-fg)",
         size="2",
         margin_top="1",
     )
@@ -75,7 +75,7 @@ def retry_component(
         rx.icon(
             "triangle_alert",
             size=48,
-            color="var(--pm-warning)",
+            color="var(--warning-fg)",
         ),
         rx.text(
             message,

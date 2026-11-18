@@ -8,6 +8,9 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 _config_kwargs = {
     "app_name": "plexmix_ui",
     "title": "PlexMixUI",
+    # No "Built with Reflex" badge in production builds: fixed to the bottom-right
+    # corner, it covered the Library pager and the Tagging row buttons.
+    "show_built_with_reflex": False,
 }
 
 # Allow overriding the backend API URL the frontend connects to.

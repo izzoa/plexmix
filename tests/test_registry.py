@@ -1,10 +1,14 @@
 """Tests for the provider registry (services/registry.py)."""
 
+import pytest
+
 from plexmix.services.registry import (
     AI_PROVIDERS,
     AI_PROVIDERS_REQUIRING_KEY,
     EMBEDDING_PROVIDERS,
     EMBEDDING_PROVIDERS_REQUIRING_KEY,
+    ai_provider_display_name,
+    embedding_provider_display_name,
     get_ai_models,
     get_ai_models_display,
     get_default_ai_model,
@@ -295,3 +299,69 @@ class TestCatalogCurrency:
         assert EMBEDDING_PROVIDERS["gemini"].default_dimension == 3072
         assert EMBEDDING_PROVIDERS["openai"].default_model == "text-embedding-3-small"
         assert EMBEDDING_PROVIDERS["cohere"].default_model == "embed-v4.0"
+
+
+# ---------------------------------------------------------------------------
+# Display names (status surfaces never show "Openai")
+# ---------------------------------------------------------------------------
+
+
+class TestProviderDisplayNames:
+    @pytest.mark.parametrize(
+        "provider_id,expected",
+        [
+            ("gemini", "Gemini"),
+            ("openai", "OpenAI"),
+            ("claude", "Claude"),
+            ("anthropic", "Claude"),
+            ("cohere", "Cohere"),
+            ("custom", "Custom (OpenAI-compatible)"),
+            ("local", "Local"),
+            ("OpenAI", "OpenAI"),
+            (" Anthropic ", "Claude"),
+            ("LOCAL", "Local"),
+        ],
+    )
+    def test_ai_display_names(self, provider_id, expected):
+        assert ai_provider_display_name(provider_id) == expected
+
+    @pytest.mark.parametrize(
+        "provider_id,expected",
+        [
+            ("gemini", "Gemini"),
+            ("openai", "OpenAI"),
+            ("cohere", "Cohere"),
+            ("custom", "Custom (OpenAI-compatible)"),
+            ("local", "Local"),
+            ("OPENAI", "OpenAI"),
+        ],
+    )
+    def test_embedding_display_names(self, provider_id, expected):
+        assert embedding_provider_display_name(provider_id) == expected
+
+    def test_openai_is_never_title_cased(self):
+        assert ai_provider_display_name("openai") == "OpenAI"
+        assert embedding_provider_display_name("openai") == "OpenAI"
+        assert "Openai" not in (
+            ai_provider_display_name("openai"),
+            embedding_provider_display_name("openai"),
+        )
+
+    def test_display_names_come_from_the_registry(self):
+        for pid, entry in AI_PROVIDERS.items():
+            assert ai_provider_display_name(pid) == entry.display_name
+        for pid, entry in EMBEDDING_PROVIDERS.items():
+            assert embedding_provider_display_name(pid) == entry.display_name
+
+    def test_unknown_ids_are_returned_unchanged(self):
+        assert ai_provider_display_name("ollama") == "ollama"
+        assert ai_provider_display_name("my_Provider") == "my_Provider"
+        assert embedding_provider_display_name("voyage") == "voyage"
+        # Claude has no embedding provider, so the id is not a known embedding id.
+        assert embedding_provider_display_name("claude") == "claude"
+
+    def test_none_and_empty_give_empty_string(self):
+        assert ai_provider_display_name(None) == ""
+        assert ai_provider_display_name("") == ""
+        assert embedding_provider_display_name(None) == ""
+        assert embedding_provider_display_name("") == ""

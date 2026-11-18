@@ -16,7 +16,9 @@ from ..services.providers import (
 from ..services.sync_service import build_vector_index
 from ..services.tagging_service import generate_embeddings_for_tracks, rebuild_vector_index
 
-tags_app = typer.Typer(name="tags", help="AI-based tag generation")
+tags_app = typer.Typer(
+    name="tags", help="AI-based tag generation", pretty_exceptions_show_locals=False
+)
 console = Console()
 
 

@@ -4,7 +4,7 @@ from rich.console import Console
 from ..config.settings import Settings
 from ..database.sqlite_manager import SQLiteManager
 
-db_app = typer.Typer(name="db", help="Database management")
+db_app = typer.Typer(name="db", help="Database management", pretty_exceptions_show_locals=False)
 console = Console()
 
 

@@ -7,57 +7,126 @@ settings_state module shorter.
 
 import asyncio
 import logging
-import re
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, Optional
 
 from plexmix.ai.local_provider import LOCAL_LLM_DEFAULT_MODEL
 from plexmix.config.credentials import sanitize_credential_value, validate_api_key
 
+# Moved to plexmix.ui.utils.errors (shared with services and readiness copy);
+# re-exported here so existing imports of _settings_testing._friendly_error work.
+from plexmix.ui.utils.errors import _friendly_error as _friendly_error
+
 logger = logging.getLogger(__name__)
 
 
-def _friendly_error(e: Exception) -> str:
-    """Turn a raw exception into a short, user-friendly error message."""
-    msg = str(e)
+def _secret(state: Any, field: str) -> str:
+    """Server-side secret for a test: the staged draft, else the stored value.
 
-    # Common patterns -> plain-English rewrites
-    if "401" in msg or "Unauthorized" in msg or "invalid.*key" in msg.lower():
-        return "Invalid API key. Please check your key and try again."
-    if "403" in msg or "Forbidden" in msg:
-        return "Access denied. Your API key may lack the required permissions."
-    if "404" in msg or "Not Found" in msg:
-        return "Endpoint not found. Please check the URL or model name."
-    if "429" in msg or "rate" in msg.lower():
-        return "Rate limited by the provider. Please wait a moment and try again."
-    if "timeout" in msg.lower() or "timed out" in msg.lower():
-        return "Connection timed out. Check the server URL and your network."
-    if "connection" in msg.lower() and ("refused" in msg.lower() or "error" in msg.lower()):
-        return "Could not connect to the server. Is the URL correct and the service running?"
-    if "resolve" in msg.lower() or "dns" in msg.lower() or "name or service" in msg.lower():
-        return "Could not resolve the hostname. Check the server URL."
-    if "ssl" in msg.lower() or "certificate" in msg.lower():
-        return "SSL/TLS error. The server's certificate may be invalid or expired."
-    if "No module named" in msg:
-        pkg = msg.split("No module named")[-1].strip(" \"'")
-        return f"Missing Python package: {pkg}"
+    Secrets are never state vars; ``SettingsState._resolve_secret`` resolves them
+    on the server (and returns "" for an unauthorized session). Duck-typed
+    stand-ins without a resolver get "" so they never see a secret either.
+    """
+    resolver = getattr(state, "_resolve_secret", None)
+    if not callable(resolver):
+        return ""
+    try:
+        value = resolver(field)
+    except Exception as e:  # never leave a test stuck in "Testing..." over a lookup
+        logger.error("Could not resolve %s for a connection test: %s", field, type(e).__name__)
+        return ""
+    return value if isinstance(value, str) else ""
 
-    # Fallback: truncate and clean up raw messages
-    # Strip common noise like 'headers: {...}' or JSON blobs
-    msg = re.sub(r"\{[^{}]{50,}\}", "{...}", msg)  # collapse long dicts
-    msg = re.sub(r"headers:\s*\{[^}]*\}", "", msg)  # strip header dumps
-    msg = msg.strip(" ,.")
-    if len(msg) > 120:
-        msg = msg[:117] + "..."
-    return msg or "An unexpected error occurred."
+
+# ── Readiness recording (webui-honest-status-and-first-run D2/D12) ──
+# Each test records its real outcome in the process-level readiness store, keyed
+# by a fingerprint of the *tested form values* (and a hash of the tested secret),
+# so saving exactly those values keeps the verification and any other change
+# makes it "not checked" again. Recording never raises and never logs a secret.
+
+
+def _form_settings(state: Any) -> SimpleNamespace:
+    """The tested form values in the shape ``readiness.fingerprint`` reads.
+
+    Mirrors how ``SettingsState.save_all_settings`` writes them to the config,
+    so the fingerprint of a tested form equals that of the saved configuration.
+    """
+
+    def val(name: str, default: Any = "") -> Any:
+        value = getattr(state, name, default)
+        return default if value is None else value
+
+    return SimpleNamespace(
+        plex=SimpleNamespace(url=val("plex_url"), library_name=val("plex_library")),
+        ai=SimpleNamespace(
+            default_provider=val("ai_provider"),
+            model=val("ai_model"),
+            custom_model=val("ai_custom_model") or None,
+            custom_endpoint=val("ai_custom_endpoint") or None,
+            local_mode=val("ai_local_mode", "builtin"),
+            local_endpoint=val("ai_local_endpoint") or None,
+        ),
+        embedding=SimpleNamespace(
+            default_provider=val("embedding_provider"),
+            model=val("embedding_model"),
+            custom_model=val("embedding_custom_model") or None,
+            custom_endpoint=val("embedding_custom_endpoint") or None,
+            custom_dimension=val("embedding_custom_dimension", 1536),
+        ),
+    )
+
+
+def _form_fingerprint(state: Any, component: str, secret: Optional[str]) -> str:
+    """Fingerprint ``component`` from the form values ("" if that fails)."""
+    try:
+        from plexmix.services.readiness import fingerprint
+
+        # Duck-typed: fingerprint() only reads the attributes _form_settings mirrors.
+        form_settings: Any = _form_settings(state)
+        return fingerprint(component, form_settings, secret)
+    except Exception as e:
+        logger.warning("Could not fingerprint the %s form: %s", component, type(e).__name__)
+        return ""
+
+
+def _record(
+    component: str,
+    level: str,
+    cause: Optional[str] = None,
+    *,
+    message: str = "",
+    fingerprint: str = "",
+) -> None:
+    """Record a test outcome (skipped when the form could not be fingerprinted)."""
+    if not fingerprint:
+        return
+    from plexmix.ui.states.app_state import record_readiness
+
+    record_readiness(component, level, cause, message=message, fingerprint=fingerprint)
+
+
+def _record_provider_failure(
+    component: str, exc: BaseException, fp: str, *, key_required: bool, key: Optional[str]
+) -> None:
+    from plexmix.ui.states.app_state import provider_failure_cause
+
+    cause, message = provider_failure_cause(exc, key_required=key_required, key=key or "")
+    _record(component, "failing", cause, message=message, fingerprint=fp)
 
 
 async def test_plex_connection_impl(state: Any) -> None:
     """Test the Plex server connection using the configured URL and token."""
     async with state:
+        if state.testing_connection:
+            return  # another test is running (its button stays enabled; see _button_row)
         state.testing_connection = True
         state.plex_test_status = "Testing..."
         url = state.plex_url
-        token = state.plex_token
+        token = _secret(state, "plex_token")
+        library = getattr(state, "plex_library", "") or ""
+        # Only a complete configuration can become "ready"; an empty URL, token or
+        # library is a local fact readiness derives on its own.
+        fp = _form_fingerprint(state, "plex", token) if (url and token and library) else ""
 
     try:
         from plexapi.server import PlexServer
@@ -71,29 +140,49 @@ async def test_plex_connection_impl(state: Any) -> None:
         loop = asyncio.get_running_loop()
         libraries = await loop.run_in_executor(None, _probe)
 
+        # Ready only when the library being saved is one of the music libraries.
+        from plexmix.ui.states.app_state import plex_probe_outcome
+
+        level, cause = plex_probe_outcome(libraries, library)
+        _record("plex", level, cause, fingerprint=fp)
+
         async with state:
             state.plex_libraries = libraries
             state.plex_test_status = f"✓ Connected! Found {len(libraries)} music libraries"
             state.testing_connection = False
 
     except Exception as e:
+        from plexmix.ui.states.app_state import plex_failure_cause
+
+        cause = plex_failure_cause(e)
+        message = _friendly_error(e, [token]) if cause == "unknown" else ""
+        _record("plex", "failing", cause, message=message, fingerprint=fp)
         async with state:
-            state.plex_test_status = f"✗ {_friendly_error(e)}"
+            state.plex_test_status = f"✗ {_friendly_error(e, [token])}"
             state.testing_connection = False
 
 
 async def test_ai_provider_impl(state: Any) -> None:
     """Test the configured AI provider with a simple generation request."""
     async with state:
+        if state.testing_connection:
+            return  # another test is running (its button stays enabled; see _button_row)
         state.testing_connection = True
         state.ai_test_status = "Testing AI provider..."
+        # Resolved on the server: a staged replacement wins over the stored value.
+        api_key = sanitize_credential_value(_secret(state, "ai_api_key"))
+        custom_api_key = _secret(state, "ai_custom_api_key")
+        local_auth_token = _secret(state, "ai_local_auth_token")
+        ai_id = "claude" if state.ai_provider in ("anthropic", "claude") else state.ai_provider
+        tested_secret = {"custom": custom_api_key, "local": local_auth_token}.get(ai_id, api_key)
+        ai_fp = _form_fingerprint(state, "ai", tested_secret)
+    secrets = [api_key, custom_api_key, local_auth_token]
 
     try:
         loop = asyncio.get_running_loop()
         # "claude" (the id the CLI setup writes) is an alias for "anthropic"; map it
         # so the real Anthropic test runs instead of falling through to fake success.
         provider = "anthropic" if state.ai_provider == "claude" else state.ai_provider
-        api_key = sanitize_credential_value(state.ai_api_key)
         if provider in ("gemini", "openai", "anthropic", "cohere"):
             validate_api_key(api_key, provider)
 
@@ -189,7 +278,7 @@ async def test_ai_provider_impl(state: Any) -> None:
                     raise ValueError("No model name configured")
                 client = OpenAI(
                     base_url=endpoint,
-                    api_key=state.ai_custom_api_key or "no-key-required",
+                    api_key=custom_api_key or "no-key-required",
                 )
                 response = client.chat.completions.create(
                     model=model,
@@ -233,8 +322,8 @@ async def test_ai_provider_impl(state: Any) -> None:
                     for path in ["", "/health", "/v1/models"]:
                         try:
                             headers = {}
-                            if state.ai_local_auth_token:
-                                headers["Authorization"] = f"Bearer {state.ai_local_auth_token}"
+                            if local_auth_token:
+                                headers["Authorization"] = f"Bearer {local_auth_token}"
                             resp = requests.get(
                                 f"{endpoint.rstrip('/')}{path}", headers=headers, timeout=10
                             )
@@ -250,31 +339,50 @@ async def test_ai_provider_impl(state: Any) -> None:
             # Never report success for a provider we didn't actually exercise.
             raise ValueError(f"Unknown AI provider '{provider}'")
 
+        _record("ai", "ready", fingerprint=ai_fp)
+        from plexmix.services.registry import ai_provider_display_name
+
         async with state:
-            state.ai_test_status = f"✓ {provider.title()} provider test successful"
+            state.ai_test_status = (
+                f"✓ {ai_provider_display_name(provider)} provider test successful"
+            )
             state.testing_connection = False
 
     except ImportError as e:
+        _record_provider_failure("ai", e, ai_fp, key_required=False, key=tested_secret)
         async with state:
-            state.ai_test_status = f"✗ {_friendly_error(e)}"
+            state.ai_test_status = f"✗ {_friendly_error(e, secrets)}"
             state.testing_connection = False
 
     except Exception as e:
+        from plexmix.services.registry import requires_ai_api_key
+
+        _record_provider_failure(
+            "ai", e, ai_fp, key_required=requires_ai_api_key(ai_id), key=tested_secret
+        )
         async with state:
-            state.ai_test_status = f"✗ {_friendly_error(e)}"
+            state.ai_test_status = f"✗ {_friendly_error(e, secrets)}"
             state.testing_connection = False
 
 
 async def test_embedding_provider_impl(state: Any) -> None:
     """Test the configured embedding provider with a sample text."""
     async with state:
+        if state.testing_connection:
+            return  # another test is running (its button stays enabled; see _button_row)
         state.testing_connection = True
         state.embedding_test_status = "Testing embedding provider..."
+        # Resolved on the server: a staged replacement wins over the stored value.
+        api_key = sanitize_credential_value(_secret(state, "embedding_api_key"))
+        custom_api_key = _secret(state, "embedding_custom_api_key")
+        emb_id = state.embedding_provider
+        emb_secret = custom_api_key if emb_id == "custom" else api_key
+        emb_fp = _form_fingerprint(state, "embeddings", emb_secret)
+    secrets = [api_key, custom_api_key]
 
     try:
         loop = asyncio.get_running_loop()
         provider = state.embedding_provider
-        api_key = sanitize_credential_value(state.embedding_api_key)
         if provider in ("gemini", "openai", "cohere"):
             validate_api_key(api_key, provider)
         test_text = "This is a test string for embedding generation."
@@ -348,7 +456,7 @@ async def test_embedding_provider_impl(state: Any) -> None:
                     raise ValueError("No model name configured")
                 client = OpenAI(
                     base_url=endpoint,
-                    api_key=state.embedding_custom_api_key or "no-key-required",
+                    api_key=custom_api_key or "no-key-required",
                 )
                 response = client.embeddings.create(
                     model=model,
@@ -373,7 +481,11 @@ async def test_embedding_provider_impl(state: Any) -> None:
             dim = await loop.run_in_executor(None, test_local_embed)
 
         else:
-            dim = 0
+            raise ValueError(f"Unknown embedding provider '{provider}'")
+
+        # The provider produced an embedding: it works with these values. (A size
+        # that doesn't match the search index is the index's readiness, not this.)
+        _record("embeddings", "ready", fingerprint=emb_fp)
 
         # Verify dimension matches expected
         expected_dim = state.embedding_dimension
@@ -388,11 +500,21 @@ async def test_embedding_provider_impl(state: Any) -> None:
             state.testing_connection = False
 
     except ImportError as e:
+        _record_provider_failure("embeddings", e, emb_fp, key_required=False, key=emb_secret)
         async with state:
-            state.embedding_test_status = f"✗ {_friendly_error(e)}"
+            state.embedding_test_status = f"✗ {_friendly_error(e, secrets)}"
             state.testing_connection = False
 
     except Exception as e:
+        from plexmix.services.registry import requires_embedding_api_key
+
+        _record_provider_failure(
+            "embeddings",
+            e,
+            emb_fp,
+            key_required=requires_embedding_api_key(emb_id),
+            key=emb_secret,
+        )
         async with state:
-            state.embedding_test_status = f"✗ {_friendly_error(e)}"
+            state.embedding_test_status = f"✗ {_friendly_error(e, secrets)}"
             state.testing_connection = False

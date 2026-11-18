@@ -20,6 +20,7 @@ import pytest
 
 from plexmix.database.models import Artist, Album, Track
 from plexmix.database.sqlite_manager import SQLiteManager
+from plexmix.plex.client import PlexReadReport
 from plexmix.plex.sync import SyncEngine
 
 
@@ -100,6 +101,16 @@ def _mock_plex_client(artists=None, albums=None, tracks=None) -> MagicMock:
     mock.get_all_albums.return_value = _batch_gen(albums or [])
     mock.get_all_tracks.return_value = _batch_gen(tracks or [])
     mock.validate_token.return_value = (True, "Connected to Test Server")
+    # What Plex listed: every item given here, and every read worked. The engine
+    # removes a track only when this listing leaves it out.
+    mock.read_report = PlexReadReport(
+        listed_track_keys=frozenset(track.plex_key for track in tracks or []),
+        listed={
+            "artists": len(artists or []),
+            "albums": len(albums or []),
+            "tracks": len(tracks or []),
+        },
+    )
 
     return mock
 
@@ -826,3 +837,176 @@ class TestCancellationEdgeCases:
         row = cursor.fetchone()
         assert row is not None
         assert dict(row)["status"] == "interrupted"
+
+
+# ---------------------------------------------------------------------------
+# PlexConnectionError.code (connect_plex raise paths)
+# ---------------------------------------------------------------------------
+
+# The CLI-facing messages, verbatim from before ``code`` existed.
+_MSG_NOT_CONFIGURED = "Plex not configured. Run 'plexmix config init' first."
+_MSG_UNREACHABLE = "Failed to connect to Plex server."
+_MSG_NO_LIBRARY = "No Plex music library configured. Run 'plexmix config init' to select one."
+_MSG_LIBRARY_MISSING = (
+    "Failed to select Plex library 'Music'. "
+    "It may have been renamed or removed — check your configuration."
+)
+
+# Fake sentinel token; never a real credential.
+_FAKE_TOKEN = "fake-plex-token-sentinel"
+
+
+def _plex_settings(tmp_path: Path, url="http://plex.invalid:32400", token=None, library="Music"):
+    from plexmix.config.settings import DatabaseSettings, PlexSettings, Settings
+
+    return Settings(
+        plex=PlexSettings(url=url, token=token, library_name=library),
+        database=DatabaseSettings(
+            path=str(tmp_path / "test.db"), faiss_index_path=str(tmp_path / "test.index")
+        ),
+    )
+
+
+# (case id, settings kwargs, keyring token, connect() result, select_library() result,
+#  expected code, expected message)
+_PLEX_FAILURE_CASES = [
+    ("no-token", {}, None, True, True, "not_configured", _MSG_NOT_CONFIGURED),
+    ("no-url", {"url": None}, _FAKE_TOKEN, True, True, "not_configured", _MSG_NOT_CONFIGURED),
+    ("unreachable", {}, _FAKE_TOKEN, False, True, "unreachable", _MSG_UNREACHABLE),
+    ("no-library", {"library": None}, _FAKE_TOKEN, True, True, "no_library", _MSG_NO_LIBRARY),
+    ("library-missing", {}, _FAKE_TOKEN, True, False, "library_missing", _MSG_LIBRARY_MISSING),
+]
+
+
+@pytest.fixture
+def _isolated_env(tmp_path, monkeypatch):
+    """Keep any accidental config/keyring access away from the real ones."""
+    monkeypatch.setenv("PLEXMIX_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("PYTHON_KEYRING_BACKEND", "keyring.backends.null.Keyring")
+    for name in ("PLEX_URL", "PLEX_TOKEN", "PLEX_LIBRARY_NAME"):
+        monkeypatch.delenv(name, raising=False)
+    return tmp_path
+
+
+def _patched_plex(keyring_token, connect_ok, select_ok):
+    """Patch the keyring lookup and PlexClient used by ``connect_plex``."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "plexmix.services.sync_service.credentials.get_plex_token",
+            return_value=keyring_token,
+        )
+    )
+    client_cls = stack.enter_context(patch("plexmix.services.sync_service.PlexClient"))
+    client_cls.return_value.connect.return_value = connect_ok
+    client_cls.return_value.select_library.return_value = select_ok
+    return stack, client_cls
+
+
+class TestPlexConnectionErrorCode:
+    @pytest.mark.parametrize(
+        "settings_kwargs, keyring_token, connect_ok, select_ok, code, message",
+        [case[1:] for case in _PLEX_FAILURE_CASES],
+        ids=[case[0] for case in _PLEX_FAILURE_CASES],
+    )
+    def test_each_raise_path_sets_its_code(
+        self,
+        _isolated_env,
+        settings_kwargs,
+        keyring_token,
+        connect_ok,
+        select_ok,
+        code,
+        message,
+    ):
+        from plexmix.services.sync_service import PlexConnectionError, connect_plex
+
+        settings = _plex_settings(_isolated_env, **settings_kwargs)
+        stack, _ = _patched_plex(keyring_token, connect_ok, select_ok)
+        with stack, pytest.raises(PlexConnectionError) as excinfo:
+            connect_plex(settings)
+
+        assert excinfo.value.code == code
+        # The message (and so the CLI text) is exactly what it was before.
+        assert str(excinfo.value) == message
+        assert excinfo.value.args == (message,)
+
+    def test_config_token_fallback_still_connects(self, _isolated_env):
+        from plexmix.services.sync_service import connect_plex
+
+        settings = _plex_settings(_isolated_env, token=_FAKE_TOKEN)
+        stack, client_cls = _patched_plex(None, True, True)
+        with stack:
+            client = connect_plex(settings)
+        assert client is client_cls.return_value
+        client_cls.assert_called_once_with("http://plex.invalid:32400", _FAKE_TOKEN)
+
+    def test_codes_cover_every_raise_path(self):
+        from plexmix.services.sync_service import PLEX_ERROR_CODES
+
+        assert set(PLEX_ERROR_CODES) == {case[5] for case in _PLEX_FAILURE_CASES}
+        assert PLEX_ERROR_CODES == (
+            "not_configured",
+            "unreachable",
+            "no_library",
+            "library_missing",
+        )
+
+    def test_bare_construction_keeps_old_contract(self):
+        import pickle
+
+        from plexmix.services.sync_service import PlexConnectionError
+
+        err = PlexConnectionError(_MSG_UNREACHABLE)
+        assert str(err) == _MSG_UNREACHABLE
+        assert err.args == (_MSG_UNREACHABLE,)
+        assert err.code == "unreachable"  # default for callers that pass no code
+
+        coded = PlexConnectionError(_MSG_NO_LIBRARY, code="no_library")
+        restored = pickle.loads(pickle.dumps(coded))
+        assert str(restored) == _MSG_NO_LIBRARY
+        assert restored.code == "no_library"
+
+    def test_message_never_contains_the_token(self, _isolated_env):
+        from plexmix.services.sync_service import PlexConnectionError, connect_plex
+
+        for _, kwargs, token, connect_ok, select_ok, _code, _msg in _PLEX_FAILURE_CASES:
+            settings = _plex_settings(_isolated_env, **kwargs)
+            stack, _ = _patched_plex(token, connect_ok, select_ok)
+            with stack, pytest.raises(PlexConnectionError) as excinfo:
+                connect_plex(settings)
+            assert _FAKE_TOKEN not in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "settings_kwargs, keyring_token, connect_ok, select_ok, code, message",
+        [case[1:] for case in _PLEX_FAILURE_CASES],
+        ids=[case[0] for case in _PLEX_FAILURE_CASES],
+    )
+    def test_cli_text_is_identical(
+        self,
+        _isolated_env,
+        settings_kwargs,
+        keyring_token,
+        connect_ok,
+        select_ok,
+        code,
+        message,
+    ):
+        """``plexmix sync incremental`` prints the unchanged message and exits 1."""
+        from typer.testing import CliRunner
+
+        from plexmix.cli.main import app
+
+        settings = _plex_settings(_isolated_env, **settings_kwargs)
+        stack, _ = _patched_plex(keyring_token, connect_ok, select_ok)
+        with stack, patch("plexmix.cli.main.setup_logging"), patch(
+            "plexmix.cli.sync_cmd.Settings.load_from_file", return_value=settings
+        ):
+            result = CliRunner().invoke(app, ["sync", "incremental", "--no-embeddings"])
+
+        assert result.exit_code == 1, result.output
+        # Rich may wrap the line at the terminal width; compare word for word.
+        assert " ".join(message.split()) in " ".join(result.output.split())
+        assert code not in result.output  # the code is for the UI, never printed

@@ -1,8 +1,9 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, get_args
 import os
+import re
 
 
 def _data_dir() -> Path:
@@ -24,6 +25,69 @@ def set_config_path_override(path: Optional[str]) -> None:
     _config_path_override = path
 
 
+def _read_yaml_config(path: Path) -> Any:
+    """Parse a config file. A syntax error keeps the file, line and column only.
+
+    PyYAML's own message can repeat text from the file: an unquoted value that
+    starts with ``*`` or ``!`` is read as an alias or a tag and quoted in the
+    problem text. The file can hold a token or a password, so that message is
+    dropped and only the position is kept. A file that parses but is not a mapping
+    of sections is reported the same way, by file and problem.
+    """
+    import yaml  # type: ignore[import-untyped]
+
+    problem = "could not be parsed"
+    try:
+        with open(path, "r") as f:
+            data = yaml.safe_load(f) or {}
+    except (yaml.YAMLError, ValueError, KeyError, AttributeError, TypeError) as exc:
+        # The last four are not YAML errors, but PyYAML lets them through for a value
+        # written after ``!!int``, ``!!float``, ``!!bool`` or ``!!timestamp``, and
+        # their text can quote that value as well. They carry no position.
+        mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+    else:
+        if isinstance(data, dict) and all(isinstance(key, str) for key in data):
+            return data
+        # A list, a single value, or a key that is not text. ``Settings(**data)``
+        # would fail on it with an error that names neither the file nor the problem.
+        problem = "must hold a mapping of settings sections at the top level"
+        mark = yaml.Mark(str(path), 0, 0, 0, None, None)
+    # The errors below are raised after the handler has ended, so the parser's
+    # error is neither their cause nor their context and cannot be printed with them.
+    line, column = getattr(mark, "line", None), getattr(mark, "column", None)
+    if not isinstance(line, int) or not isinstance(column, int):
+        raise yaml.YAMLError(f"{path} could not be parsed") from None
+    # A new mark without a buffer: the position travels, the source text cannot.
+    position = yaml.Mark(str(path), 0, line, column, None, None)
+    raise yaml.MarkedYAMLError(problem=problem, problem_mark=position) from None
+
+
+# The shape of a setting name. An unknown key of another shape is not named in an
+# error: it can hold a value (see ``Settings._hide_odd_section_keys``).
+_SETTING_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,40}")
+_ODD_KEY_TEXT = "unknown key (check for a missing space after a colon)"
+
+
+class SettingsEnvError(ValueError):
+    """An environment variable holds a value of the wrong type.
+
+    The text names the variable and what it must be, never the value, so it is
+    safe to print and to log as it is.
+    """
+
+
+def _cast_env_value(env_key: str, raw: str, cast: Callable[[str], Any]) -> Any:
+    """Convert an environment override. A failure names the variable, never its value."""
+    try:
+        return cast(raw)
+    except (TypeError, ValueError):
+        # The cast's own message quotes the value, so it is dropped: the error
+        # below is raised after this handler has ended.
+        pass
+    expected = "a whole number" if cast is int else "a number" if cast is float else "a valid value"
+    raise SettingsEnvError(f"Environment variable {env_key} must be {expected}.") from None
+
+
 class PlexSettings(BaseSettings):
     url: Optional[str] = Field(default=None, description="Plex server URL")
     token: Optional[str] = Field(default=None, description="Plex authentication token")
@@ -31,6 +95,7 @@ class PlexSettings(BaseSettings):
 
     class Config:
         env_prefix = "PLEX_"
+        hide_input_in_errors = True
 
 
 class DatabaseSettings(BaseSettings):
@@ -39,6 +104,7 @@ class DatabaseSettings(BaseSettings):
 
     class Config:
         env_prefix = "DATABASE_"
+        hide_input_in_errors = True
 
     def get_db_path(self) -> Path:
         if self.path:
@@ -86,6 +152,7 @@ class AISettings(BaseSettings):
 
     class Config:
         env_prefix = "AI_"
+        hide_input_in_errors = True
 
 
 class EmbeddingSettings(BaseSettings):
@@ -111,6 +178,7 @@ class EmbeddingSettings(BaseSettings):
 
     class Config:
         env_prefix = "EMBEDDING_"
+        hide_input_in_errors = True
 
     def get_dimension_for_provider(self, provider: str) -> int:
         from plexmix.services.registry import get_embedding_dimension
@@ -139,6 +207,7 @@ class AudioSettings(BaseSettings):
 
     class Config:
         env_prefix = "AUDIO_"
+        hide_input_in_errors = True
 
     def resolve_path(self, file_path: str) -> str:
         """Remap a Plex file path to a local path using configured prefix swap."""
@@ -172,6 +241,7 @@ class MusicBrainzSettings(BaseSettings):
 
     class Config:
         env_prefix = "MUSICBRAINZ_"
+        hide_input_in_errors = True
 
 
 class UISettings(BaseSettings):
@@ -179,6 +249,7 @@ class UISettings(BaseSettings):
 
     class Config:
         env_prefix = "PLEXMIX_UI_"
+        hide_input_in_errors = True
 
 
 class PlaylistSettings(BaseSettings):
@@ -192,6 +263,7 @@ class PlaylistSettings(BaseSettings):
 
     class Config:
         env_prefix = "PLAYLIST_"
+        hide_input_in_errors = True
 
 
 class LoggingSettings(BaseSettings):
@@ -203,6 +275,7 @@ class LoggingSettings(BaseSettings):
 
     class Config:
         env_prefix = "LOG_"
+        hide_input_in_errors = True
 
     def get_log_path(self) -> Path:
         if self.file_path:
@@ -226,6 +299,11 @@ class Settings(BaseSettings):
         "env_file_encoding": "utf-8",
         "case_sensitive": False,
         "extra": "ignore",
+        # A validation error names the setting and the problem, never the rejected
+        # value (it can be a token, a key or a password). This flag is the one that
+        # counts when a file is loaded; the same flag on each section class covers
+        # a section that is built on its own.
+        "hide_input_in_errors": True,
     }
 
     @classmethod
@@ -286,8 +364,42 @@ class Settings(BaseSettings):
                 parts = yaml_path.split(".")
                 d = config_data
                 for part in parts[:-1]:
-                    d = d.setdefault(part, {})
-                d[parts[-1]] = cast(val)
+                    if isinstance(d, dict):
+                        d = d.setdefault(part, {})
+                if not isinstance(d, dict):
+                    # The file wrote this section as something other than a mapping.
+                    # Skip the overlay; validation then rejects the section by name.
+                    continue
+                d[parts[-1]] = _cast_env_value(env_key, val, cast)
+        return config_data
+
+    @classmethod
+    def _hide_odd_section_keys(cls, config_data: dict) -> dict:
+        """Replace section keys that can hold a value, before validation names them.
+
+        A validation error names the key it rejects. In ``ui: {password:secret}`` the
+        space after the colon is missing, so YAML reads one key, ``password:secret``,
+        and the error would print the password. An unknown key is therefore named
+        only when it has the shape of a setting name (a typing mistake such as
+        ``tokne``). A key of any other shape is replaced by a fixed text.
+        """
+        for section, field in cls.model_fields.items():
+            values = config_data.get(section)
+            # The section class itself, or the class inside an Optional[...].
+            candidates = (field.annotation, *get_args(field.annotation))
+            known = next((c.model_fields for c in candidates if hasattr(c, "model_fields")), None)
+            if not isinstance(values, dict) or known is None:
+                continue
+            odd_keys = [
+                key
+                for key in values
+                if key not in known
+                and not (isinstance(key, str) and _SETTING_NAME_RE.fullmatch(key))
+            ]
+            for key in odd_keys:
+                del values[key]
+            if odd_keys:
+                values[_ODD_KEY_TEXT] = None
         return config_data
 
     @classmethod
@@ -298,25 +410,21 @@ class Settings(BaseSettings):
 
         config = Path(config_path)
         if config.exists():
-            import yaml  # type: ignore[import-untyped]
-
-            with open(config, "r") as f:
-                config_data = yaml.safe_load(f) or {}
-            config_data = cls._apply_env_overrides(config_data)
-            return cls(**config_data)
+            config_data = cls._apply_env_overrides(_read_yaml_config(config))
+            return cls(**cls._hide_odd_section_keys(config_data))
 
         # Backwards-compat: check legacy ~/.plexmix/ path when using default
         # config path with a non-default data dir (e.g. Docker PLEXMIX_DATA_DIR)
         if using_default:
             legacy = Path("~/.plexmix/config.yaml").expanduser()
             if legacy.exists() and str(legacy) != str(config):
-                import yaml  # type: ignore[import-untyped]
+                config_data = cls._apply_env_overrides(_read_yaml_config(legacy))
+                return cls(**cls._hide_odd_section_keys(config_data))
 
-                with open(legacy, "r") as f:
-                    config_data = yaml.safe_load(f) or {}
-                config_data = cls._apply_env_overrides(config_data)
-                return cls(**config_data)
-
+        # No file: each section reads its own environment variables. Run the cast
+        # check first, so a bad value is reported by the name of its variable here
+        # as well. The result is not used.
+        cls._apply_env_overrides({})
         return cls()
 
     def save_to_file(self, config_path: Optional[str] = None) -> None:

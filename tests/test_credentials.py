@@ -90,3 +90,97 @@ class TestValidateApiKey:
         with caplog.at_level(logging.WARNING):
             validate_api_key("key$with*chars", "custom")
         assert not [r for r in caplog.records if "unexpected format" in r.getMessage()]
+
+
+class TestGetCredentialSource:
+    """get_credential_source reports where a secret resolves from, never the value."""
+
+    _SECRET = "SENTINEL-SOURCE-0000"
+
+    def _clear_env(self, monkeypatch):
+        for var in ("PLEX_TOKEN", "GOOGLE_API_KEY", "GEMINI_API_KEY", "OPENAI_API_KEY"):
+            monkeypatch.delenv(var, raising=False)
+
+    def test_env_wins_over_keyring(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("PLEX_TOKEN", self._SECRET)
+        kr = MagicMock()
+        kr.get_password.return_value = "SENTINEL-KEYRING-0000"
+        monkeypatch.setattr(credentials, "_get_keyring", lambda: kr)
+        assert credentials.get_credential_source("plex_token") == "env:PLEX_TOKEN"
+        kr.get_password.assert_not_called()
+
+    def test_names_the_env_var_that_supplies_the_value(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("GEMINI_API_KEY", self._SECRET)
+        monkeypatch.setattr(credentials, "_get_keyring", lambda: None)
+        assert credentials.get_credential_source("google_api_key") == "env:GEMINI_API_KEY"
+
+    def test_keyring_only(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        kr = MagicMock()
+        kr.get_password.return_value = self._SECRET
+        monkeypatch.setattr(credentials, "_get_keyring", lambda: kr)
+        assert credentials.get_credential_source("openai_api_key") == "keyring"
+        kr.get_password.assert_called_once_with(credentials.SERVICE_NAME, "openai_api_key")
+
+    def test_nothing_stored(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        kr = MagicMock()
+        kr.get_password.return_value = None
+        monkeypatch.setattr(credentials, "_get_keyring", lambda: kr)
+        assert credentials.get_credential_source("plex_token") is None
+
+    def test_blank_keyring_value_is_not_stored(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        kr = MagicMock()
+        kr.get_password.return_value = "  \n"
+        monkeypatch.setattr(credentials, "_get_keyring", lambda: kr)
+        assert credentials.get_credential_source("plex_token") is None
+
+    def test_keyring_unavailable(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setattr(credentials, "_get_keyring", lambda: None)
+        assert credentials.get_credential_source("plex_token") is None
+
+    def test_keyring_error_returns_none_and_logs_no_value(self, monkeypatch, caplog):
+        self._clear_env(monkeypatch)
+        kr = MagicMock()
+        kr.get_password.side_effect = RuntimeError(f"backend exploded near {self._SECRET}")
+        monkeypatch.setattr(credentials, "_get_keyring", lambda: kr)
+        with caplog.at_level(logging.DEBUG):
+            assert credentials.get_credential_source("plex_token") is None
+        assert self._SECRET not in caplog.text
+
+    def test_unknown_key_falls_back_to_keyring(self, monkeypatch):
+        kr = MagicMock()
+        kr.get_password.return_value = self._SECRET
+        monkeypatch.setattr(credentials, "_get_keyring", lambda: kr)
+        assert credentials.get_credential_source("not_a_mapped_key") == "keyring"
+
+    @pytest.mark.parametrize("where", ["env", "keyring"])
+    def test_return_value_never_contains_the_secret(self, monkeypatch, caplog, where):
+        self._clear_env(monkeypatch)
+        kr = MagicMock()
+        kr.get_password.return_value = self._SECRET
+        monkeypatch.setattr(credentials, "_get_keyring", lambda: kr)
+        if where == "env":
+            monkeypatch.setenv("PLEX_TOKEN", self._SECRET)
+        with caplog.at_level(logging.DEBUG):
+            source = credentials.get_credential_source("plex_token")
+        assert source is not None
+        assert source != self._SECRET
+        assert self._SECRET not in source
+        assert self._SECRET not in caplog.text
+
+    def test_matches_get_credential_resolution(self, monkeypatch):
+        """The reported source agrees with what get_credential actually returns."""
+        self._clear_env(monkeypatch)
+        kr = MagicMock()
+        kr.get_password.return_value = "SENTINEL-KEYRING-0000"
+        monkeypatch.setattr(credentials, "_get_keyring", lambda: kr)
+        assert credentials.get_credential_source("plex_token") == "keyring"
+        assert credentials.get_credential("plex_token") == "SENTINEL-KEYRING-0000"
+        monkeypatch.setenv("PLEX_TOKEN", "SENTINEL-ENV-0000")
+        assert credentials.get_credential_source("plex_token") == "env:PLEX_TOKEN"
+        assert credentials.get_credential("plex_token") == "SENTINEL-ENV-0000"

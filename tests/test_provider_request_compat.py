@@ -240,3 +240,58 @@ class TestSettingsTestPaths:
         kwargs = client.chat.completions.create.call_args.kwargs
         assert kwargs["max_tokens"] == 10
         assert "max_completion_tokens" not in kwargs
+
+
+class TestSettingsTestReentry:
+    """While a test runs its button stays enabled (focus is kept), so the test
+    helpers themselves ignore another activation until it finishes."""
+
+    def _running(self) -> _FakeState:
+        return _FakeState(
+            testing_connection=True,
+            plex_test_status="Testing...",
+            plex_url="http://plex.invalid:32400",
+            embedding_test_status="",
+            embedding_provider="openai",
+            embedding_api_key="sk-test",
+        )
+
+    def test_plex_test_is_ignored_while_a_test_runs(self):
+        from plexmix.ui.states._settings_testing import test_plex_connection_impl
+
+        state = self._running()
+        with patch("plexapi.server.PlexServer") as server:
+            asyncio.run(test_plex_connection_impl(state))
+        server.assert_not_called()
+        assert state.plex_test_status == "Testing..."
+        assert state.testing_connection is True
+
+    def test_provider_test_is_ignored_while_a_test_runs(self):
+        from plexmix.ui.states._settings_testing import test_ai_provider_impl
+
+        state = self._running()
+        with patch("openai.OpenAI") as mock_openai:
+            asyncio.run(test_ai_provider_impl(state))
+        mock_openai.assert_not_called()
+        assert state.ai_test_status == ""
+        assert state.testing_connection is True
+
+    def test_embedding_test_is_ignored_while_a_test_runs(self):
+        from plexmix.ui.states._settings_testing import test_embedding_provider_impl
+
+        state = self._running()
+        with patch("openai.OpenAI") as mock_openai:
+            asyncio.run(test_embedding_provider_impl(state))
+        mock_openai.assert_not_called()
+        assert state.embedding_test_status == ""
+        assert state.testing_connection is True
+
+    def test_provider_test_runs_and_clears_the_flag_when_idle(self):
+        from plexmix.ui.states._settings_testing import test_ai_provider_impl
+
+        state = _FakeState(ai_provider="openai", ai_model="gpt-5.4-mini", ai_api_key="sk-test")
+        with patch("openai.OpenAI") as mock_openai:
+            mock_openai.return_value.chat.completions.create.return_value = _openai_response("ok")
+            asyncio.run(test_ai_provider_impl(state))
+        assert "✓" in state.ai_test_status
+        assert state.testing_connection is False

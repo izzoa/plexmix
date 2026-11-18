@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "plexmix"
-version = "0.12.0"
+version = "0.13.0"
 description = "AI-powered Plex playlist generator using mood-based queries"
 authors = ["Anthony Izzo"]
 license = "AGPL-3.0-only"
@@ -12,6 +12,10 @@ include = [
     { path = "rxconfig.py", format = ["sdist", "wheel"] },
     { path = "plexmix_ui", format = ["sdist", "wheel"] },
     { path = "assets", format = ["sdist", "wheel"] },
+    # In-package changelog copy for the web UI's changelog dialog. Gitignored: the
+    # publish workflow copies CHANGELOG.md here before `poetry build`; a local build
+    # without the copy skips it and the UI falls back to the checkout file.
+    { path = "src/plexmix/CHANGELOG.md", format = ["sdist", "wheel"] },
 ]
 
 [tool.poetry.dependencies]
@@ -20,6 +24,8 @@ plexapi = "^4.15.0"
 typer = "^0.21.0"
 click = "^8.2"
 rich = "^13.7.0"
+# Server-side changelog rendering in the web UI (already locked via rich).
+markdown-it-py = ">=2.2.0"
 pydantic = "^2.5.0"
 pydantic-settings = "^2.1.0"
 python-dotenv = "^1.0.0"

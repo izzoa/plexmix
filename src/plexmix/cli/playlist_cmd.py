@@ -12,7 +12,11 @@ from rich.table import Table
 from ..config.settings import Settings
 from ..database.sqlite_manager import SQLiteManager
 
-playlist_app = typer.Typer(name="playlist", help="Playlist management (export/import)")
+playlist_app = typer.Typer(
+    name="playlist",
+    help="Playlist management (export/import)",
+    pretty_exceptions_show_locals=False,
+)
 console = Console()
 
 

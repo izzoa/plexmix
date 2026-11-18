@@ -2,12 +2,16 @@ import reflex as rx
 from typing import Optional
 
 
-def loading_spinner(size: int = 24, color: str = "purple") -> rx.Component:
-    """Simple loading spinner."""
+def loading_spinner(size: int = 24, color: str = "var(--accent-fg)") -> rx.Component:
+    """Simple loading spinner.
+
+    ``color`` is a CSS color. Use ``currentColor`` inside buttons so the spinner
+    matches the button ink (e.g. --brand-ink on an orange fill).
+    """
     return rx.icon(
         "loader-2",
         size=size,
-        color=f"{color}.500",
+        color=color,
         class_name="animate-spin",
     )
 
@@ -118,7 +122,7 @@ def button_with_loading(
         rx.cond(
             loading,
             rx.hstack(
-                loading_spinner(size=16, color="white"),
+                loading_spinner(size=16, color="currentColor"),
                 rx.text(text),
                 spacing="2",
                 align="center",

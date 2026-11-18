@@ -7,8 +7,11 @@ from ..config.settings import Settings, get_config_path
 from ..config import credentials
 from ..plex.client import PlexClient
 from ..ai import LOCAL_LLM_MODELS, LOCAL_LLM_DEFAULT_MODEL
+from ..utils.redaction import mask_url_credentials
 
-config_app = typer.Typer(name="config", help="Configuration management")
+config_app = typer.Typer(
+    name="config", help="Configuration management", pretty_exceptions_show_locals=False
+)
 console = Console()
 
 
@@ -279,8 +282,7 @@ def config_test() -> None:
         console.print("Run 'plexmix config init' to set up your configuration.")
         raise typer.Exit(1)
 
-    console.print(f"[dim]Server URL:[/dim] {settings.plex.url}")
-    console.print(f"[dim]Token length:[/dim] {len(plex_token)} characters")
+    console.print(f"[dim]Server URL:[/dim] {mask_url_credentials(settings.plex.url)}")
     console.print()
 
     plex_client = PlexClient(settings.plex.url, plex_token)
@@ -328,7 +330,7 @@ def config_show() -> None:
     table.add_column("Setting", style="cyan")
     table.add_column("Value", style="green")
 
-    table.add_row("Plex URL", settings.plex.url or "Not set")
+    table.add_row("Plex URL", mask_url_credentials(settings.plex.url or "") or "Not set")
     table.add_row("Library", settings.plex.library_name or "Not set")
     table.add_row("Database Path", settings.database.path)
     table.add_row("AI Provider", settings.ai.default_provider)

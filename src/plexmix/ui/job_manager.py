@@ -4,8 +4,13 @@ Two subsystems live here:
 
 ``JobManager`` (``jobs`` singleton)
     Session-scoped job lifecycle (cancel / pause / resume) keyed by
-    ``(client_token, job_type)``.  Used for short-lived, session-bound work
-    like search debounce.
+    ``(client_token, job_type)``.  Used for session-bound work like
+    playlist generation.  The cancel handles live
+    here, not on Reflex state, because Reflex pickles state and
+    ``threading.Event`` cannot be pickled.  Work owned by a session is reaped
+    only after that session has been disconnected for longer than
+    ``SESSION_REAP_GRACE_S`` (see :meth:`JobManager.reap_disconnected`);
+    activity from another session never cancels it.
 
 ``TaskStore`` (``task_store`` singleton)
     Persistent task progress store keyed by ``(user_id, job_type)``.
@@ -17,9 +22,11 @@ Usage::
 
     from plexmix.ui.job_manager import jobs, task_store
 
-    # Session-scoped jobs (unchanged)
-    cancel_event = jobs.start(client_token, "search")
-    jobs.cancel(client_token, "search")
+    # Session-scoped jobs
+    cancel_event = jobs.start(client_token, "generation")
+    jobs.cancel(client_token, "generation")
+    jobs.finish(client_token, "generation", cancel_event)
+    jobs.reap_disconnected(connected_tokens, time.monotonic())  # see session_liveness
 
     # Persistent tasks (new)
     cancel_event = task_store.start("sync")          # returns None if already running
@@ -36,9 +43,14 @@ import threading
 import time
 from dataclasses import dataclass, field
 from threading import Event as ThreadingEvent
-from typing import Any, Dict, Optional
+from typing import Any, Collection, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
+
+# How long a session must stay disconnected before its session-scoped work is
+# reaped. A reload or brief network drop reconnects with the same client token
+# well inside this window.
+SESSION_REAP_GRACE_S: float = 120.0
 
 
 class _JobKey:
@@ -69,12 +81,15 @@ class JobManager:
     - ``cancel_events``: threading.Event for cooperative cancellation
     - ``pause_events``: asyncio.Event for pause/resume
     - ``async_tasks``: asyncio.Task references for cancellation on disconnect
+    - ``disconnected_since``: when each job-owning client token was first seen
+      disconnected, so :meth:`reap_disconnected` can apply a grace period
     """
 
     def __init__(self) -> None:
         self._cancel_events: Dict[_JobKey, ThreadingEvent] = {}
         self._pause_events: Dict[_JobKey, asyncio.Event] = {}
         self._async_tasks: Dict[_JobKey, asyncio.Task] = {}  # type: ignore[type-arg]
+        self._disconnected_since: Dict[str, float] = {}
 
     # ── Start / stop ─────────────────────────────────────────────
 
@@ -95,9 +110,22 @@ class JobManager:
         self._cancel_events[key] = cancel_event
         return cancel_event
 
-    def finish(self, client_token: str, job_type: str) -> None:
-        """Mark a job as finished and remove its resources."""
+    def finish(
+        self,
+        client_token: str,
+        job_type: str,
+        cancel_event: Optional[ThreadingEvent] = None,
+    ) -> None:
+        """Mark a job as finished and remove its resources.
+
+        If *cancel_event* is given, the resources are released only while it is
+        still the job's registered cancel event. A job that has already been
+        superseded by a newer :meth:`start` of the same type (or reaped) then
+        leaves the newer job's handles untouched.
+        """
         key = _JobKey(client_token, job_type)
+        if cancel_event is not None and self._cancel_events.get(key) is not cancel_event:
+            return
         self._cancel_events.pop(key, None)
         self._pause_events.pop(key, None)
         self._async_tasks.pop(key, None)
@@ -170,34 +198,75 @@ class JobManager:
 
     # ── Cleanup ──────────────────────────────────────────────────
 
-    def cancel_stale_clients(self, current_token: str) -> None:
-        """Cancel all jobs that do NOT belong to *current_token*.
+    def _owner_tokens(self) -> Set[str]:
+        """Client tokens that currently own a cancel event, task or pause event."""
+        owners = {k.client_token for k in self._cancel_events}
+        owners.update(k.client_token for k in self._async_tasks)
+        owners.update(k.client_token for k in self._pause_events)
+        return owners
 
-        Called from ``on_load`` so that when a browser window is closed and
-        reopened (new session token), orphaned background tasks from the old
-        session stop pushing state updates to a dead WebSocket.
+    def reap_disconnected(
+        self,
+        connected: Optional[Collection[str]],
+        now: float,
+        grace_s: float = SESSION_REAP_GRACE_S,
+        extra_tokens: Collection[str] = (),
+    ) -> List[str]:
+        """Cancel the work of sessions that have been disconnected for *grace_s*.
+
+        *connected* is the set of client tokens with a live websocket (see
+        :func:`plexmix.ui.session_liveness.connected_client_tokens`), and *now*
+        a ``time.monotonic()`` reading. *extra_tokens* are further sessions to
+        track that own no job handle here (e.g. ones holding staged secret
+        drafts); they get the same grace timer and are returned when reaped,
+        so the caller can drop their other per-session data. For each token
+        that owns a cancel event, task or pause event, or is in *extra_tokens*:
+
+        - connected: its disconnect timer is cleared, so a reconnect within the
+          grace period resets it;
+        - not connected: the first sighting is recorded, and once
+          ``now - since >= grace_s`` its work is cancelled with
+          :meth:`cleanup_client` semantics (cancel events set, tasks cancelled,
+          pause events set so paused loops can exit).
+
+        When *connected* is ``None`` (liveness unknown) nothing is cancelled and
+        no timer changes. Activity from one session never cancels another
+        session's work. Returns the reaped tokens.
         """
-        stale_keys = [k for k in self._cancel_events if k.client_token != current_token]
-        for key in stale_keys:
-            logger.info("Cancelling stale job %s (current token: %s…)", key, current_token[:8])
-            self._cancel_events[key].set()
-            self._cancel_events.pop(key, None)
+        if connected is None:
+            return []
 
-        stale_tasks = [k for k in self._async_tasks if k.client_token != current_token]
-        for key in stale_tasks:
-            task = self._async_tasks.pop(key, None)
-            if task is not None and not task.done():
-                task.cancel()
+        live = frozenset(connected)
+        owners = self._owner_tokens() | set(extra_tokens)
 
-        stale_pauses = [k for k in self._pause_events if k.client_token != current_token]
-        for key in stale_pauses:
-            # Unblock any paused loops so they can see the cancellation
-            event = self._pause_events.pop(key, None)
-            if event is not None:
-                event.set()
+        # Forget timers of tokens whose work finished on its own.
+        for token in list(self._disconnected_since):
+            if token not in owners:
+                self._disconnected_since.pop(token, None)
+
+        reaped: List[str] = []
+        for token in sorted(owners):
+            if token in live:
+                self._disconnected_since.pop(token, None)
+                continue
+            since = self._disconnected_since.setdefault(token, now)
+            if now - since >= grace_s:
+                logger.info(
+                    "Reaping session-scoped work of client %s… (disconnected for %.0fs)",
+                    token[:8],
+                    now - since,
+                )
+                self.cleanup_client(token)
+                reaped.append(token)
+        return reaped
 
     def cleanup_client(self, client_token: str) -> None:
-        """Clean up all jobs for a disconnected client."""
+        """Clean up all jobs for a disconnected client.
+
+        Sets the client's cancel events, cancels its tasks and sets its pause
+        events (so a paused loop wakes up and sees the cancellation), then
+        drops all of its handles.
+        """
         keys_to_remove = [k for k in self._cancel_events if k.client_token == client_token]
         for key in keys_to_remove:
             self._cancel_events[key].set()
@@ -211,7 +280,11 @@ class JobManager:
 
         keys_to_remove = [k for k in self._pause_events if k.client_token == client_token]
         for key in keys_to_remove:
-            self._pause_events.pop(key, None)
+            event = self._pause_events.pop(key, None)
+            if event is not None:
+                event.set()
+
+        self._disconnected_since.pop(client_token, None)
 
     def cleanup_all(self) -> None:
         """Clean up all jobs on process exit."""
@@ -225,6 +298,7 @@ class JobManager:
         self._async_tasks.clear()
 
         self._pause_events.clear()
+        self._disconnected_since.clear()
 
     @property
     def active_job_count(self) -> int:

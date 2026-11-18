@@ -1,7 +1,21 @@
+import asyncio
 import reflex as rx
 import logging
 from datetime import datetime
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional
+
 from plexmix.ui.states.app_state import AppState
+from plexmix.ui.utils.a11y import focus_by_id_script
+from plexmix.ui.utils.errors import friendly_error
+from plexmix.ui.utils.playlist_identity import (
+    cover_seed,
+    cover_variant,
+    short_date,
+    top_artists_label,
+)
+
+if TYPE_CHECKING:
+    from reflex.event import EventSpec
 
 
 def _str_dict(d: dict) -> dict[str, str]:
@@ -10,6 +24,154 @@ def _str_dict(d: dict) -> dict[str, str]:
 
 
 logger = logging.getLogger(__name__)
+
+# Element id prefixes of the playlist detail dialog's reorder buttons
+# (``hist-move-up-<index>`` / ``hist-move-down-<index>``, 0-based). pages/history.py
+# renders the same ids so focus can follow a moved track.
+MOVE_UP_ID_PREFIX = "hist-move-up-"
+MOVE_DOWN_ID_PREFIX = "hist-move-down-"
+
+# Element id and form field name of the client-owned History search field
+# (pages/history.py). A handler that changes ``search_query`` for any reason other
+# than the field's own commit must also return ``rx.set_value(SEARCH_INPUT_ID, ...)``
+# (webui-input-responsiveness D3).
+SEARCH_INPUT_ID = "hist-search"
+SEARCH_FIELD_NAME = "q"
+
+# Deep link from the Dashboard's recent playlists: /history?playlist=<id> opens
+# that playlist's detail once the list has loaded.
+PLAYLIST_QUERY_PARAM = "playlist"
+PLAYLIST_NOT_FOUND_MESSAGE = "That playlist no longer exists."
+# Drops the consumed ?playlist= from the address bar without a navigation, so a
+# reconnect (which re-runs on_load) doesn't reopen a dialog the user closed.
+STRIP_PLAYLIST_PARAM_JS = "history.replaceState(history.state,'','/history')"
+
+# Words for the sort button's accessible name, per sort key: (descending, ascending).
+_SORT_DIRECTION_WORDS: dict[str, tuple[str, str]] = {
+    "created_date": ("newest first", "oldest first"),
+    "name": ("Z to A", "A to Z"),
+    "track_count": ("most tracks first", "fewest tracks first"),
+}
+
+
+def _format_total_duration(duration_ms: int) -> str:
+    """Return a total duration as ``H:MM:SS``, or ``M:SS`` under an hour."""
+    total_seconds = max(int(duration_ms or 0), 0) // 1000
+    hours, rest = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(rest, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def _reorder_focus_id(moved_up: bool, new_index: int, total: int) -> str:
+    """Return the id of the reorder button that should hold focus after a move.
+
+    Focus stays on the moved track's same-direction control at its new index. When
+    the track reached the end it was moving towards, that control is disabled, so
+    the opposite control is targeted instead.
+    """
+    if moved_up:
+        if new_index <= 0:
+            return f"{MOVE_DOWN_ID_PREFIX}{new_index}"
+        return f"{MOVE_UP_ID_PREFIX}{new_index}"
+    if new_index >= total - 1:
+        return f"{MOVE_UP_ID_PREFIX}{new_index}"
+    return f"{MOVE_DOWN_ID_PREFIX}{new_index}"
+
+
+def _read_playlists() -> list[dict[str, str]]:
+    """Read every saved playlist with its card identity (blocking; run in an executor).
+
+    Returns ``[]`` when there is no library database yet. Sorted newest first.
+    """
+    from plexmix.config.settings import Settings
+    from plexmix.database.sqlite_manager import SQLiteManager
+
+    settings = Settings.load_from_file()
+    db_path = settings.database.get_db_path()
+    if not db_path.exists():
+        return []
+    db = SQLiteManager(str(db_path))
+    db.connect()
+    try:
+        playlists = [_str_dict(p.model_dump()) for p in db.get_playlists()]
+        # Card identity: top artists are supplementary, so a failed read leaves
+        # them out instead of failing the whole list.
+        try:
+            top_artists = db.get_playlist_top_artists()
+        except Exception as e:
+            logger.warning("Could not load playlist top artists: %s", e)
+            top_artists = {}
+    finally:
+        db.close()
+    playlists = HistoryState._decorate_playlists(playlists, top_artists)
+    playlists.sort(key=lambda p: p.get("created_at", ""), reverse=True)
+    return playlists
+
+
+def _read_playlist_detail(
+    playlist_id: str,
+) -> Optional[tuple[dict[str, str], list[dict[str, str]]]]:
+    """Read one playlist and its tracks for the detail dialog (blocking).
+
+    Returns ``(playlist, tracks)`` with string values, or None when the id is not
+    a number, the database is missing or no playlist has that id.
+    """
+    from plexmix.config.settings import Settings
+    from plexmix.database.sqlite_manager import SQLiteManager
+
+    text = str(playlist_id or "").strip()
+    if not text.isdigit():
+        return None
+    pid = int(text)
+    settings = Settings.load_from_file()
+    db_path = settings.database.get_db_path()
+    if not db_path.exists():
+        return None
+    db = SQLiteManager(str(db_path))
+    db.connect()
+    try:
+        playlist = db.get_playlist_by_id(pid)
+        if not playlist:
+            return None
+        playlist_dict = _str_dict(playlist.model_dump())
+        tracks = db.get_playlist_tracks(pid)
+    finally:
+        db.close()
+
+    formatted_tracks = []
+    total_duration_ms = 0
+    for i, track in enumerate(tracks):
+        duration_ms = track.get("duration_ms", 0) or 0
+        total_duration_ms += duration_ms
+        if duration_ms:
+            minutes = duration_ms // 60000
+            seconds = (duration_ms // 1000) % 60
+            duration_formatted = f"{minutes}:{seconds:02d}"
+        else:
+            duration_formatted = "0:00"
+        formatted_tracks.append(
+            {
+                "position": str(i + 1),
+                "id": str(track.get("id", "")),
+                "title": str(track.get("title", "Unknown")),
+                "artist": str(track.get("artist_name", "Unknown")),
+                "album": str(track.get("album_title", "Unknown")),
+                "duration_ms": str(duration_ms),
+                "duration_formatted": duration_formatted,
+                "genre": str(track.get("genre", "") or ""),
+                "year": str(track.get("year", "") or ""),
+            }
+        )
+
+    # Identity shown in the dialog description: count, total duration and created
+    # date (the prompt is mood_query).
+    playlist_dict["track_count"] = str(len(formatted_tracks))
+    playlist_dict["total_duration_ms"] = str(total_duration_ms)
+    playlist_dict["total_duration_formatted"] = _format_total_duration(total_duration_ms)
+    playlist_dict["created_date"] = short_date(playlist_dict.get("created_at", ""))
+    return playlist_dict, formatted_tracks
 
 
 class HistoryState(AppState):
@@ -28,13 +190,21 @@ class HistoryState(AppState):
     sort_descending: bool = True
     search_query: str = ""
 
-    # UI feedback
-    loading_playlists: bool = False
+    # UI feedback. ``loading_playlists`` starts True so the first render is a
+    # skeleton, never "No playlists yet" before the list is known. A failed load
+    # sets ``load_failed`` and ``error_message`` (an error callout with Retry in
+    # the playlist area); a deep link to a playlist that no longer exists sets
+    # only ``error_message`` (shown above the list).
+    loading_playlists: bool = True
+    load_failed: bool = False
     loading_details: bool = False
     deleting_playlist: bool = False
     exporting: bool = False
     action_message: str = ""
     error_message: str = ""
+
+    # /history?playlist=<id> waiting for the list to load (backend only).
+    _pending_playlist_id: str = ""
 
     # Import modal
     is_import_modal_open: bool = False
@@ -42,146 +212,196 @@ class HistoryState(AppState):
     import_status: str = ""
     importing: bool = False
 
-    def on_load(self):
+    # Playlist detail reorder: the last move, read by an sr-only role=status region
+    # ("Moved <title> to position k of N").
+    reorder_announcement: str = ""
+
+    def _playlist_query_param(self) -> str:
+        """The ``?playlist=`` value of the current page URL, or ""."""
+        try:
+            value = self.router.url.query_parameters.get(PLAYLIST_QUERY_PARAM)
+        except Exception:
+            return ""
+        if isinstance(value, (list, tuple)):  # a repeated ?playlist=a&playlist=b
+            value = value[0] if value else ""
+        return value.strip() if isinstance(value, str) else ""
+
+    @rx.event
+    def on_load(self) -> Any:
         if not self.check_auth():
             self.is_page_loading = False
-            return
+            return None
         self.load_app_data()
+        deep_link = self._playlist_query_param()
+        if not deep_link:
+            return HistoryState.load_playlists
+        # Opened from a Dashboard recent row: show that playlist once the list has
+        # loaded (load_playlists), then drop the parameter from the address bar.
+        self._pending_playlist_id = deep_link
+        return [HistoryState.load_playlists, rx.call_script(STRIP_PLAYLIST_PARAM_JS)]
+
+    @rx.event
+    def retry_load(self) -> Any:
+        """Retry after a failed load: back to the loading placeholder, then reload."""
+        self.loading_playlists = True
+        self.load_failed = False
+        self.error_message = ""
         return HistoryState.load_playlists
 
-    @rx.event(background=True)
-    async def load_playlists(self):
-        async with self:
-            self.loading_playlists = True
+    @rx.event
+    def dismiss_error(self) -> None:
+        """Hide the message above the list (for example a missing deep-linked playlist)."""
+        if not self.load_failed:
             self.error_message = ""
 
+    @rx.event
+    def clear_search(self) -> Any:
+        """Clear the search (the "no playlists match" state's action).
+
+        The field is client-owned, so its text is emptied with ``rx.set_value``
+        (webui-input-responsiveness D3), and focus moves to it because the
+        Clear search button leaves the page with the list.
+        """
+        self.search_query = ""
+        return [
+            rx.set_value(SEARCH_INPUT_ID, ""),
+            rx.call_script(focus_by_id_script(SEARCH_INPUT_ID)),
+        ]
+
+    @staticmethod
+    def _decorate_playlists(
+        playlists: list[dict[str, str]], top: dict[int, list[str]]
+    ) -> list[dict[str, str]]:
+        """Return copies of ``playlists`` with the card identity fields added.
+
+        Adds ``cover_variant`` (the swatch, seeded by the prompt or else the name),
+        ``created_date`` (``YYYY-MM-DD``, or ``""`` when unknown) and ``top_artists``
+        (up to three names from ``top``, keyed by playlist id; ``""`` when none).
+        """
+        decorated: list[dict[str, str]] = []
+        for playlist in playlists:
+            try:
+                artists = top.get(int(playlist.get("id") or ""), [])
+            except (TypeError, ValueError):
+                artists = []
+            seed = cover_seed(playlist.get("mood_query") or "", playlist.get("name") or "")
+            decorated.append(
+                {
+                    **playlist,
+                    "cover_variant": str(cover_variant(seed)),
+                    "created_date": short_date(playlist.get("created_at") or ""),
+                    "top_artists": top_artists_label(artists),
+                }
+            )
+        return decorated
+
+    @rx.event(background=True)
+    async def load_playlists(self) -> None:
+        """Load the playlists off the event loop; then open a deep-linked one.
+
+        Shows the loading placeholder only while nothing is listed yet (a revisit
+        keeps the last real list while it refreshes). A failure is shown in the
+        playlist area with Retry (``load_failed``), never as an empty state. A
+        pending ``?playlist=`` id opens its detail dialog, or says the playlist
+        no longer exists.
+        """
+        async with self:
+            self.loading_playlists = True
+            if self.load_failed:
+                self.load_failed = False
+                self.error_message = ""
+            pending = self._pending_playlist_id
+            self._pending_playlist_id = ""
+            if pending:
+                self.error_message = ""
+
+        loop = asyncio.get_running_loop()
         try:
-            from plexmix.config.settings import Settings
-            from plexmix.database.sqlite_manager import SQLiteManager
-
-            settings = Settings.load_from_file()
-            db_path = settings.database.get_db_path()
-
-            if db_path.exists():
-                db = SQLiteManager(str(db_path))
-                db.connect()
-
-                # Get all playlists and convert to string dicts
-                playlist_objs = db.get_playlists()
-                playlists = [_str_dict(p.model_dump()) for p in playlist_objs]
-
-                # Sort by created date (newest first) by default
-                playlists.sort(key=lambda p: p.get("created_at", ""), reverse=True)
-
-                db.close()
-
-                async with self:
-                    self.playlists = playlists
-                    self.loading_playlists = False
-                    self.is_page_loading = False
-            else:
-                async with self:
-                    self.playlists = []
-                    self.loading_playlists = False
-                    self.is_page_loading = False
-
+            playlists = await loop.run_in_executor(None, _read_playlists)
         except Exception as e:
-            logger.error(f"Error loading playlists: {e}")
+            logger.error("Error loading playlists: %s", e)
             async with self:
-                self.playlists = []
                 self.loading_playlists = False
                 self.is_page_loading = False
-                self.error_message = f"Error loading playlists: {str(e)}"
+                self.load_failed = True
+                self.error_message = friendly_error(e)
+                # Keep the deep link for the retry.
+                self._pending_playlist_id = pending
+            return
 
-    def select_playlist(self, playlist_id: str):
+        detail: Optional[tuple[dict[str, str], list[dict[str, str]]]] = None
+        if pending:
+            try:
+                detail = await loop.run_in_executor(None, _read_playlist_detail, pending)
+            except Exception as e:
+                logger.error("Error opening playlist %s: %s", pending, e)
+                detail = None
+
+        async with self:
+            self.playlists = playlists
+            # Keep the user's chosen order (and the sort button's name,
+            # sort_button_label) true after a reload.
+            self.sort_playlists(self.sort_by)
+            self.loading_playlists = False
+            self.is_page_loading = False
+            if pending:
+                if detail is None:
+                    self.error_message = PLAYLIST_NOT_FOUND_MESSAGE
+                else:
+                    self._show_playlist_detail(*detail)
+
+    def _show_playlist_detail(self, playlist: dict[str, str], tracks: list[dict[str, str]]) -> None:
+        """Fill and open the detail dialog."""
+        self.selected_playlist_tracks = tracks
+        self.selected_playlist = playlist
+        self.reorder_announcement = ""
+        self.is_detail_modal_open = True
+
+    def select_playlist(self, playlist_id: str) -> Any:
+        """Open a playlist's detail dialog (a card's activation)."""
         try:
-            from plexmix.config.settings import Settings
-            from plexmix.database.sqlite_manager import SQLiteManager
-
-            settings = Settings.load_from_file()
-            db_path = settings.database.get_db_path()
-            pid = int(playlist_id)
-
-            if db_path.exists():
-                db = SQLiteManager(str(db_path))
-                db.connect()
-
-                # Get playlist details
-                playlist = db.get_playlist_by_id(pid)
-                if playlist:
-                    playlist_dict = _str_dict(playlist.model_dump())
-
-                    # Get tracks for this playlist
-                    tracks = db.get_playlist_tracks(pid)
-
-                    # Format track data for display
-                    formatted_tracks = []
-                    total_duration_ms = 0
-                    for i, track in enumerate(tracks):
-                        duration_ms = track.get("duration_ms", 0) or 0
-                        total_duration_ms += duration_ms
-                        if duration_ms:
-                            minutes = duration_ms // 60000
-                            seconds = (duration_ms // 1000) % 60
-                            duration_formatted = f"{minutes}:{seconds:02d}"
-                        else:
-                            duration_formatted = "0:00"
-
-                        formatted_tracks.append(
-                            {
-                                "position": str(i + 1),
-                                "id": str(track.get("id", "")),
-                                "title": str(track.get("title", "Unknown")),
-                                "artist": str(track.get("artist_name", "Unknown")),
-                                "album": str(track.get("album_title", "Unknown")),
-                                "duration_ms": str(duration_ms),
-                                "duration_formatted": duration_formatted,
-                                "genre": str(track.get("genre", "") or ""),
-                                "year": str(track.get("year", "") or ""),
-                            }
-                        )
-
-                    self.selected_playlist_tracks = formatted_tracks
-
-                    # Calculate and format total duration
-                    total_minutes = total_duration_ms // 60000
-                    total_seconds = (total_duration_ms // 1000) % 60
-                    playlist_dict["total_duration_ms"] = str(total_duration_ms)
-                    playlist_dict[
-                        "total_duration_formatted"
-                    ] = f"{total_minutes}:{total_seconds:02d}"
-                    self.selected_playlist = playlist_dict
-
-                    # Open modal
-                    self.is_detail_modal_open = True
-
-                db.close()
+            detail = _read_playlist_detail(playlist_id)
         except Exception as e:
             logger.error(f"Error selecting playlist: {e}")
             return rx.toast.error(f"Error loading playlist: {str(e)}")
+        if detail is not None:
+            self._show_playlist_detail(*detail)
+        return None
 
-    def move_track_up(self, index: str):
-        """Move a track one position up in the playlist."""
-        idx = int(index)
-        if idx <= 0 or idx >= len(self.selected_playlist_tracks):
-            return
-        tracks = list(self.selected_playlist_tracks)
-        tracks[idx], tracks[idx - 1] = tracks[idx - 1], tracks[idx]
+    def _move_track(self, index: str, step: int) -> Optional["EventSpec"]:
+        """Swap the track at ``index`` with its neighbour ``step`` (-1 up, +1 down).
+
+        Renumbers positions, announces the move in ``reorder_announcement`` and
+        returns a script that keeps focus on the moved track's reorder control at
+        its new index. An unparseable or out-of-range move changes nothing and
+        returns None.
+        """
+        try:
+            idx = int(index)
+        except (TypeError, ValueError):
+            return None
+        total = len(self.selected_playlist_tracks)
+        new_idx = idx + step
+        if idx < 0 or idx >= total or new_idx < 0 or new_idx >= total:
+            return None
+        tracks = [dict(t) for t in self.selected_playlist_tracks]
+        tracks[idx], tracks[new_idx] = tracks[new_idx], tracks[idx]
         # Renumber positions
         for i, t in enumerate(tracks):
             t["position"] = str(i + 1)
         self.selected_playlist_tracks = tracks
+        title = tracks[new_idx].get("title") or "Track"
+        self.reorder_announcement = f"Moved {title} to position {new_idx + 1} of {total}"
+        target = _reorder_focus_id(step < 0, new_idx, total)
+        return rx.call_script(focus_by_id_script(target))
 
-    def move_track_down(self, index: str):
-        """Move a track one position down in the playlist."""
-        idx = int(index)
-        if idx < 0 or idx >= len(self.selected_playlist_tracks) - 1:
-            return
-        tracks = list(self.selected_playlist_tracks)
-        tracks[idx], tracks[idx + 1] = tracks[idx + 1], tracks[idx]
-        for i, t in enumerate(tracks):
-            t["position"] = str(i + 1)
-        self.selected_playlist_tracks = tracks
+    def move_track_up(self, index: str) -> Optional["EventSpec"]:
+        """Move a track one position up in the playlist (see ``_move_track``)."""
+        return self._move_track(index, -1)
+
+    def move_track_down(self, index: str) -> Optional["EventSpec"]:
+        """Move a track one position down in the playlist (see ``_move_track``)."""
+        return self._move_track(index, 1)
 
     @rx.event(background=True)
     async def save_track_order(self):
@@ -242,17 +462,19 @@ class HistoryState(AppState):
         self.is_detail_modal_open = False
         return rx.redirect("/generator")
 
-    def close_detail_modal(self):
+    def close_detail_modal(self) -> None:
         self.is_detail_modal_open = False
         self.selected_playlist = {}
         self.selected_playlist_tracks = []
+        self.reorder_announcement = ""
 
-    def set_detail_modal_open(self, is_open: bool):
+    def set_detail_modal_open(self, is_open: bool) -> None:
         """Set the detail modal open state and clear data when closing."""
         self.is_detail_modal_open = is_open
         if not is_open:
             self.selected_playlist = {}
             self.selected_playlist_tracks = []
+            self.reorder_announcement = ""
 
     def set_error_message(self, message: str):
         """Set the error message state."""
@@ -270,14 +492,19 @@ class HistoryState(AppState):
         self.playlist_to_delete = ""
         self.is_delete_confirmation_open = False
 
-    def set_delete_confirmation_open(self, is_open: bool):
-        """Handle dialog open/close via on_open_change."""
+    def set_delete_confirmation_open(self, is_open: bool) -> None:
+        """Handle the alert dialog's on_open_change (Escape or Cancel).
+
+        Idempotent: closing an already-closed dialog (for example after
+        ``confirm_delete`` closed it by state) just leaves it closed with nothing
+        pending, so the confirm button never needs ``alert_dialog.action``.
+        """
         self.is_delete_confirmation_open = is_open
         if not is_open:
             self.playlist_to_delete = ""
 
     @rx.event(background=True)
-    async def confirm_delete(self):
+    async def confirm_delete(self) -> AsyncGenerator[Any, None]:
         async with self:
             if not self.access_allowed():
                 return
@@ -285,7 +512,11 @@ class HistoryState(AppState):
                 return
 
             playlist_id_str = self.playlist_to_delete
+            # Close the confirmation by state (its Delete is not an
+            # alert_dialog.action) and clear the pending id so a double
+            # activation can't delete twice.
             self.is_delete_confirmation_open = False
+            self.playlist_to_delete = ""
 
         try:
             from plexmix.config.settings import Settings
@@ -294,27 +525,24 @@ class HistoryState(AppState):
             settings = Settings.load_from_file()
             db_path = settings.database.get_db_path()
 
-            db = SQLiteManager(str(db_path))
-            db.connect()
-
-            # Delete playlist
-            db.delete_playlist(int(playlist_id_str))
-
-            db.close()
-
-            # Reload playlists - yield to let Reflex scheduler manage execution
-            yield HistoryState.load_playlists()
+            with SQLiteManager(str(db_path)) as db:
+                db.delete_playlist(int(playlist_id_str))
 
             async with self:
-                self.playlist_to_delete = ""
-
-                # Close detail modal if it was open for this playlist
+                # Drop the card in the same update that closes the detail dialog:
+                # the dialog's focus restore then finds its opener gone and falls
+                # back to the page heading (#main-heading) instead of <body>.
+                self.playlists = [p for p in self.playlists if p.get("id") != playlist_id_str]
                 if self.selected_playlist and self.selected_playlist.get("id") == playlist_id_str:
                     self.is_detail_modal_open = False
                     self.selected_playlist = {}
                     self.selected_playlist_tracks = []
+                    self.reorder_announcement = ""
 
             yield rx.toast.success("Playlist deleted successfully!")
+
+            # Reload playlists - yield to let Reflex scheduler manage execution
+            yield HistoryState.load_playlists()
 
         except Exception as e:
             yield rx.toast.error(f"Error deleting playlist: {str(e)}")
@@ -679,6 +907,19 @@ class HistoryState(AppState):
         return None
 
     @rx.var(cache=True)
+    def has_playlists(self) -> bool:
+        """True when at least one playlist is saved (whatever the search shows)."""
+        return bool(self.playlists)
+
+    @rx.var(cache=True)
+    def show_loading(self) -> bool:
+        """Show the loading placeholder: a load runs and nothing is listed yet.
+
+        A revisit keeps showing the last real list while it reloads instead.
+        """
+        return bool(self.loading_playlists) and not self.playlists and not self.load_failed
+
+    @rx.var(cache=True)
     def filtered_playlists(self) -> list[dict[str, str]]:
         if not self.search_query:
             return self.playlists
@@ -689,8 +930,26 @@ class HistoryState(AppState):
             if q in (p.get("name") or "").lower() or q in (p.get("mood_query") or "").lower()
         ]
 
-    def set_search_query(self, query: str):
+    def set_search_query(self, query: str) -> None:
+        """Commit the search field (debounced while typing, and on blur).
+
+        An unchanged value is a no-op, so a blur commit after a debounced one (or
+        the reverse) costs nothing.
+        """
+        if query == self.search_query:
+            return
         self.search_query = query
+
+    @rx.event
+    def apply_search_form(self, form_data: dict[str, Any]) -> None:
+        """Apply the submitted search form (Enter in the field) right away.
+
+        Reads the field's ``q`` value from ``form_data``, never from state, so a
+        debounced commit still in flight cannot leave the list filtered by older
+        text. A missing key leaves the search unchanged.
+        """
+        if SEARCH_FIELD_NAME in form_data:
+            self.set_search_query(str(form_data[SEARCH_FIELD_NAME] or ""))
 
     _SORT_LABEL_TO_KEY = {
         "Date Created": "created_date",
@@ -702,6 +961,23 @@ class HistoryState(AppState):
     @rx.var(cache=True)
     def sort_by_label(self) -> str:
         return self._SORT_KEY_TO_LABEL.get(self.sort_by, "Date Created")
+
+    @rx.var(cache=True)
+    def selected_track_count(self) -> int:
+        """Number of tracks in the open playlist (bounds its Move down controls)."""
+        return len(self.selected_playlist_tracks)
+
+    @rx.var(cache=True)
+    def sort_button_label(self) -> str:
+        """Accessible name for the sort button: the key (its visible text) and order.
+
+        For example "Sort playlists by Date Created, newest first".
+        """
+        key = self.sort_by if self.sort_by in _SORT_DIRECTION_WORDS else "created_date"
+        label = self._SORT_KEY_TO_LABEL.get(key, "Date Created")
+        descending, ascending = _SORT_DIRECTION_WORDS[key]
+        order = descending if self.sort_descending else ascending
+        return f"Sort playlists by {label}, {order}"
 
     def sort_playlists_by_label(self, label: str):
         key = self._SORT_LABEL_TO_KEY.get(label, "created_date")

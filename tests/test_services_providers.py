@@ -5,15 +5,20 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from plexmix.config.credentials import InvalidAPIKeyError
 from plexmix.config.settings import Settings
 from plexmix.services.providers import (
+    ProviderFailure,
     build_ai_provider,
     build_embedding_generator,
+    build_embedding_generator_with_reason,
     canonical_ai_provider,
+    diagnose_embedding_provider,
     local_provider_kwargs,
     resolve_ai_api_key,
     resolve_embedding_api_key,
 )
+from plexmix.services.readiness import Cause
 
 
 # ---------------------------------------------------------------------------
@@ -551,3 +556,222 @@ class TestBuildEmbeddingGenerator:
         assert "custom_endpoint" not in kwargs
         assert "custom_api_key" not in kwargs
         assert "custom_dimension" not in kwargs
+
+
+# ===========================================================================
+# build_embedding_generator_with_reason / diagnose_embedding_provider
+# ===========================================================================
+
+_SENTINEL_KEY = "sk-SENTINEL-not-a-real-key-0001"
+
+
+def _embedding_settings(tmp_path, provider, extra=""):
+    cfg = _make_settings_yaml(tmp_path, f"embedding:\n  default_provider: {provider}\n{extra}")
+    return Settings.load_from_file(cfg)
+
+
+class TestBuildEmbeddingGeneratorWithReason:
+    """The reason-returning builder classifies construction failures."""
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value="ekey")
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_success_returns_generator_and_no_failure(self, mock_gen_cls, mock_resolve, tmp_path):
+        mock_gen_cls.return_value = MagicMock()
+        generator, failure = build_embedding_generator_with_reason(
+            _embedding_settings(tmp_path, "openai")
+        )
+        assert generator is mock_gen_cls.return_value
+        assert failure is None
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value=None)
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_missing_key_gives_missing_api_key(self, mock_gen_cls, mock_resolve, tmp_path):
+        generator, failure = build_embedding_generator_with_reason(
+            _embedding_settings(tmp_path, "openai")
+        )
+        assert generator is None
+        assert isinstance(failure, ProviderFailure)
+        assert failure.cause == Cause.MISSING_API_KEY
+        assert failure.provider == "openai"
+        mock_gen_cls.assert_not_called()
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value=None)
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_import_error_gives_missing_dependency_with_package(
+        self, mock_gen_cls, mock_resolve, tmp_path
+    ):
+        mock_gen_cls.side_effect = ImportError(
+            "sentence-transformers not installed. Run: pip install sentence-transformers"
+        )
+        generator, failure = build_embedding_generator_with_reason(
+            _embedding_settings(tmp_path, "local")
+        )
+        assert generator is None
+        assert failure.cause == Cause.MISSING_DEPENDENCY
+        assert failure.package == "sentence-transformers"
+        assert failure.provider == "local"
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value="ekey")
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_module_not_found_uses_exc_name(self, mock_gen_cls, mock_resolve, tmp_path):
+        mock_gen_cls.side_effect = ModuleNotFoundError(
+            "No module named 'sentence_transformers'", name="sentence_transformers"
+        )
+        _, failure = build_embedding_generator_with_reason(_embedding_settings(tmp_path, "local"))
+        assert failure.cause == Cause.MISSING_DEPENDENCY
+        assert failure.package == "sentence-transformers"
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "Failed to load local model x",
+            "Failed to load local model all-MiniLM-L6-v2: CUDA out of memory",
+            "Failed to start local embedding worker for x. See logs for details.",
+        ],
+    )
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value=None)
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_local_model_runtime_error_gives_model_load_failed(
+        self, mock_gen_cls, mock_resolve, message, tmp_path
+    ):
+        mock_gen_cls.side_effect = RuntimeError(message)
+        _, failure = build_embedding_generator_with_reason(_embedding_settings(tmp_path, "local"))
+        assert failure.cause == Cause.MODEL_LOAD_FAILED
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value="bad key")
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_untransportable_key_gives_invalid_credentials(
+        self, mock_gen_cls, mock_resolve, tmp_path
+    ):
+        mock_gen_cls.side_effect = InvalidAPIKeyError("API key contains invalid characters")
+        _, failure = build_embedding_generator_with_reason(_embedding_settings(tmp_path, "openai"))
+        assert failure.cause == Cause.INVALID_CREDENTIALS
+
+    @patch("plexmix.services.providers.credentials")
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value=None)
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_missing_custom_endpoint_gives_missing_config(
+        self, mock_gen_cls, mock_resolve, mock_creds, tmp_path
+    ):
+        mock_creds.get_custom_embedding_api_key.return_value = None
+        mock_gen_cls.side_effect = ValueError("Endpoint URL required for custom embedding provider")
+        _, failure = build_embedding_generator_with_reason(_embedding_settings(tmp_path, "custom"))
+        assert failure.cause == Cause.MISSING_CONFIG
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value="ekey")
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_other_errors_give_unknown_with_detail(self, mock_gen_cls, mock_resolve, tmp_path):
+        mock_gen_cls.side_effect = RuntimeError("boom")
+        _, failure = build_embedding_generator_with_reason(_embedding_settings(tmp_path, "gemini"))
+        assert failure.cause == Cause.UNKNOWN
+        assert failure.detail == "boom"
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value=_SENTINEL_KEY)
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_detail_and_log_never_carry_the_key(self, mock_gen_cls, mock_resolve, tmp_path, caplog):
+        mock_gen_cls.side_effect = RuntimeError(f"Incorrect API key provided: {_SENTINEL_KEY}")
+        with caplog.at_level(logging.DEBUG, logger="plexmix.services.providers"):
+            _, failure = build_embedding_generator_with_reason(
+                _embedding_settings(tmp_path, "openai")
+            )
+        assert _SENTINEL_KEY not in failure.detail
+        assert "[redacted]" in failure.detail
+        assert _SENTINEL_KEY not in caplog.text
+        assert "Embedding provider init failed" in caplog.text
+
+
+class TestBuildEmbeddingGeneratorContract:
+    """build_embedding_generator keeps its Optional return and its log line."""
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value=None)
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_import_error_returns_none_and_logs_once(
+        self, mock_gen_cls, mock_resolve, tmp_path, caplog
+    ):
+        mock_gen_cls.side_effect = ImportError(
+            "sentence-transformers not installed. Run: pip install sentence-transformers"
+        )
+        with caplog.at_level(logging.WARNING, logger="plexmix.services.providers"):
+            result = build_embedding_generator(_embedding_settings(tmp_path, "local"))
+        assert result is None
+        lines = [r for r in caplog.records if "Embedding provider init failed" in r.getMessage()]
+        assert len(lines) == 1
+        assert "sentence-transformers not installed" in lines[0].getMessage()
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value=None)
+    def test_missing_key_returns_none_without_logging(self, mock_resolve, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger="plexmix.services.providers"):
+            assert build_embedding_generator(_embedding_settings(tmp_path, "cohere")) is None
+        assert "Embedding provider init failed" not in caplog.text
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value="ekey")
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_delegates_to_reason_builder(self, mock_gen_cls, mock_resolve, tmp_path):
+        mock_gen_cls.return_value = MagicMock()
+        settings = _embedding_settings(tmp_path, "openai")
+        with patch(
+            "plexmix.services.providers.build_embedding_generator_with_reason",
+            return_value=(None, ProviderFailure(Cause.UNKNOWN, "openai")),
+        ) as mock_reason:
+            assert build_embedding_generator(settings) is None
+        mock_reason.assert_called_once_with(settings)
+
+
+class TestDiagnoseEmbeddingProvider:
+    """The cheap check builds nothing and names the blocking cause."""
+
+    @patch("plexmix.services.providers.EmbeddingGenerator")
+    def test_local_without_package(self, mock_gen_cls, tmp_path):
+        failure = diagnose_embedding_provider(
+            _embedding_settings(tmp_path, "local"), local_deps=False
+        )
+        assert failure.cause == Cause.MISSING_DEPENDENCY
+        assert failure.package == "sentence-transformers"
+        mock_gen_cls.assert_not_called()
+
+    def test_local_find_spec_lookup(self, tmp_path):
+        settings = _embedding_settings(tmp_path, "local")
+        with patch("importlib.util.find_spec", return_value=None) as mock_spec:
+            failure = diagnose_embedding_provider(settings)
+        mock_spec.assert_called_once_with("sentence_transformers")
+        assert failure.cause == Cause.MISSING_DEPENDENCY
+        with patch("importlib.util.find_spec", return_value=object()):
+            assert diagnose_embedding_provider(settings) is None
+
+    def test_local_with_package_is_fine(self, tmp_path):
+        assert (
+            diagnose_embedding_provider(_embedding_settings(tmp_path, "local"), local_deps=True)
+            is None
+        )
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key", return_value=None)
+    def test_cloud_without_key(self, mock_resolve, tmp_path):
+        failure = diagnose_embedding_provider(_embedding_settings(tmp_path, "gemini"))
+        assert failure.cause == Cause.MISSING_API_KEY
+        assert failure.provider == "gemini"
+        mock_resolve.assert_called_once_with("gemini")
+
+    @patch("plexmix.services.providers.resolve_embedding_api_key")
+    def test_known_key_presence_skips_lookup(self, mock_resolve, tmp_path):
+        settings = _embedding_settings(tmp_path, "openai")
+        assert diagnose_embedding_provider(settings, key_present=True) is None
+        assert diagnose_embedding_provider(settings, key_present=False).cause == (
+            Cause.MISSING_API_KEY
+        )
+        mock_resolve.assert_not_called()
+
+    def test_custom_without_endpoint(self, tmp_path):
+        failure = diagnose_embedding_provider(_embedding_settings(tmp_path, "custom"))
+        assert failure.cause == Cause.MISSING_CONFIG
+
+    def test_custom_with_endpoint_and_model(self, tmp_path):
+        settings = _embedding_settings(
+            tmp_path,
+            "custom",
+            "  custom_endpoint: http://embed:8080/v1\n  custom_model: nomic-embed\n",
+        )
+        assert diagnose_embedding_provider(settings) is None
+
+    def test_unknown_provider(self, tmp_path):
+        failure = diagnose_embedding_provider(_embedding_settings(tmp_path, "voyage"))
+        assert failure.cause == Cause.MISSING_CONFIG

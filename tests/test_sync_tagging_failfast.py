@@ -63,3 +63,28 @@ def test_sync_tagging_fatal_error_saves_partial_and_does_not_crash(db):
     saved = {t.id: t for t in db.get_all_tracks()}[track_id]
     assert saved.tags  # partial result was persisted
     assert any("AI tagging stopped" in m for m in messages)  # surfaced to the user once
+    # The outcome is kept for callers that report provider health (Web UI readiness).
+    assert engine.tags_saved == 1
+    assert isinstance(engine.tagging_error, FatalProviderError)
+
+
+def test_sync_tagging_success_records_the_count(db):
+    from rich.progress import Progress
+
+    artist_id = db.insert_artist(Artist(plex_key="a1", name="Artist"))
+    album_id = db.insert_album(Album(plex_key="al1", title="Album", artist_id=artist_id))
+    track_id = db.insert_track(
+        Track(plex_key="t1", title="Song", artist_id=artist_id, album_id=album_id)
+    )
+
+    engine = SyncEngine(plex_client=MagicMock(), db_manager=db)
+    assert engine.tags_saved == 0 and engine.tagging_error is None
+    engine.tag_generator = MagicMock()
+    engine.tag_generator.generate_tags_batch.return_value = {
+        track_id: {"tags": ["calm"], "environments": [], "instruments": []}
+    }
+    with Progress() as progress:
+        task = progress.add_task("tagging", total=1)
+        engine._generate_tags_for_untagged_tracks(progress, task)
+    assert engine.tags_saved == 1
+    assert engine.tagging_error is None

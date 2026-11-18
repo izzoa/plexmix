@@ -96,8 +96,10 @@ def doctor(
                 from .sync_cmd import run_incremental_sync
 
                 console.print("\n[bold]Running sync...[/bold]")
-                run_incremental_sync(embeddings=False)
-                console.print("\n[green]✓ Sync completed![/green]")
+                # True only when the sync printed its own success line. A sync that
+                # stopped or held a removal has already said so (or ended the command).
+                if run_incremental_sync(embeddings=False):
+                    console.print("\n[green]✓ Sync completed![/green]")
             return
 
         if orphaned_count == 0 and missing_embeddings > 0:
@@ -256,11 +258,14 @@ def doctor(
 
         console.print("\n[cyan]Checking for deleted tracks in Plex...[/cyan]")
         if typer.confirm("\nRun a sync to remove deleted tracks from database?", default=True):
-            from .sync_cmd import sync_incremental
+            # The plain function, never the Typer command: called as a function, a
+            # command's unpassed options arrive as truthy placeholder objects, and
+            # that would switch --allow-removals on.
+            from .sync_cmd import run_incremental_sync
 
             console.print("\n[bold]Running sync...[/bold]")
-            sync_incremental(embeddings=False)
-            console.print("\n[green]✓ Sync completed![/green]")
+            if run_incremental_sync(embeddings=False):
+                console.print("\n[green]✓ Sync completed![/green]")
 
     # Generate tags outside the database context
     if should_generate_tags:

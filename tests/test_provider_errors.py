@@ -7,10 +7,14 @@ error while preserving partial results.
 """
 
 import json
-from unittest.mock import MagicMock
+import logging
+from types import SimpleNamespace
+from typing import Optional
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+import plexmix.ai as ai_factory
 from plexmix.ai.errors import FatalProviderError, classify_provider_error
 from plexmix.ai.tag_generator import TagGenerator
 
@@ -78,6 +82,124 @@ class TestFailureModeDistinction:
         _, is_fatal, user_message = classify_provider_error(Exception(GFE_HTML_400))
         assert is_fatal
         assert "before it reached the model" in user_message.lower()
+
+
+class TestLocalAuthToken:
+    """The local endpoint token is sent as a header, so it gets the API-key check."""
+
+    ENDPOINT = "http://127.0.0.1:9/v1/chat/completions"
+    REFUSAL = "Local endpoint auth token contains invalid characters"
+
+    @pytest.mark.parametrize(
+        "token",
+        ["dummy-api\nkey-0000", "dummy-api key-0000", "dummy-\u00e4pi-key-0000"],
+    )
+    def test_local_auth_token_with_line_break_is_refused(
+        self, token: str, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level(logging.DEBUG, logger="plexmix.ai"):
+            with patch.object(ai_factory, "LocalLLMProvider") as provider_cls:
+                # ValueError: the concrete class can be rebound by a module reload (see
+                # the import note above), and InvalidAPIKeyError subclasses it.
+                with pytest.raises(ValueError) as ei:
+                    ai_factory.get_ai_provider(
+                        "local",
+                        local_mode="endpoint",
+                        local_endpoint=self.ENDPOINT,
+                        local_auth_token=token,
+                    )
+
+        # The provider was never built, so no request could carry the token.
+        provider_cls.assert_not_called()
+        assert type(ei.value).__name__ == "InvalidAPIKeyError"
+        # The validator's own error (about an "API key") is not shown with it.
+        assert ei.value.__cause__ is None and ei.value.__suppress_context__ is True
+        message = str(ei.value)
+        # The message names the token, not an "API key".
+        assert message.startswith(self.REFUSAL)
+        assert "api key" not in message.lower()
+        # The refusal is logged once, where it happens: callers build quietly.
+        assert [record.getMessage() for record in caplog.records] == [message]
+        assert caplog.records[0].levelno == logging.ERROR
+        for text in (message, caplog.text):
+            assert token not in text
+            assert repr(token)[1:-1] not in text
+            assert "key-0000" not in text
+
+    @pytest.mark.parametrize("silent", [True, False])
+    def test_refused_local_token_is_not_logged(
+        self, silent: bool, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The user is told why, and the token is not shown.
+
+        Every caller in the CLI and the web UI builds with ``silent=True``, so the
+        reason has to reach the log in that mode too.
+        """
+        from plexmix.services import providers
+
+        token = "dummy-api\nkey-0000"
+        settings = SimpleNamespace(
+            ai=SimpleNamespace(
+                default_provider="local",
+                model=None,
+                temperature=0.7,
+                local_mode="endpoint",
+                local_endpoint=self.ENDPOINT,
+                local_auth_token=token,
+                local_max_output_tokens=None,
+                custom_endpoint=None,
+                custom_api_key=None,
+                custom_model=None,
+            )
+        )
+
+        with caplog.at_level(logging.DEBUG):
+            with patch.object(providers, "resolve_ai_api_key", return_value=None):
+                assert providers.build_ai_provider(settings, silent=silent) is None
+
+        errors = [r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR]
+        assert len(errors) == 1 and errors[0].startswith(self.REFUSAL)
+        assert token not in caplog.text
+        assert repr(token)[1:-1] not in caplog.text
+        assert "key-0000" not in caplog.text
+
+    @pytest.mark.parametrize("mode", ["builtin", None])
+    @pytest.mark.parametrize("token", ["dummy-api\nkey-0000", "dummy-api key-0000"])
+    def test_leftover_token_does_not_stop_the_builtin_model(
+        self, token: str, mode: Optional[str], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # Only endpoint mode sends the token. In builtin mode a token left over from
+        # an earlier endpoint setup is never sent, so it is not a reason to refuse.
+        with caplog.at_level(logging.DEBUG, logger="plexmix.ai"):
+            with patch.object(ai_factory, "LocalLLMProvider") as provider_cls:
+                provider = ai_factory.get_ai_provider(
+                    "local", local_mode=mode, local_auth_token=token
+                )
+
+        assert provider is provider_cls.return_value
+        provider_cls.assert_called_once()
+        assert provider_cls.call_args.kwargs["mode"] == "builtin"
+        assert caplog.records == []
+
+    @pytest.mark.parametrize("token", [None, ""])
+    def test_local_endpoint_without_a_token_still_builds(self, token: Optional[str]) -> None:
+        # No auth token is a normal setup for a local endpoint.
+        provider = ai_factory.get_ai_provider(
+            "local", local_mode="endpoint", local_endpoint=self.ENDPOINT, local_auth_token=token
+        )
+
+        assert isinstance(provider, ai_factory.LocalLLMProvider)
+        assert not provider.auth_token
+
+    def test_clean_local_token_is_passed_on_without_its_surrounding_whitespace(self) -> None:
+        provider = ai_factory.get_ai_provider(
+            "local",
+            local_mode="endpoint",
+            local_endpoint=self.ENDPOINT,
+            local_auth_token="  dummy-api-key-0000\n",
+        )
+
+        assert provider.auth_token == "dummy-api-key-0000"
 
 
 class TestFatalProviderError:

@@ -5,7 +5,9 @@ from rich.table import Table
 from ..config.settings import Settings
 from ..database.sqlite_manager import SQLiteManager
 
-audio_app = typer.Typer(name="audio", help="Audio feature analysis")
+audio_app = typer.Typer(
+    name="audio", help="Audio feature analysis", pretty_exceptions_show_locals=False
+)
 console = Console()
 
 

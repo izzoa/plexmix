@@ -45,3 +45,11 @@ DEFAULT_MAX_RETRIES: int = 3
 
 DEFAULT_RETRY_DELAY: float = 1.0
 """Base delay in seconds between retries (exponential backoff)."""
+
+# ── Web UI readiness checks ───────────────────────────────────────────
+
+PLEX_READINESS_TTL_S: int = 600
+"""Seconds an automatic Plex reachability result is reused before it is re-checked."""
+
+PLEX_READINESS_TIMEOUT_S: int = 5
+"""Timeout in seconds for the automatic Plex reachability check."""

@@ -7,6 +7,120 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-18
+
+### Added
+- Add `DESIGN.md` (with an `.impeccable/design.json` sidecar) documenting the web UI's design system: tokens, components, and the rules for using them, so new screens stay consistent.
+- Add a skip link, a main landmark and a page heading to every Web UI page.
+- Sort the Library by Title, Artist or Album and see each track's tag, embedding, audio and MusicBrainz status at a glance.
+- Show your recent prompts in the command palette, and offer "Generate “…”" for any text that matches no command.
+- Press ⌘/Ctrl+Enter in the Generator prompt to generate.
+- Add year range, tag and "has audio analysis" filters to the Library filter bar.
+- Add a guided first-run checklist on the Dashboard (Connect Plex → Choose providers → Sync → Build search index → First vibe) that works entirely in the browser.
+- Show which embedding provider will run and whether it's ready before generating; show rerun filters as removable chips instead of applying them invisibly.
+- Show library coverage on the Dashboard (Tagged, Embedded, Audio analyzed, MusicBrainz genres) as counts and percentages with a link to fill each gap, plus when the library last synced; recent playlists now open in History.
+- Add `--allow-removals` to `plexmix sync`, `plexmix sync incremental`, `plexmix sync full` and `plexmix sync regenerate`. Use it for a sync that runs without a terminal (cron, a script, `docker exec` without `-it`) and that may remove a large number of tracks without the confirmation question. A removal is large when it is more than 50 tracks and more than 5 percent of the library.
+- Back up the library before a large removal. PlexMix copies the database and the search index files into a new dated folder under `backups/` beside the database (by default `~/.plexmix/backups/<date>_<time>/`) and prints the folder and its size. This also holds for a sync that runs without embeddings (`--no-embeddings`, or the sync that `plexmix doctor` offers): the copy holds the index files as they are on disk, and the removed tracks are then taken out of an index that has the dimension of the configured embedding provider. If the copy cannot be made, nothing is removed. PlexMix does not delete these copies. Each one is as large as the database, so delete the old ones yourself.
+
+### Changed
+- **BREAKING (dev workflow):** `plexmix ui` and the Docker image now serve the production build by default; pass `--dev` for hot reload (`--prod` still works).
+- Give the web UI a warmer, more tactile feel: softer corners (12px controls, 18px cards, pill-shaped badges, tabs and filter chips), white cards resting on soft warm shadows that lift on hover, a glowing primary button, and springy hover/press feedback. Reduced-motion preferences still disable all animation.
+- Mark the primary dashboard quick action with a warm tint instead of an orange left stripe.
+- Radix components (buttons, switches, progress bars, callouts) now use PlexMix's own orange scale, with dark text on orange buttons for legibility.
+- Keep you signed in across tabs of the same browser for up to 7 days when a UI password is set.
+- Render the changelog on the server so pages no longer download a markdown/KaTeX bundle.
+- The Docker health check now waits up to 15 minutes for the web UI build at container start before reporting the container unhealthy.
+- Make the cancel-task confirmation a real alert dialog that closes on Escape, focuses Keep running and styles Cancel task as destructive.
+- Show each playlist's prompt, date, track count, top artists and its own cover swatch instead of four identical gradients.
+- Make the command palette a proper dialog for screen readers and keyboard users: it highlights the command Enter will run, keeps focus inside while open and returns it on close.
+- Only offer "Cancel running task" while something is running.
+- Remove the "Built with Reflex" badge from the web UI, which covered the Library pager and the Tagging row buttons.
+- Show Ctrl K instead of ⌘K outside macOS.
+- Enforce the 280-character prompt limit, and show "Describe a vibe first" instead of silently ignoring an empty prompt.
+- Status lights now mean 'checked and working', not just 'configured', and use proper provider names.
+- Library bulk Tag adds to existing tags by default; replacing them is now an explicit choice.
+- Make Library's "Generate embeddings" with nothing selected offer to embed every track that is still missing an embedding, after a confirmation.
+- **BREAKING (scripts):** Ask before a sync removes a large number of tracks, and exit with status 1 when a sync did not do its whole job. Check any script or scheduled job that runs `plexmix sync`:
+  - When Plex no longer lists more than 50 tracks and more than 5 percent of the library, the sync keeps those tracks. In a terminal it asks "Remove 5,443 of 5,943 tracks?" once the sync has finished. The default answer is No. Smaller removals are applied without a question, as before. After a Yes, PlexMix lists the library again and removes only the confirmed tracks that Plex still does not list. If more tracks are missing by then, it removes nothing and asks you to sync again.
+  - Without a terminal (cron, a script, `docker exec` without `-it`) the sync cannot ask. It keeps the tracks, prints how many it kept, and exits with status 1. Add `--allow-removals` to let such a run remove them.
+  - A sync also exits with status 1, and prints no "completed successfully" line, in these cases: Plex stops answering or cannot list the library; more than 10 and more than 1 percent of the artists, albums or tracks could not be read; Plex lists 0 tracks while PlexMix holds tracks; or the backup before a large removal fails. Nothing is removed in any of them. Most of these runs used to end with a success line and status 0.
+  - The same rules apply to the sync that `plexmix config init` and `plexmix doctor` offer. In the web UI, a sync that held a removal back ends with a warning, on the Dashboard too, and the Library page shows a notice with a **Review removal** button that opens the confirmation. A confirmed removal can be cancelled until its deletes are saved, and a cancelled removal removes nothing. A held removal belongs to its library: after the database path, the Plex address or the Plex library changes in the settings, confirming it removes nothing.
+
+### Fixed
+- Fix light mode showing dark-mode orange colors: the active navigation item rendered dark brown and the "PlexMix" wordmark a pale, hard-to-read orange. Dark color values now apply only in dark mode.
+- Fix web UI keyboard shortcuts and saved appearance settings, which silently never ran in the default `plexmix ui` dev mode: ⌘K / Ctrl+K, `/`, `g`+key navigation, and Escape to close the command palette now work, Density and Accent intensity are restored after a reload, and the Generator's animated "AI thinking" canvas starts reliably.
+- Make the navigation rail, command-palette trigger, and avatar real buttons so they can be reached and used with the keyboard; rail labels also show on keyboard focus.
+- Raise text contrast to WCAG AA across the web UI: deeper orange for accent text, darker muted text in light mode and lighter in dark mode, readable text colors for green/yellow/red/blue/purple badges and callouts, and a focus outline that is visible on every surface.
+- Stop page loads in another tab from cancelling the other tab's background work; orphaned per-tab work, and any key typed but not saved in a closed Settings tab, is now cleaned up a couple of minutes after its tab disconnects, even when no other tab is open.
+- Fix Generator state failing to serialize (`cannot pickle '_thread.lock'`) during playlist generation.
+- Stop Settings saves from copying environment-variable secrets into the keyring or config file.
+- Stop the sign-in card flashing on page load when no UI password is set.
+- Show the loading screen, not a tab's old page content, when it is reloaded after a logout, a password change or an expired session.
+- Empty a Settings key field when you switch provider or the page reloads, so a key you typed but did not save is never silently dropped or saved for the wrong provider.
+- Show release notes in the in-app changelog on pip installs, with the running version.
+- Fix `plexmix ui` failing to find the web app on pip/wheel installs.
+- Announce login errors to screen readers and mark the password field invalid.
+- Make every Settings section reachable by keyboard and deep-linkable via `?section=`.
+- Give every Settings field, switch, slider and select a real label, show the Duration Limit help without hovering, and announce Test/Save results to screen readers.
+- Open saved playlists from the keyboard; the playlist view is now a proper dialog with named reorder controls.
+- Name the Generator's prompt, sliders, genre and ordering controls, expose the Options state, and announce progress phases and failures.
+- Name Library checkboxes and pagination, and make Delete and Regenerate confirmations distinct alert dialogs.
+- Label the inline tag editor's Moods, Environments and Instruments fields, keep the track name visible, save with Enter, cancel with Escape and return focus to the row.
+- Give Doctor and Dashboard real headings and lists, and announce health-check results.
+- Fix the command palette dropping typed characters and running the wrong command on Enter; filtering now happens instantly in the browser.
+- Fix "Toggle dark mode" in the command palette, which failed on the server.
+- Fix the Generator prompt and Genre field dropping or reordering typed characters on slow connections.
+- Fix Library search and genre filters losing typed characters and showing unrelated results.
+- Fix low-contrast placeholder text in the Library and Tagging filter fields.
+- Fix Tagging and History filter fields losing typed characters, and ignore invalid Stale days values instead of failing silently.
+- Fix rerunning a playlist from History, or picking a recent prompt in the command palette, while generated results were on screen: the old tracks were relabelled (and could be saved) under the new prompt instead of the prompt field showing it. While a playlist is being generated, the prompt is now kept and a message says to try again when it finishes.
+- Keep a Generator prompt or tag edit you were typing when you leave the page with the browser's Back or Forward button, and keep text typed into a Library filter right after clicking Clear.
+- Accept only digits in the Library year and Tagging Stale days fields.
+- Show provider failures with their real cause (for example a missing local-model package) instead of 'Check your API keys'.
+- Doctor's verdict now matches its rows, shows 'Checking…' instead of false 'Healthy' results, and asks before starting long or cloud-bound fixes.
+- Tagging's track count now follows the current filters, and tagging asks for confirmation (including how many existing tags it will replace) before it starts.
+- Settings warns before an embedding change breaks your search index, has one Save/Discard bar that stays visible, and no longer shows a blank model or false 'Unsaved changes'.
+- History, Library, Tagging, Dashboard and Doctor show loading placeholders instead of empty or zero states while data loads.
+- Keep the Library selection bar in view while you scroll, and show how many selected tracks are on other pages.
+- Show Plex connection problems in the web UI in plain words with a link to the right Settings section, instead of a terminal command.
+- Make the web UI usable at 200% browser zoom and in windows down to 320px wide:
+  - The navigation rail scrolls and compacts so every item stays reachable without shifting the page, and its labels are never cut off.
+  - The top bar switches to a compact layout so the page name is never hidden behind the search button and no control is pushed off-screen.
+  - Dashboard tiles, quick actions and History cards reflow to fewer columns instead of running off the side.
+  - The Generator no longer scrolls sideways at high zoom or with long prompts; long prompts wrap to two lines and the full text shows on hover.
+  - The Library table scrolls inside its own box instead of silently hiding columns, with a shadow on the side that has more, and long titles wrap inside their cell.
+  - Tags in AI Tagging's Recently tagged list are spaced and wrap, so track titles stay readable.
+  - The ⌘K palette fits short windows.
+  - The Generator's remove-track button shows on touch screens, and hovering a track no longer hides its number.
+  - Settings tabs at narrow widths use full section names and no longer hide their scrollbar.
+  - Doctor's checks and the Library's action bar, filters and pagination wrap too, so every page reflows at 320px without sideways scrolling.
+- Keep the Dashboard status strip's Plex, AI and Embeddings readouts on one row on wide windows: a long cause such as "Can't reach your Plex server at …" now wraps inside its readout instead of pushing the next one onto a row of its own. Narrower windows reflow them into even columns.
+- Stop the "Built with Reflex" badge in the bottom-right corner (shown by the default production build) from covering the Library selection bar's Tag, Delete and Clear buttons and the Settings Discard and Save buttons.
+- Keep the table row or Settings field you just used in view when the Library selection bar or the Settings save bar appears over it, and stop keyboard focus from landing behind either bar.
+- Fix the Generator's readiness line saying a prompt is sent to "Custom (OpenAI-compatible)" when the Custom embedding endpoint runs on this machine: a localhost endpoint now reads "prompt stays on this machine" and a remote one is named by its host, as in the job confirmations.
+- Remove the repeated "MusicBrainz" provider line from Doctor's MusicBrainz enrichment confirmation, which screen readers read as "MusicBrainz MusicBrainz".
+- Give the Tagging "Untagged only" and Library "Has audio analysis" checkboxes the same 2px focus ring as every other control, instead of the browser's thin default.
+- Keep tracks that a sync could not read from Plex. A sync used to remove every track whose details it failed to read, together with its tags, embedding and playlist entries, and then report success. In a test against a stand-in Plex server, an outage of 1 second during a sync removed 2,449 of 5,943 tracks. A sync now removes a track only when Plex's own list of the library no longer contains it. A track that Plex listed but that could not be read is kept as it is, and the sync says how many were kept. When Plex stops answering during a sync, or cannot list the library, the sync stops before it changes anything and says so in one sentence. A request that fails because the connection was lost is tried once more after 1 second before the sync stops.
+- Keep a track's artist and album when the artist or the album could not be read from Plex. Such a track could be moved to "Unknown Artist" or "Unknown Album", and later syncs did not move it back. An album keeps its artist in the same way. A new track that is filed under "Unknown Artist" because its artist is new to PlexMix and could not be read is moved to its artist by the next sync that reads it.
+- End `plexmix sync` with one sentence and status 1 when the connection check at the start of a sync fails, for example when Plex stops answering right after the command has connected. The sentence ends with "Nothing was changed." The command ended in an error report.
+- Apply a removal whole or not at all. Ctrl+C during a sync's removal could keep some of the removals while the sync history recorded none. An interrupted removal is now undone, and a removal that was saved is recorded in the sync history and printed even when Ctrl+C follows it at once.
+- Report a Plex server that stops answering while the music library is selected as unreachable. `plexmix sync` and the web UI said the library "may have been renamed or removed".
+- Print what a sync had already added, updated and removed, and where the backup of a large removal is, when the sync is interrupted or a later stage fails (for example a lost connection to the embedding provider). Such a run printed none of this.
+- Count the tracks that a failed sync had already added, updated and removed in its sync history row. The row said 0 for all three.
+
+### Security
+- Stop sending stored Plex tokens and API keys to the browser; Settings now shows where each secret is stored and accepts replacements only.
+- Stop Settings saves from writing `PLEXMIX_UI_PASSWORD`, `AI_CUSTOM_API_KEY`, `AI_LOCAL_AUTH_TOKEN` or `EMBEDDING_CUSTOM_API_KEY` from the environment into `config.yaml`, where a copied UI password kept working after you changed the variable.
+- Keep stored secrets out of Settings error messages and server logs when `config.yaml` holds an invalid value.
+- Make the web UI's session files (`.states/`) readable only by your user account, since they hold the sign-in session.
+- Remove existing `.states` pickles on the next `plexmix ui` launch: earlier versions could save Settings secrets in these web UI state files (`.states/*.pkl` in the web app directory). Reflex clears that folder every time the UI starts, so upgrading and launching once is enough; if you copied the app directory elsewhere, delete its `.states/` folder yourself.
+- Stop printing the values of variables in CLI error reports. When a command failed with an unexpected error, the report could show the Plex token, API keys and the web UI password.
+- Stop repeating a rejected value in settings errors. A wrong value in `config.yaml` or in a settings environment variable is reported by the name of the setting or variable (for example `ui.password` or `AUDIO_WORKERS`), and a `config.yaml` that cannot be parsed is reported by file, line and column. An unknown key that does not look like a setting name is reported as "unknown key" and not repeated, because a missing space after a colon (`ui: {password:secret}`) turns the value into part of the key.
+- Mask a user name and password embedded in the Plex URL in `plexmix config show`, `plexmix config test` and the log: `http://user:password@host:32400` is shown as `http://***@host:32400`. This also holds when the scheme is mistyped (`http:/`, `http//`) or missing, and when the password contains a space. A Plex token pasted into the URL as `?X-Plex-Token=...` is masked the same way. The saved setting is not changed. Stop printing the length of the Plex token in `config test` and in the log.
+- Stop `plexmix sync` printing the Plex URL with its user name and password when Plex connects but cannot list the library: the error report now shows the masked text.
+- Report a Plex URL that cannot be read as a URL with one fixed sentence ("the Plex server address is not a valid URL"). The HTTP library's own message quoted the user name and the start of the password when the password contained `/`, `?`, `#` or `\`.
+- Refuse a Plex token that cannot be sent in a request (one with a space or a line break in the middle, or a non-ASCII character) before a command or a sync connects to Plex. The "Plex token contains invalid characters" message does not show the token. Refuse a local LLM auth token of that kind too when the local provider uses an endpoint: the provider is not started with it, and "Local endpoint auth token contains invalid characters" is logged without the token.
+
 ## [0.12.0] - 2026-07-12
 
 ### Security
@@ -624,7 +738,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CLI interface with Rich formatting
 - Tag generation and management
 
-[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/izzoa/plexmix/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/izzoa/plexmix/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/izzoa/plexmix/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/izzoa/plexmix/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/izzoa/plexmix/compare/v0.9.0...v0.10.0

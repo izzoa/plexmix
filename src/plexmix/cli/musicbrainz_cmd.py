@@ -5,7 +5,11 @@ from rich.table import Table
 from ..config.settings import Settings
 from ..database.sqlite_manager import SQLiteManager
 
-musicbrainz_app = typer.Typer(name="musicbrainz", help="MusicBrainz metadata enrichment")
+musicbrainz_app = typer.Typer(
+    name="musicbrainz",
+    help="MusicBrainz metadata enrichment",
+    pretty_exceptions_show_locals=False,
+)
 console = Console()
 
 

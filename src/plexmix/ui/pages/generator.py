@@ -3,11 +3,41 @@
 Bound entirely to the existing ``GeneratorState`` (no backend logic changes
 beyond the additive cancel/view-state). The thinking visuals are driven by the
 real ``generation_progress`` reported by ``generate_playlist``.
+
+The prompt box is a form whose fields are client-owned (``components/inputs.py``):
+Generate and ⌘/Ctrl+Enter submit the text on screen through
+``GeneratorState.submit_prompt``, and server-side writes to the prompt (vibe pills,
+History reruns, palette prefills) reach the textarea through ``rx.set_value``.
+
+Honest status (webui-honest-status-and-first-run, design D9): a readiness line under
+the prompt foot names the track count, the embedding provider and model that will
+embed the prompt, the index state and where the prompt goes. Generate is disabled
+only while a blocking readiness cause stops generation (``can_generate``), applied
+filters without an Options control show as removable chips, and a failed generation
+leaves a callout with its cause and one action until it is dismissed.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, cast
+
 import reflex as rx
+
+from plexmix.ui.components.inputs import compose_textarea, filter_input
 from plexmix.ui.components.navbar import layout
-from plexmix.ui.states.generator_state import GeneratorState
+from plexmix.ui.components.playlist_cover import playlist_cover
+from plexmix.ui.components.seg_radio import seg_radio_group
+from plexmix.ui.states.generator_state import (
+    FAILURE_FOCUS_SCRIPT,
+    GENRE_INPUT_ID,
+    PROMPT_INPUT_ID,
+    PROMPT_MAX_CHARS,
+    GeneratorState,
+)
+from plexmix.ui.utils.a11y import focus_first_script
+
+if TYPE_CHECKING:
+    from reflex.vars.object import ObjectVar
 
 
 # Four phases, mapped to the real progress bands (0–10 / 10–40 / 40–70 / 70–100).
@@ -25,143 +55,259 @@ _ORDERINGS = [
     ("energy_curve", "Energy curve"),
 ]
 
-# Canvas particle vector-field. A body-level observer manages the canvas
-# lifecycle (start on mount, stop on unmount) so it survives Reflex re-renders;
-# phase comes from the .viz-wrap[data-phase] attribute, theme from <html>.
-_THINKVIZ_JS = """
-(function(){
-  if (window.__thinkviz__) return; window.__thinkviz__ = true;
-  var raf=0, parts=[], W=0, H=0, ro=null, po=null, cv=null, ctx=null;
-  function rand(a,b){return a+Math.random()*(b-a);}
-  function phase(){var w=document.querySelector('.viz-wrap');return w?parseInt(w.getAttribute('data-phase')||'0',10):0;}
-  function assign(){
-    var ph=phase(), cx=W/2, cy=H/2;
-    parts.forEach(function(p,i){
-      if(ph===0){var a=rand(0,Math.PI*2),r=rand(0,46);p.tx=cx+Math.cos(a)*r;p.ty=cy+Math.sin(a)*r;p.hl=i<26;p.dim=0.5;}
-      else if(ph===1){p.tx=rand(W*0.08,W*0.92);p.ty=rand(H*0.14,H*0.86);var d=Math.hypot(p.tx-cx,p.ty-cy);p.hl=d<Math.min(W,H)*0.34;p.dim=p.hl?1:0.28;}
-      else if(ph===2){p.hl=i%6===0;p.dim=p.hl?1:0.08;}
-      else {if(p.hl){var idx=Math.floor(i/6);p.tx=W*0.1+(idx/7)*W*0.8;p.ty=cy-Math.sin((idx/7)*Math.PI*1.6)*H*0.26;p.dim=1;}else{p.dim=0.05;}}
-    });
-  }
-  function size(){
-    if(!cv) return; var r=cv.getBoundingClientRect(); var dpr=Math.min(window.devicePixelRatio||1,2);
-    cv.width=r.width*dpr; cv.height=r.height*dpr; ctx.setTransform(dpr,0,0,dpr,0,0); W=r.width; H=r.height;
-    if(!parts.length){parts=Array.from({length:300},function(){return {x:rand(0,W),y:rand(0,H),tx:rand(0,W),ty:rand(0,H),hl:false,dim:0.4,size:rand(1.1,2.4)};});}
-    assign();
-  }
-  function frame(){
-    if(!cv||!document.body.contains(cv)){stop();return;}
-    var reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    var dark=document.documentElement.classList.contains('dark');
-    var base=dark?'120,120,135':'150,150,160';
-    ctx.clearRect(0,0,W,H); ctx.lineWidth=1;
-    for(var i=0;i<parts.length;i++){var p=parts[i];var k=reduce?1:0.08;p.x+=(p.tx-p.x)*k;p.y+=(p.ty-p.y)*k;
-      if(p.hl){for(var j=i+1;j<parts.length;j++){var q=parts[j];if(!q.hl)continue;var d=Math.hypot(p.x-q.x,p.y-q.y);
-        if(d<74){ctx.strokeStyle='rgba(249,115,22,'+(0.12*(1-d/74))+')';ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);ctx.stroke();}}}}
-    for(var m=0;m<parts.length;m++){var pp=parts[m];ctx.beginPath();ctx.arc(pp.x,pp.y,pp.hl?pp.size+0.7:pp.size,0,Math.PI*2);
-      ctx.fillStyle=pp.hl?'rgba(249,115,22,'+pp.dim+')':'rgba('+base+','+pp.dim+')';ctx.fill();}
-    raf=requestAnimationFrame(frame);
-  }
-  function start(c){
-    cv=c; ctx=cv.getContext('2d'); parts=[]; size();
-    if(ro) ro.disconnect(); ro=new ResizeObserver(size); ro.observe(cv);
-    var w=document.querySelector('.viz-wrap');
-    if(po) po.disconnect();
-    if(w){po=new MutationObserver(assign); po.observe(w,{attributes:true,attributeFilter:['data-phase']});}
-    cancelAnimationFrame(raf); frame();
-  }
-  function stop(){cancelAnimationFrame(raf);raf=0;if(ro){ro.disconnect();ro=null;}if(po){po.disconnect();po=null;}cv=null;ctx=null;parts=[];}
-  var watch=new MutationObserver(function(){
-    var c=document.getElementById('thinkviz');
-    if(c && c!==cv){start(c);} else if(!c && cv){stop();}
-  });
-  watch.observe(document.body,{childList:true,subtree:true});
-  var c0=document.getElementById('thinkviz'); if(c0) start(c0);
-})();
-"""
+# The Generator canvas and log-autoscroll scripts live in assets/plexmix.js,
+# loaded from <head> (Helmet-injected page scripts are dropped under React StrictMode).
 
-# Keep the streaming log scrolled to the newest line.
-_GENLOG_JS = """
-(function(){
-  if (window.__genlog_obs__) return; window.__genlog_obs__ = true;
-  var obs=new MutationObserver(function(){var g=document.querySelector('.genlog');if(g)g.scrollTop=g.scrollHeight;});
-  obs.observe(document.body,{subtree:true,childList:true,characterData:true});
-})();
-"""
+# Run when a stage mounts (idle hero, thinking, results). Each stage owns the page's
+# one h1 (#main-heading); a failure lands on the error callout first. pmFocus only
+# moves focus when it was lost (the focused control left with the previous stage),
+# so a fresh page load is never hijacked.
+_STAGE_FOCUS_SCRIPT = focus_first_script(["#gen-error", "#main-heading"])
+
+# Run by the idle-stage triggers just before generation starts (a vibe pill's
+# use_vibe returns it ahead of generate_playlist, only when generation can run; the
+# prompt form runs it through _SUBMIT_FOCUS_SCRIPT before submit_prompt). A generation
+# that fails fast arrives in the same React render as its start, so the thinking stage
+# never mounts, the idle hero never remounts, its on_mount never runs and focus stayed
+# on Generate. This chases the error callout instead (see
+# generator_state.FAILURE_FOCUS_SCRIPT).
+_FAILURE_FOCUS_SCRIPT = FAILURE_FOCUS_SCRIPT
+
+# The prompt form's version, run first in its on_submit chain (Generate, ⌘/Ctrl+Enter).
+# A blank prompt starts no generation (submit_prompt shows the field hint instead), so
+# the chase is skipped: polling would otherwise land on a stale callout from an earlier
+# failure when the poll expires. The textarea is still mounted when this runs.
+_SUBMIT_FOCUS_SCRIPT = (
+    f"(function(){{var p=document.getElementById('{PROMPT_INPUT_ID}');"
+    f"if(!p||p.value.trim()){_FAILURE_FOCUS_SCRIPT}}})()"
+)
+
+# The live "12/280" counter (assets/plexmix.js rewrites its text node on every input
+# in the field that names it in data-counter) and the blank-prompt hint region.
+_PROMPT_COUNT_ID = "gen-prompt-count"
+_PROMPT_HINT_ID = "gen-prompt-hint"
+
+# The readiness line under the prompt foot (also Generate's description).
+_READY_LINE_ID = "gen-ready-line"
+
+# A removed chip takes its focused button with it: focus the next chip's remove
+# button, or the prompt once no chip is left (only when focus was lost). "Clear all"
+# and the callout's Dismiss land on the prompt the same way.
+_CHIP_FOCUS_SCRIPT = focus_first_script([".chip-x-btn", f"#{PROMPT_INPUT_ID}"])
+_PROMPT_FOCUS_SCRIPT = focus_first_script([f"#{PROMPT_INPUT_ID}"])
+
+
+# Only Generate and ⌘/Ctrl+Enter submit the prompt form. Browsers also submit a form on
+# Enter in a text field, a range slider or a radio, so the advanced controls carry
+# data-enter="none" (assets/plexmix.js suppresses Enter there; design D4).
+def _no_enter() -> dict[str, Any]:
+    """A fresh ``data-enter="none"`` attribute dict (Reflex mutates ``custom_attrs``)."""
+    return {"data-enter": "none"}
 
 
 # ── Idle hero ─────────────────────────────────────────────────────────
 
 
 def _adv_panel() -> rx.Component:
-    return rx.box(
+    # Always rendered (the Options button's aria-controls target must exist) and
+    # hidden with the native ``hidden`` attribute while collapsed; redesign.css
+    # keeps ``.adv-panel[hidden]`` from being re-shown by its ``display: grid``.
+    return rx.el.div(
         rx.box(
-            rx.box(
+            rx.el.label(
                 "Tracks",
                 rx.el.span(GeneratorState.max_tracks, class_name="val"),
+                html_for="gen-max-tracks",
                 class_name="adv-label",
             ),
             rx.el.input(
+                id="gen-max-tracks",
                 type="range",
                 min="10",
                 max="100",
                 step="5",
                 value=GeneratorState.max_tracks,
                 on_change=GeneratorState.set_max_tracks,
+                custom_attrs=_no_enter(),
             ),
         ),
         rx.box(
-            rx.box(
+            rx.el.label(
                 "Candidate pool ×",
                 rx.el.span(GeneratorState.candidate_pool_multiplier, class_name="val"),
+                html_for="gen-pool",
                 class_name="adv-label",
             ),
             rx.el.input(
+                id="gen-pool",
                 type="range",
                 min="1",
                 max="100",
                 step="1",
                 value=GeneratorState.candidate_pool_multiplier,
                 on_change=GeneratorState.set_candidate_pool_multiplier,
+                custom_attrs=_no_enter(),
             ),
         ),
         rx.box(
-            rx.box("Genre focus", class_name="adv-label"),
-            rx.el.input(
+            rx.el.label("Genre focus", html_for=GENRE_INPUT_ID, class_name="adv-label"),
+            # Client-owned: applies 300 ms after typing pauses and on blur. Submitting
+            # the prompt form sends it too (name="genre"); Enter here does not generate.
+            filter_input(
+                id=GENRE_INPUT_ID,
+                name="genre",
+                value=GeneratorState.genre_filter,
+                on_commit=GeneratorState.set_genre_filter,
                 class_name="input",
                 placeholder="Any genre",
-                value=GeneratorState.genre_filter,
-                on_change=GeneratorState.set_genre_filter,
+                custom_attrs=_no_enter(),
             ),
         ),
-        rx.box(
-            rx.box("Track ordering", class_name="adv-label"),
-            rx.box(
-                *[
-                    rx.el.button(
-                        label,
-                        class_name=rx.cond(GeneratorState.shuffle_mode == value, "on", ""),
-                        on_click=GeneratorState.set_shuffle_mode(value),
-                        type="button",
-                    )
-                    for value, label in _ORDERINGS
-                ],
-                class_name="seg",
-            ),
+        seg_radio_group(
+            name="gen-ordering",
+            legend="Track ordering",
+            options=_ORDERINGS,
+            current=GeneratorState.shuffle_mode,
+            on_select=GeneratorState.set_shuffle_mode,
+            legend_id="gen-ordering-legend",
             class_name="adv-full",
+            # The radios are inside the prompt form: Enter on one must not generate.
+            custom_attrs=_no_enter(),
         ),
+        id="gen-adv-panel",
+        hidden=~GeneratorState.show_advanced,
         class_name="adv-panel",
     )
 
 
-def _prompt_box() -> rx.Component:
+def _constraint_chip(chip: ObjectVar[dict[str, str]]) -> rx.Component:
+    # One applied filter: its name, the mono value and a named remove button.
+    return rx.el.li(
+        rx.el.span(chip["name"], class_name="chip-x-name"),
+        rx.el.span(chip["value"], class_name="chip-x-value mono"),
+        rx.el.button(
+            rx.icon("x", size=12),
+            type="button",
+            class_name="chip-x-btn",
+            aria_label="Remove filter: " + chip["label"],
+            title="Remove filter",
+            on_click=[
+                cast(Any, GeneratorState.remove_constraint)(chip["key"]),
+                rx.call_script(_CHIP_FOCUS_SCRIPT),
+            ],
+        ),
+        class_name="chip-x",
+        key=chip["key"],
+    )
+
+
+def _constraint_chips() -> rx.Component:
+    # Filters a rerun or template carried that have no Options control (year, tempo,
+    # energy, key, danceability, avoid recent). Outside the Options panel, so they
+    # show whether it is open or not; nothing is applied while hidden.
+    constraints = cast(Any, GeneratorState.active_constraints)
+    return rx.cond(
+        constraints.length() > 0,
+        rx.box(
+            rx.el.span("Filters", id="gen-filters-label", class_name="chip-x-label"),
+            rx.el.ul(
+                rx.foreach(constraints, _constraint_chip),
+                role="list",
+                aria_labelledby="gen-filters-label",
+                class_name="chip-x-list",
+            ),
+            rx.el.button(
+                "Clear all",
+                type="button",
+                class_name="btn btn-sm btn-ghost chip-x-clear",
+                aria_label="Clear all filters",
+                on_click=[GeneratorState.clear_constraints, rx.call_script(_PROMPT_FOCUS_SCRIPT)],
+            ),
+            class_name="chip-x-row",
+        ),
+        rx.fragment(),
+    )
+
+
+def _rl_link(label: rx.Var, href: rx.Var) -> rx.Component:
+    return rx.cond(
+        href,
+        rx.link(label, href=href, class_name="rl-action", underline="always"),
+        rx.fragment(),
+    )
+
+
+def _ready_line() -> rx.Component:
+    # "5,943 tracks · Local · all-MiniLM-L6-v2 (384d) · ready · prompt stays on this
+    # machine", then the cause and its action when generation is blocked or an earlier
+    # run failed. A persistent polite region: it exists before its text is written.
+    s = cast(Any, GeneratorState.gen_status)
     return rx.box(
-        rx.el.textarea(
-            placeholder="rainy day melancholy with a little hope…",
+        rx.cond(
+            s["loaded"] == "true",
+            rx.fragment(
+                rx.el.p(
+                    rx.el.span(class_name="dot dot-" + s["tone"]),
+                    rx.el.span(s["tracks"], class_name="mono"),
+                    " · ",
+                    rx.el.span(s["provider"], class_name="rl-provider"),
+                    rx.cond(
+                        s["model_dim"] != "",
+                        rx.fragment(" · ", rx.el.span(s["model_dim"], class_name="mono")),
+                        rx.fragment(),
+                    ),
+                    " · ",
+                    rx.el.span(s["state"], class_name="rl-state"),
+                    rx.cond(
+                        s["privacy"] != "",
+                        rx.fragment(" · ", rx.el.span(s["privacy"], class_name="rl-privacy")),
+                        rx.fragment(),
+                    ),
+                    class_name="rl-facts",
+                ),
+                rx.cond(
+                    s["issue"] == "true",
+                    rx.el.p(
+                        rx.el.span(s["title"], class_name="rl-title"),
+                        rx.el.span(s["body"], class_name="rl-body"),
+                        _rl_link(s["action_label"], s["action_href"]),
+                        _rl_link(s["secondary_label"], s["secondary_href"]),
+                        class_name="rl-issue",
+                    ),
+                    rx.fragment(),
+                ),
+            ),
+            rx.fragment(
+                rx.el.span(class_name="skeleton rl-skeleton", aria_hidden="true"),
+                rx.el.span("Checking your library…", class_name="sr-only"),
+            ),
+        ),
+        id=_READY_LINE_ID,
+        role="status",
+        class_name="ready-line",
+    )
+
+
+def _prompt_box() -> rx.Component:
+    # A form, so Generate (its one submit button) and ⌘/Ctrl+Enter generate from the text
+    # the fields hold right now (form data: "prompt" and "genre"), never from a server
+    # copy that may still be catching up (design D4). The prompt is client-owned: it
+    # commits on blur only, and server writes reach it through rx.set_value.
+    return rx.el.form(
+        compose_textarea(
+            id=PROMPT_INPUT_ID,
+            name="prompt",
             value=GeneratorState.mood_query,
-            on_change=GeneratorState.set_mood_query,
+            on_commit=GeneratorState.set_mood_query,
+            max_length=PROMPT_MAX_CHARS,
+            aria_label="Describe the playlist you want",
+            aria_describedby=_PROMPT_HINT_ID,
+            aria_invalid=rx.cond(GeneratorState.prompt_error != "", "true", "false"),
+            placeholder="rainy day melancholy with a little hope…",
             class_name="prompt-input",
             rows="2",
+            # plexmix.js: ⌘/Ctrl+Enter submits the form; each input updates the counter.
+            custom_attrs={"data-submit-shortcut": "", "data-counter": _PROMPT_COUNT_ID},
         ),
         rx.box(
             rx.el.button(
@@ -175,21 +321,112 @@ def _prompt_box() -> rx.Component:
                 class_name=rx.cond(GeneratorState.show_advanced, "opt-btn on", "opt-btn"),
                 on_click=GeneratorState.toggle_advanced,
                 type="button",
+                aria_expanded=rx.cond(GeneratorState.show_advanced, "true", "false"),
+                aria_controls="gen-adv-panel",
             ),
-            rx.el.span(GeneratorState.mood_query.length(), "/280", class_name="charcount"),
+            # One text node ("12/280"): React writes it when mood_query changes on the
+            # server, plexmix.js rewrites the same node on every keystroke.
+            rx.el.span(
+                GeneratorState.prompt_count_label, id=_PROMPT_COUNT_ID, class_name="charcount"
+            ),
             rx.box(class_name="spacer"),
+            # Disabled only while a blocking readiness cause stops generation (the
+            # readiness line below says why). Never for an empty prompt: the server may
+            # not have seen the typing yet; submit_prompt checks the submitted text.
             rx.el.button(
                 rx.icon("sparkles", size=16),
                 "Generate",
                 class_name="btn btn-3 btn-primary glow",
-                on_click=GeneratorState.generate_playlist,
-                disabled=GeneratorState.mood_query == "",
-                type="button",
+                type="submit",
+                disabled=~GeneratorState.can_generate,
+                aria_describedby=_READY_LINE_ID,
             ),
             class_name="prompt-foot",
         ),
-        rx.cond(GeneratorState.show_advanced, _adv_panel(), rx.fragment()),
+        _constraint_chips(),
+        _ready_line(),
+        _adv_panel(),
         class_name="prompt-box",
+        # The failure-focus chase runs before the submit (see _SUBMIT_FOCUS_SCRIPT).
+        on_submit=[rx.call_script(_SUBMIT_FOCUS_SCRIPT), GeneratorState.submit_prompt],
+    )
+
+
+def _prompt_hint() -> rx.Component:
+    # "Describe a vibe first." under the prompt box after a blank submit. The region
+    # stays mounted (and is the prompt's aria-describedby target) so the message is
+    # announced when it appears.
+    return rx.box(
+        rx.cond(
+            GeneratorState.prompt_error != "",
+            rx.el.p(
+                rx.icon("circle-alert", size=14),
+                GeneratorState.prompt_error,
+                class_name="field-hint",
+            ),
+            rx.fragment(),
+        ),
+        id=_PROMPT_HINT_ID,
+        role="alert",
+        class_name="prompt-hint",
+    )
+
+
+def _callout_link(label: rx.Var, href: rx.Var) -> rx.Component:
+    return rx.cond(
+        href,
+        rx.link(label, href=href, class_name="c-action", underline="always"),
+        rx.fragment(),
+    )
+
+
+def _error_callout() -> rx.Component:
+    # Persistent assertive region: it stays mounted while the callout inside it appears
+    # and changes, so a failure is announced. The callout (#gen-error) is the stage's
+    # focus target after a failed generation. It shows the cause's title, body and one
+    # action (plus "Switch back" for a dimension mismatch) until Dismiss, a new
+    # generation, or on_load finding the cause resolved.
+    err = cast(Any, GeneratorState.generation_error)
+    return rx.box(
+        rx.cond(
+            err["title"],
+            rx.box(
+                rx.box(rx.icon("circle-alert", size=16), class_name="c-ico"),
+                rx.box(
+                    rx.box(err["title"], class_name="c-title"),
+                    rx.box(err["body"], class_name="c-body"),
+                    rx.cond(
+                        err["action_href"] | err["secondary_href"],
+                        rx.box(
+                            _callout_link(err["action_label"], err["action_href"]),
+                            _callout_link(err["secondary_label"], err["secondary_href"]),
+                            class_name="c-actions",
+                        ),
+                        rx.fragment(),
+                    ),
+                    class_name="c-main",
+                ),
+                rx.el.button(
+                    rx.icon("x", size=15),
+                    type="button",
+                    class_name="icon-btn c-dismiss",
+                    aria_label="Dismiss error",
+                    title="Dismiss",
+                    on_click=[GeneratorState.dismiss_error, rx.call_script(_PROMPT_FOCUS_SCRIPT)],
+                ),
+                id="gen-error",
+                tab_index=-1,
+                class_name=rx.cond(
+                    err["tone"] == "warning",
+                    "callout callout-warning",
+                    "callout callout-error",
+                ),
+                style={"marginTop": "16px", "textAlign": "left"},
+            ),
+            rx.fragment(),
+        ),
+        role="alert",
+        id="gen-error-region",
     )
 
 
@@ -206,6 +443,8 @@ def _idle_hero() -> rx.Component:
                 "What should your ",
                 rx.el.span("library", class_name="accent"),
                 " sound like?",
+                id="main-heading",
+                tab_index=-1,
                 class_name="gen-title",
             ),
             rx.el.p(
@@ -214,26 +453,20 @@ def _idle_hero() -> rx.Component:
                 class_name="gen-sub",
             ),
             _prompt_box(),
-            rx.cond(
-                GeneratorState.generation_message != "",
-                rx.box(
-                    rx.box(rx.icon("circle-alert", size=16), class_name="c-ico"),
-                    rx.box(GeneratorState.generation_message, class_name="c-body"),
-                    class_name="callout callout-error",
-                    style={"marginTop": "16px", "textAlign": "left"},
-                ),
-                rx.fragment(),
-            ),
+            _prompt_hint(),
+            _error_callout(),
             rx.box(
                 rx.foreach(
                     GeneratorState.mood_examples,
                     lambda v: rx.el.button(
                         v,
                         class_name="vibe-pill",
-                        on_click=[
-                            GeneratorState.set_mood_query(v),
-                            GeneratorState.generate_playlist,
-                        ],
+                        # use_vibe fills the prompt (returning the rx.set_value that shows
+                        # it in the client-owned textarea, input-responsiveness D3) and,
+                        # only when generation can run, the failure-focus chase and
+                        # generate_playlist. mypy reads the @rx.event handler as an
+                        # EventNamespace.
+                        on_click=cast(Any, GeneratorState.use_vibe)(v),
                         type="button",
                     ),
                 ),
@@ -242,6 +475,7 @@ def _idle_hero() -> rx.Component:
             class_name="gen-hero-inner",
         ),
         class_name="gen-hero",
+        on_mount=rx.call_script(_STAGE_FOCUS_SCRIPT),
     )
 
 
@@ -272,13 +506,20 @@ def _phase_node(idx: int, label: str, icon: str) -> rx.Component:
 
 
 def _thinking_stage() -> rx.Component:
+    # "42%": the bar width, the visible percentage and the bar's value text.
+    pct = GeneratorState.generation_progress.to_string() + "%"  # type: ignore[attr-defined]
     return rx.box(
         rx.box(
             rx.box(
-                rx.box(
-                    rx.icon("sparkles", size=15, color="var(--brand-9)"),
+                rx.el.h1(
+                    rx.icon("sparkles", size=15, color="var(--accent-fg)"),
                     "Curating ",
                     rx.el.b('"', GeneratorState.mood_query, '"'),
+                    id="main-heading",
+                    tab_index=-1,
+                    # The prompt is clamped to two lines (.think-query b): the full
+                    # text stays in the DOM and shows on hover.
+                    title=GeneratorState.mood_query,
                     class_name="think-query",
                 ),
                 class_name="think-head",
@@ -295,13 +536,16 @@ def _thinking_stage() -> rx.Component:
             ),
             rx.box(
                 rx.box(
-                    rx.box(
-                        class_name="pfill",
-                        style={"width": GeneratorState.generation_progress.to_string() + "%"},
-                    ),
+                    rx.box(class_name="pfill", style={"width": pct}),
+                    role="progressbar",
+                    aria_label="Generation progress",
+                    aria_valuemin="0",
+                    aria_valuemax="100",
+                    aria_valuenow=GeneratorState.generation_progress,
+                    aria_valuetext=pct,
                     class_name="pbar",
                 ),
-                rx.el.span(GeneratorState.generation_progress.to_string() + "%", class_name="pct"),
+                rx.el.span(pct, class_name="pct"),
                 rx.el.button(
                     rx.icon("x", size=14),
                     "Cancel",
@@ -310,6 +554,18 @@ def _thinking_stage() -> rx.Component:
                     type="button",
                 ),
                 class_name="gen-progress",
+            ),
+            # Polite, once per phase (about four times a run). The progress message
+            # and the log stay out of live regions: they change too often.
+            rx.box(
+                rx.match(
+                    GeneratorState.active_phase,
+                    *[(idx, label) for idx, (label, _icon) in enumerate(_PHASES)],
+                    "",
+                ),
+                role="status",
+                id="gen-phase-status",
+                class_name="sr-only",
             ),
             rx.box(
                 rx.foreach(
@@ -321,21 +577,15 @@ def _thinking_stage() -> rx.Component:
             class_name="think-inner fade-up",
         ),
         class_name="think",
+        on_mount=rx.call_script(_STAGE_FOCUS_SCRIPT),
     )
 
 
 # ── Results ───────────────────────────────────────────────────────────
 
-_COVER_GRADIENTS = [
-    "linear-gradient(135deg, #F97316, #EA580C)",
-    "linear-gradient(135deg, #e94560, #f39c12)",
-    "linear-gradient(135deg, #d68034, #5c2d0f)",
-    "linear-gradient(135deg, #f3c9a8, #b55f18)",
-]
 
-
-def _trk_row(track: rx.Var, index: rx.Var) -> rx.Component:
-    return rx.box(
+def _trk_row(track: ObjectVar[dict[str, str]], index: rx.Var) -> rx.Component:
+    return rx.el.li(
         rx.el.span(index + 1, class_name="tnum"),
         rx.box(
             style={
@@ -357,7 +607,9 @@ def _trk_row(track: rx.Var, index: rx.Var) -> rx.Component:
             rx.icon("x", size=15),
             class_name="icon-btn trm",
             title="Remove",
-            on_click=GeneratorState.remove_track(track["id"]),
+            aria_label="Remove " + track["title"] + " from playlist",
+            # mypy reads the event handler as a plain method; the arg is a Var.
+            on_click=GeneratorState.remove_track(track["id"]),  # type: ignore[arg-type]
             type="button",
         ),
         class_name="trk",
@@ -367,13 +619,17 @@ def _trk_row(track: rx.Var, index: rx.Var) -> rx.Component:
 def _results_stage() -> rx.Component:
     return rx.box(
         rx.box(
-            rx.box(
-                *[rx.box(style={"background": g}) for g in _COVER_GRADIENTS],
-                class_name="result-cover",
-            ),
+            # Same swatch History shows once this prompt's playlist is saved.
+            playlist_cover(GeneratorState.cover_variant, class_name="result-cover"),
             rx.box(
                 rx.box("Generated playlist", class_name="rk"),
-                rx.el.h1(GeneratorState.mood_query),
+                # Clamped to two lines (.result-meta h1); the full prompt shows on hover.
+                rx.el.h1(
+                    GeneratorState.mood_query,
+                    id="main-heading",
+                    tab_index=-1,
+                    title=GeneratorState.mood_query,
+                ),
                 rx.box(
                     rx.el.span(
                         GeneratorState.generated_playlist.length(),
@@ -421,9 +677,12 @@ def _results_stage() -> rx.Component:
             ),
             class_name="result-head",
         ),
-        rx.box(
+        # Ordered list in playlist order. role="list" keeps the list semantics in
+        # WebKit, which drops them for lists styled ``list-style: none``.
+        rx.el.ol(
             rx.foreach(GeneratorState.generated_playlist, _trk_row),
-            class_name="tbl-wrap",
+            role="list",
+            class_name="tbl-wrap trk-list",
             style={"padding": "6px"},
         ),
         rx.box(
@@ -437,6 +696,7 @@ def _results_stage() -> rx.Component:
             style={"marginTop": "18px", "textAlign": "center"},
         ),
         class_name="gen-results fade-up",
+        on_mount=rx.call_script(_STAGE_FOCUS_SCRIPT),
     )
 
 
@@ -445,8 +705,6 @@ def _results_stage() -> rx.Component:
 
 def generator() -> rx.Component:
     stage = rx.box(
-        rx.script(_THINKVIZ_JS),
-        rx.script(_GENLOG_JS),
         rx.cond(
             GeneratorState.is_generating,
             _thinking_stage(),
@@ -458,4 +716,5 @@ def generator() -> rx.Component:
         ),
         class_name="gen-stage",
     )
-    return layout(stage, full_bleed=True)
+    # heading=False: each stage renders its own visible h1#main-heading.
+    return layout(stage, full_bleed=True, heading=False)

@@ -7,16 +7,20 @@ def stat_tile(
     label: str,
     value,  # type: ignore[no-untyped-def]
     icon_name: str,
-    icon_color: str = "accent.9",
-    icon_bg: str = "accent.3",
+    icon_color: str = "var(--accent-fg)",
+    icon_bg: str = "var(--brand-3)",
     stagger: str = "",
 ) -> rx.Component:
-    """Single metric tile -- large mono number, muted label, tinted icon."""
+    """Single metric tile -- large mono number, muted label, tinted icon.
+
+    ``icon_color``/``icon_bg`` are CSS colors. On a tint chip use a text-safe
+    ``--*-fg`` token for the icon, never the semantic solid (fills only).
+    """
     return rx.hstack(
         rx.box(
             rx.icon(icon_name, size=20, color=icon_color),
             padding="8px",
-            border_radius="var(--radius-md)",
+            border_radius="50%",
             background_color=icon_bg,
             flex_shrink="0",
         ),
@@ -27,7 +31,7 @@ def stat_tile(
                 weight="bold",
                 style={"fontFamily": "var(--font-mono)"},
             ),
-            rx.text(label, size="1", color="gray.9", weight="medium"),
+            rx.text(label, size="1", color="var(--fg-3)", weight="medium"),
             spacing="0",
             align="start",
         ),

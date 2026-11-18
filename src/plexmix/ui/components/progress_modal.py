@@ -38,23 +38,26 @@ def progress_modal(
                     width="100%",
                     align="center",
                 ),
-                rx.dialog.close(
-                    rx.button(
-                        "Cancel",
-                        on_click=on_cancel if on_cancel else lambda: None,
-                        variant="soft",
-                        color_scheme="red",
-                        size="2",
-                        class_name="pm-button",
+                (
+                    rx.dialog.close(
+                        rx.button(
+                            "Cancel",
+                            on_click=on_cancel if on_cancel else lambda: None,
+                            variant="soft",
+                            color_scheme="red",
+                            size="2",
+                            class_name="pm-button",
+                        )
                     )
-                )
-                if on_cancel
-                else rx.box(),
+                    if on_cancel
+                    else rx.box()
+                ),
                 spacing="4",
                 width=rx.breakpoints(initial="90vw", sm="420px"),
                 padding="4",
             ),
             class_name="animate-scale-in",
+            aria_modal="true",
         ),
         open=is_open,
     )

@@ -1358,6 +1358,50 @@ class SQLiteManager:
         )
         return {row[0] for row in cursor.fetchall()}
 
+    def get_playlist_top_artists(self, limit: int = 3) -> Dict[int, List[str]]:
+        """Return each playlist's most frequent artists, most frequent first.
+
+        One grouped read over ``playlist_tracks ⨝ tracks ⨝ artists``, ordered by
+        track count (descending) and then by artist name. The top ``limit``
+        distinct, non-blank names per playlist are kept in Python. Playlists with
+        no tracks are absent from the result. The SQL is static (no interpolated
+        values), so there is nothing to bind.
+
+        Returns:
+            ``{playlist_id: [artist name, ...]}`` with at most ``limit`` names each;
+            ``{}`` when ``limit`` is below 1 or no playlist has tracks.
+        """
+        if limit < 1:
+            return {}
+        cursor = self.get_connection().cursor()
+        cursor.execute(
+            """
+            SELECT pt.playlist_id, a.name, COUNT(*) AS artist_tracks
+            FROM playlist_tracks pt
+            JOIN tracks t ON t.id = pt.track_id
+            JOIN artists a ON a.id = t.artist_id
+            GROUP BY pt.playlist_id, a.id
+            ORDER BY pt.playlist_id, artist_tracks DESC, a.name COLLATE NOCASE, a.name
+        """
+        )
+        top: Dict[int, List[str]] = {}
+        seen: Dict[int, set[str]] = {}
+        for row in cursor.fetchall():
+            playlist_id = int(row[0])
+            name = (row[1] or "").strip()
+            if not name:
+                continue
+            names = top.setdefault(playlist_id, [])
+            if len(names) >= limit:
+                continue
+            seen_names = seen.setdefault(playlist_id, set())
+            key = name.lower()
+            if key in seen_names:
+                continue
+            seen_names.add(key)
+            names.append(name)
+        return top
+
     def delete_playlist(self, playlist_id: int) -> None:
         cursor = self.get_connection().cursor()
         cursor.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
@@ -1501,7 +1545,10 @@ class SQLiteManager:
                 t.tags,
                 a.name as artist_name,
                 al.title as album_title,
-                EXISTS(SELECT 1 FROM embeddings e WHERE e.track_id = t.id) as has_embedding
+                EXISTS(SELECT 1 FROM embeddings e WHERE e.track_id = t.id) as has_embedding,
+                EXISTS(SELECT 1 FROM audio_features af WHERE af.track_id = t.id)
+                    AS has_audio_features,
+                (t.musicbrainz_recording_id IS NOT NULL) AS has_musicbrainz
             FROM tracks t
             JOIN artists a ON t.artist_id = a.id
             JOIN albums al ON t.album_id = al.id
@@ -1541,9 +1588,18 @@ class SQLiteManager:
             "genre": "t.genre",
             "year": "t.year",
         }
-        order_col = allowed_sort_columns.get(sort_column, "t.title")
+        text_sort_columns = {"title", "artist", "album", "genre"}
+        sort_key = sort_column if sort_column in allowed_sort_columns else "title"
+        order_col = allowed_sort_columns[sort_key]
         order_dir = "ASC" if sort_ascending else "DESC"
-        query += f" ORDER BY {order_col} {order_dir} LIMIT ? OFFSET ?"
+        # Names sort case-insensitively (SQLite's default BINARY collation puts
+        # "deadmau5" after "ZZ Top"); the raw value and then the id break ties so
+        # LIMIT/OFFSET pages are deterministic.
+        if sort_key in text_sort_columns:
+            order_by = f"{order_col} COLLATE NOCASE {order_dir}, {order_col} {order_dir}"
+        else:
+            order_by = f"{order_col} {order_dir}"
+        query += f" ORDER BY {order_by}, t.id {order_dir} LIMIT ? OFFSET ?"
         params.extend([limit, offset])
 
         cursor.execute(query, params)
@@ -1617,13 +1673,107 @@ class SQLiteManager:
         result = cursor.fetchone()
         return result["count"] if result else 0
 
+    def count_tracks_without_embeddings(self, embedding_model: Optional[str] = None) -> int:
+        """Count tracks that have no embedding.
+
+        With no *embedding_model*, a track counts as embedded when it has an
+        embedding from any model, so ``count_tracks_with_embeddings() +
+        count_tracks_without_embeddings()`` equals the track total. Pass
+        *embedding_model* to count tracks missing an embedding from that model.
+        """
+        cursor = self.get_connection().cursor()
+        if embedding_model is not None:
+            cursor.execute(
+                """
+                SELECT COUNT(*) as count
+                FROM tracks t
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM embeddings e
+                    WHERE e.track_id = t.id AND e.embedding_model = ?
+                )
+            """,
+                (embedding_model,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT COUNT(*) as count
+                FROM tracks t
+                WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.track_id = t.id)
+            """
+            )
+        result = cursor.fetchone()
+        return result["count"] if result else 0
+
+    def get_tracks_without_embeddings(self, embedding_model: Optional[str] = None) -> List[Track]:
+        """Tracks that have no embedding (same definition as
+        :meth:`count_tracks_without_embeddings`), ordered by id."""
+        cursor = self.get_connection().cursor()
+        if embedding_model is not None:
+            cursor.execute(
+                """
+                SELECT t.* FROM tracks t
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM embeddings e
+                    WHERE e.track_id = t.id AND e.embedding_model = ?
+                )
+                ORDER BY t.id
+            """,
+                (embedding_model,),
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT t.* FROM tracks t
+                WHERE NOT EXISTS (SELECT 1 FROM embeddings e WHERE e.track_id = t.id)
+                ORDER BY t.id
+            """
+            )
+        return [Track(**dict(row)) for row in cursor.fetchall()]
+
+    def get_tags_for_tracks(self, track_ids: List[int]) -> Dict[int, Dict[str, Optional[str]]]:
+        """Read the stored tag columns of several tracks at once.
+
+        Returns ``{track_id: {"tags", "environments", "instruments"}}`` with each
+        value exactly as stored (comma-separated string, or ``None``). Ids that
+        are not in the database are absent. The ``IN (...)`` list is chunked so
+        a large selection never exceeds SQLite's bound-parameter limit.
+        """
+        ids = list(dict.fromkeys(int(tid) for tid in track_ids))
+        if not ids:
+            return {}
+        cursor = self.get_connection().cursor()
+        out: Dict[int, Dict[str, Optional[str]]] = {}
+        chunk_size = 900
+        for start in range(0, len(ids), chunk_size):
+            chunk = ids[start : start + chunk_size]
+            placeholders = ",".join("?" * len(chunk))
+            cursor.execute(
+                f"SELECT id, tags, environments, instruments FROM tracks "
+                f"WHERE id IN ({placeholders})",
+                chunk,
+            )
+            for row in cursor.fetchall():
+                out[int(row["id"])] = {
+                    "tags": row["tags"],
+                    "environments": row["environments"],
+                    "instruments": row["instruments"],
+                }
+        return out
+
     def get_last_sync_time(self) -> Optional[str]:
+        """When the library was last synced, or None.
+
+        A ``partial`` sync counts as well as a ``success``: it read Plex and saved
+        its changes, and only kept unread tracks or held a removal back. ``failed``
+        and ``interrupted`` syncs do not count.
+        """
         cursor = self.get_connection().cursor()
         cursor.execute(
             """
             SELECT MAX(sync_date) as last_sync
             FROM sync_history
-            WHERE status = 'success'
+            WHERE status IN ('success', 'partial')
         """
         )
         result = cursor.fetchone()

@@ -304,3 +304,59 @@ def requires_ai_api_key(provider: str) -> bool:
 def requires_embedding_api_key(provider: str) -> bool:
     """Check whether an embedding provider requires an API key."""
     return provider in EMBEDDING_PROVIDERS_REQUIRING_KEY
+
+
+# ---------------------------------------------------------------------------
+# Display names (status surfaces, readiness lines, job confirmations)
+# ---------------------------------------------------------------------------
+
+LOCAL_DISPLAY_NAME = "Local"
+
+
+def _resolve_ai_provider_id(provider_id: str) -> Optional[str]:
+    """Return the registry key for an AI provider id or alias, or None if unknown."""
+    key = provider_id.strip().lower()
+    if key in AI_PROVIDERS:
+        return key
+    for pid, entry in AI_PROVIDERS.items():
+        if key in entry.aliases:
+            return pid
+    return None
+
+
+def ai_provider_display_name(provider_id: Optional[str]) -> str:
+    """Return the human display name for an AI provider id.
+
+    Uses the registry ``display_name`` ("OpenAI", "Gemini", "Claude", "Cohere",
+    "Custom (OpenAI-compatible)"), maps ``local`` to "Local" and resolves the
+    ``anthropic`` alias to "Claude". Matching ignores case and surrounding
+    whitespace. Unknown ids are returned unchanged (never ``.title()``-cased, which
+    is what produced "Openai"); ``None`` or an empty id gives "".
+    """
+    if not provider_id:
+        return ""
+    if provider_id.strip().lower() == "local":
+        return LOCAL_DISPLAY_NAME
+    pid = _resolve_ai_provider_id(provider_id)
+    if pid is None:
+        return provider_id
+    return AI_PROVIDERS[pid].display_name
+
+
+def embedding_provider_display_name(provider_id: Optional[str]) -> str:
+    """Return the human display name for an embedding provider id.
+
+    Uses the registry ``display_name`` ("OpenAI", "Gemini", "Cohere",
+    "Custom (OpenAI-compatible)") and maps ``local`` to "Local". Matching ignores
+    case and surrounding whitespace. Unknown ids are returned unchanged; ``None``
+    or an empty id gives "".
+    """
+    if not provider_id:
+        return ""
+    key = provider_id.strip().lower()
+    if key == "local":
+        return LOCAL_DISPLAY_NAME
+    entry = EMBEDDING_PROVIDERS.get(key)
+    if entry is None:
+        return provider_id
+    return entry.display_name

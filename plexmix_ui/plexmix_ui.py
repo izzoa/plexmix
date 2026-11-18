@@ -19,7 +19,7 @@ app = rx.App(
     theme=rx.theme(
         appearance="light",
         accent_color="orange",
-        radius="medium",
+        radius="large",
     ),
     stylesheets=[
         "/styles.css",
@@ -31,6 +31,10 @@ app = rx.App(
     },
     head_components=[
         rx.el.link(rel="icon", href="/favicon.svg", type="image/svg+xml"),
+        # Global page scripts (keyboard shortcuts, appearance restore, Generator
+        # canvas). A plain <head> script, not rx.script: Reflex compiles rx.script
+        # to react-helmet, which drops it under React StrictMode (dev mode).
+        rx.el.script(src="/plexmix.js"),
     ],
 )
 

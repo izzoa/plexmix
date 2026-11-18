@@ -5,7 +5,7 @@ from threading import Event as ThreadingEvent
 
 import pytest
 
-from plexmix.ui.job_manager import JobManager, TaskStore
+from plexmix.ui.job_manager import SESSION_REAP_GRACE_S, JobManager, TaskStore
 
 
 @pytest.fixture
@@ -53,41 +53,164 @@ class TestStartFinishCancel:
         assert not jm.is_cancelled("tok-a", "audio")
 
 
-class TestCancelStaleClients:
-    def test_cancels_other_tokens(self, jm: JobManager):
-        old_event = jm.start("old-token", "sync")
-        jm.start("current-token", "sync")
+class TestFinishGuard:
+    def test_finish_with_stale_event_keeps_newer_job(self, jm: JobManager):
+        first = jm.start("tok-a", "generation")
+        second = jm.start("tok-a", "generation")
+        # The superseded job finishing must not drop the newer job's handle.
+        jm.finish("tok-a", "generation", first)
+        assert jm.get_cancel_event("tok-a", "generation") is second
+        jm.finish("tok-a", "generation", second)
+        assert jm.get_cancel_event("tok-a", "generation") is None
 
-        jm.cancel_stale_clients("current-token")
+    def test_finish_with_current_event_releases(self, jm: JobManager):
+        event = jm.start("tok-a", "generation")
+        jm.finish("tok-a", "generation", event)
+        assert jm.get_cancel_event("tok-a", "generation") is None
+        assert jm.active_job_count == 0
 
-        assert old_event.is_set()  # old token cancelled
-        assert not jm.is_cancelled("current-token", "sync")  # current kept
 
-    def test_cancels_multiple_stale_tokens(self, jm: JobManager):
-        e1 = jm.start("stale-1", "sync")
-        e2 = jm.start("stale-2", "audio")
-        jm.start("current", "tagging")
+class TestReapDisconnected:
+    def test_default_grace_is_120s(self):
+        assert SESSION_REAP_GRACE_S == 120.0
 
-        jm.cancel_stale_clients("current")
+    def test_two_live_tokens_both_survive_a_sweep(self, jm: JobManager):
+        """Replaces the old cross-client cancel: a sweep from either tab's page
+        load never cancels the other live tab's work."""
+        a = jm.start("tok-a", "generation")
+        b = jm.start("tok-b", "generation")
 
-        assert e1.is_set()
-        assert e2.is_set()
-        assert not jm.is_cancelled("current", "tagging")
+        for now in (0.0, 500.0, 10_000.0):
+            assert jm.reap_disconnected({"tok-a", "tok-b"}, now) == []
 
-    def test_noop_when_no_stale(self, jm: JobManager):
-        jm.start("tok", "sync")
-        jm.cancel_stale_clients("tok")
-        assert not jm.is_cancelled("tok", "sync")
+        assert not a.is_set()
+        assert not b.is_set()
+        assert jm.active_job_count == 2
 
-    def test_unblocks_paused_stale_jobs(self, jm: JobManager):
-        jm.start("old", "audio")
-        pause = jm.get_pause_event("old", "audio")
-        jm.pause("old", "audio")
+    def test_connected_token_is_never_reaped(self, jm: JobManager):
+        event = jm.start("tok-a", "generation")
+        for now in (0.0, 121.0, 1_000.0, 100_000.0):
+            assert jm.reap_disconnected(frozenset({"tok-a"}), now) == []
+        assert not event.is_set()
+        assert jm.get_cancel_event("tok-a", "generation") is event
+
+    def test_disconnected_token_reaped_only_after_grace(self, jm: JobManager):
+        gone = jm.start("tok-gone", "generation")
+        live = jm.start("tok-live", "generation")
+
+        assert jm.reap_disconnected({"tok-live"}, 1_000.0) == []  # first sighting
+        assert not gone.is_set()
+        assert jm.reap_disconnected({"tok-live"}, 1_119.9) == []  # still within grace
+        assert not gone.is_set()
+
+        assert jm.reap_disconnected({"tok-live"}, 1_120.0) == ["tok-gone"]
+        assert gone.is_set()
+        assert jm.get_cancel_event("tok-gone", "generation") is None
+        assert not live.is_set()
+
+        # Already reaped: nothing left to reap.
+        assert jm.reap_disconnected({"tok-live"}, 5_000.0) == []
+
+    def test_custom_grace(self, jm: JobManager):
+        event = jm.start("tok-a", "generation")
+        assert jm.reap_disconnected(set(), 10.0, grace_s=5.0) == []
+        assert jm.reap_disconnected(set(), 15.0, grace_s=5.0) == ["tok-a"]
+        assert event.is_set()
+
+    def test_zero_grace_reaps_on_first_sighting(self, jm: JobManager):
+        event = jm.start("tok-a", "generation")
+        assert jm.reap_disconnected([], 0.0, grace_s=0.0) == ["tok-a"]
+        assert event.is_set()
+
+    def test_reconnect_within_grace_resets_timer(self, jm: JobManager):
+        event = jm.start("tok-a", "generation")
+
+        assert jm.reap_disconnected(set(), 0.0) == []  # disconnected at t=0
+        assert jm.reap_disconnected({"tok-a"}, 100.0) == []  # reconnected in grace
+        assert jm.reap_disconnected(set(), 150.0) == []  # disconnected again: new timer
+        # 150 s after the first drop but only 100 s after the second one.
+        assert jm.reap_disconnected(set(), 250.0) == []
+        assert not event.is_set()
+
+        assert jm.reap_disconnected(set(), 270.0) == ["tok-a"]
+        assert event.is_set()
+
+    def test_none_is_a_noop(self, jm: JobManager):
+        event = jm.start("tok-a", "generation")
+        jm.get_pause_event("tok-a", "generation")
+        jm.pause("tok-a", "generation")
+
+        for now in (0.0, 1_000.0, 1_000_000.0):
+            assert jm.reap_disconnected(None, now) == []
+
+        assert not event.is_set()
+        assert jm.is_paused("tok-a", "generation")
+        assert jm.active_job_count == 1
+        # Unknown liveness must not start (or advance) a disconnect timer either.
+        assert jm.reap_disconnected(set(), 2_000_000.0) == []
+        assert not event.is_set()
+
+    def test_unblocks_paused_loops(self, jm: JobManager):
+        jm.start("tok-a", "audio")
+        pause = jm.get_pause_event("tok-a", "audio")
+        jm.pause("tok-a", "audio")
         assert not pause.is_set()
 
-        jm.cancel_stale_clients("new")
-        # Pause event should be set (unblocked) so the loop can exit
+        assert jm.reap_disconnected(set(), 0.0) == []
+        assert not pause.is_set()  # still within grace: stays paused
+        assert jm.reap_disconnected(set(), 120.0) == ["tok-a"]
+        # Pause event set (unblocked) so the loop can wake up and see the cancel.
         assert pause.is_set()
+        assert jm.is_cancelled("tok-a", "audio") is False  # handles dropped
+        assert jm.get_cancel_event("tok-a", "audio") is None
+
+    def test_cancels_registered_tasks(self, jm: JobManager):
+        async def scenario() -> None:
+            task = asyncio.create_task(asyncio.sleep(3600))
+            jm.register_task("tok-a", "search", task)
+            jm.register_task("tok-b", "search", asyncio.create_task(asyncio.sleep(0)))
+
+            assert jm.reap_disconnected({"tok-b"}, 0.0) == []
+            assert jm.reap_disconnected({"tok-b"}, 120.0) == ["tok-a"]
+            await asyncio.sleep(0)
+            assert task.cancelled()
+
+        asyncio.run(scenario())
+
+    def test_task_only_owner_is_tracked(self, jm: JobManager):
+        """A session-bound asyncio task registered without a cancel event is tracked."""
+
+        async def scenario() -> None:
+            task = asyncio.create_task(asyncio.sleep(3600))
+            jm.register_task("tok-a", "search", task)
+            assert jm.reap_disconnected({"tok-a"}, 0.0) == []
+            await asyncio.sleep(0)
+            assert not task.done()
+            task.cancel()
+
+        asyncio.run(scenario())
+
+    def test_finished_work_forgets_timer(self, jm: JobManager):
+        event = jm.start("tok-a", "generation")
+        assert jm.reap_disconnected(set(), 0.0) == []  # timer starts
+        jm.finish("tok-a", "generation", event)
+        assert jm.reap_disconnected(set(), 50.0) == []  # no work: timer dropped
+        # A new job for the same token starts a fresh timer.
+        event2 = jm.start("tok-a", "generation")
+        assert jm.reap_disconnected(set(), 130.0) == []
+        assert not event2.is_set()
+        assert jm.reap_disconnected(set(), 250.0) == ["tok-a"]
+        assert event2.is_set()
+
+    def test_reaps_each_token_independently(self, jm: JobManager):
+        a = jm.start("tok-a", "generation")
+        b = jm.start("tok-b", "generation")
+        assert jm.reap_disconnected({"tok-b"}, 0.0) == []
+        assert jm.reap_disconnected(set(), 60.0) == []  # tok-b drops at t=60
+        assert jm.reap_disconnected(set(), 120.0) == ["tok-a"]
+        assert a.is_set() and not b.is_set()
+        assert jm.reap_disconnected(set(), 180.0) == ["tok-b"]
+        assert b.is_set()
 
 
 class TestPauseResume:
@@ -109,6 +232,13 @@ class TestCleanup:
         jm.cleanup_client("tok-a")
         assert e1.is_set()
         assert jm.active_job_count == 1
+
+    def test_cleanup_client_unblocks_paused_loop(self, jm: JobManager):
+        jm.start("tok-a", "audio")
+        pause = jm.get_pause_event("tok-a", "audio")
+        jm.pause("tok-a", "audio")
+        jm.cleanup_client("tok-a")
+        assert pause.is_set()
 
     def test_cleanup_all(self, jm: JobManager):
         jm.start("tok-a", "sync")

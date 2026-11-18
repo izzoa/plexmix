@@ -1,6 +1,9 @@
 """Tests for config/settings.py and config/credentials.py."""
 from pathlib import Path
+from typing import get_args, get_origin
 from unittest.mock import patch, MagicMock
+
+import pytest
 
 
 # ---------------------------------------------------------------------------
@@ -309,6 +312,299 @@ class TestSettings:
         config_file = tmp_path / "nested" / "dir" / "config.yaml"
         Settings.load_from_file(str(tmp_path / "nope.yaml")).save_to_file(str(config_file))
         assert config_file.exists()
+
+
+class TestSettingsErrorsHideValues:
+    """A settings error names the file, setting or variable, never the rejected value."""
+
+    def test_validation_error_hides_numeric_password(self, tmp_path: Path) -> None:
+        from pydantic import ValidationError
+
+        from plexmix.config.settings import Settings
+
+        cfg = _min_db_yaml(tmp_path, "ui:\n  password: 1234567890\n")
+        with pytest.raises(ValidationError) as info:
+            Settings.load_from_file(cfg)
+        text = str(info.value)
+        assert "ui.password" in text
+        assert "1234567890" not in text
+
+    def test_validation_error_hides_section_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pydantic import ValidationError
+
+        from plexmix.config.settings import Settings
+
+        for name in ("PLEX_URL", "PLEX_TOKEN", "PLEX_LIBRARY_NAME"):
+            monkeypatch.delenv(name, raising=False)
+        cfg = _min_db_yaml(tmp_path, "plex:\n  - dummy-plex-token-0000\n")
+        with pytest.raises(ValidationError) as info:
+            Settings.load_from_file(cfg)
+        text = str(info.value)
+        assert "\nplex\n" in text  # the section is named
+        assert "dummy-plex-token-0000" not in text
+
+    def test_section_settings_hide_inputs_when_built_alone(self) -> None:
+        from pydantic import ValidationError
+
+        from plexmix.config.settings import UISettings
+
+        with pytest.raises(ValidationError) as info:
+            UISettings(password=1234567890)
+        text = str(info.value)
+        assert "password" in text
+        assert "1234567890" not in text
+
+    def test_every_settings_section_hides_inputs(self) -> None:
+        from pydantic import BaseModel
+
+        from plexmix.config.settings import Settings
+
+        assert Settings.model_config.get("hide_input_in_errors") is True
+        checked = set()
+        for name, field in Settings.model_fields.items():
+            # The annotation itself, or the class inside an Optional[...].
+            for candidate in (field.annotation, *get_args(field.annotation)):
+                if get_origin(candidate) is not None or not isinstance(candidate, type):
+                    continue
+                if issubclass(candidate, BaseModel):
+                    assert candidate.model_config.get("hide_input_in_errors") is True, name
+                    checked.add(name)
+        # The walk covers a section that is added later; these are the nine of today.
+        assert checked >= {
+            "plex",
+            "database",
+            "ai",
+            "embedding",
+            "playlist",
+            "audio",
+            "musicbrainz",
+            "ui",
+            "logging",
+        }
+
+    def test_yaml_alias_and_tag_errors_do_not_echo_value(self, tmp_path: Path) -> None:
+        import yaml
+
+        from plexmix.config.settings import Settings
+
+        # PyYAML reads an unquoted value that starts with "*" as an alias and one that
+        # starts with "!" as a tag, and its own error message repeats the name.
+        for line in ("password: *dummyvalue", "password: !dummyvalue"):
+            cfg = _min_db_yaml(tmp_path, f"ui:\n  {line}\n")
+            with pytest.raises(yaml.YAMLError) as info:
+                Settings.load_from_file(cfg)
+            assert "dummyvalue" not in str(info.value)
+            assert "dummyvalue" not in repr(info.value)
+            # The parser's own error quotes the value; it is not attached, so it
+            # cannot be printed as the cause or the context of this one.
+            assert info.value.__cause__ is None and info.value.__context__ is None
+
+    def test_yaml_core_tag_errors_do_not_echo_value(self, tmp_path: Path) -> None:
+        import yaml
+
+        from plexmix.config.settings import Settings
+
+        # After "!!bool", "!!int" or "!!float" PyYAML fails with a plain KeyError or
+        # ValueError (not a YAML error) whose text quotes the value. After
+        # "!!timestamp" it fails with an AttributeError that names nothing at all.
+        for tag in ("!!bool", "!!int", "!!float", "!!timestamp"):
+            cfg = _min_db_yaml(tmp_path, f"ui:\n  password: {tag} dummyvalue\n")
+            with pytest.raises(yaml.YAMLError) as info:
+                Settings.load_from_file(cfg)
+            text = str(info.value)
+            assert cfg in text and "could not be parsed" in text
+            assert "dummyvalue" not in text
+            assert info.value.__cause__ is None and info.value.__context__ is None
+
+    def test_yaml_error_keeps_line_and_column(self, tmp_path: Path) -> None:
+        import yaml
+
+        from plexmix.config.settings import Settings
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "plex:\n  token: dummy-plex-token-0000\n  url: *dummyvalue\naudio:\n  workers: 2\n"
+        )
+        with pytest.raises(yaml.YAMLError) as info:
+            Settings.load_from_file(str(cfg))
+        text = str(info.value)
+        assert str(cfg) in text
+        assert "line 3, column 8" in text
+        assert "dummy-plex-token-0000" not in text and "dummyvalue" not in text
+        # What the web UI's error text reads: a fixed problem and a zero-based position.
+        assert info.value.problem == "could not be parsed"
+        mark = info.value.problem_mark
+        assert (mark.line, mark.column) == (2, 7)
+        assert mark.buffer is None and mark.pointer is None  # no source text travels
+
+    def test_legacy_config_yaml_error_does_not_echo_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The fallback to ~/.plexmix/config.yaml reads the file through the same helper."""
+        import yaml
+
+        from plexmix.config import settings as settings_module
+
+        home = tmp_path / "home"
+        legacy = home / ".plexmix" / "config.yaml"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("ui:\n  password: *dummyvalue\n")
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        monkeypatch.setenv("PLEXMIX_DATA_DIR", str(data_dir))
+        monkeypatch.setattr(settings_module, "_config_path_override", None)
+        # Guard: the fallback must resolve to the temporary home, never a real profile.
+        assert Path("~/.plexmix/config.yaml").expanduser() == legacy
+
+        with pytest.raises(yaml.YAMLError) as info:
+            settings_module.Settings.load_from_file()
+        text = str(info.value)
+        assert str(legacy) in text and "line 2" in text
+        assert "dummyvalue" not in text
+
+    @pytest.mark.parametrize("with_config_file", [True, False])
+    def test_env_cast_error_names_variable_not_value(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, with_config_file: bool
+    ) -> None:
+        from pydantic import ValidationError
+
+        from plexmix.config.settings import Settings
+
+        # Without a config file the sections read the environment themselves; the
+        # error must name the variable there too, not "AudioSettings / workers".
+        cfg = _min_db_yaml(tmp_path) if with_config_file else str(tmp_path / "absent.yaml")
+        assert Path(cfg).exists() is with_config_file
+        cases = (
+            ("AUDIO_WORKERS", "four", "a whole number"),
+            ("MUSICBRAINZ_RATE_LIMIT_DELAY", "slowly", "a number"),
+        )
+        for name, value, expected in cases:
+            monkeypatch.setenv(name, value)
+            with pytest.raises(ValueError) as info:
+                Settings.load_from_file(cfg)
+            monkeypatch.delenv(name)
+            assert not isinstance(info.value, ValidationError)
+            text = str(info.value)
+            assert name in text
+            assert expected in text
+            assert value not in text
+            # The cast's own error quotes the value; it is not attached either.
+            assert info.value.__cause__ is None and info.value.__context__ is None
+
+    def test_unknown_key_error_does_not_echo_key_text(self, tmp_path: Path) -> None:
+        from pydantic import ValidationError
+
+        from plexmix.config.settings import Settings
+
+        # Flow style with the space after the colon missing: YAML reads ONE key,
+        # "password:dummy-ui-password-0000", and a validation error names its keys.
+        cases = (
+            ("ui", "{password:dummy-ui-password-0000}", "dummy-ui-password-0000"),
+            ("plex", "{token:dummy-plex-token-0000}", "dummy-plex-token-0000"),
+            ("ai", "{custom_api_key:dummy-api-key-0000}", "dummy-api-key-0000"),
+            ("ui", "{password:dummy-ui-password-0000, 1234567890: x}", "1234567890"),
+            ("embedding", "{9876543210: x}", "9876543210"),  # a key that is not text
+        )
+        for section, body, secret in cases:
+            cfg = _min_db_yaml(tmp_path, f"{section}: {body}\n")
+            with pytest.raises(ValidationError) as info:
+                Settings.load_from_file(cfg)
+            text = str(info.value)
+            assert f"{section}.unknown key (check for a missing space after a colon)" in text
+            for value in (secret, "dummy-ui-password-0000"):
+                assert value not in text
+                assert value not in repr(info.value)
+
+    def test_unknown_key_with_the_shape_of_a_setting_name_is_still_named(
+        self, tmp_path: Path
+    ) -> None:
+        from pydantic import ValidationError
+
+        from plexmix.config.settings import Settings
+
+        # A typing mistake in a key is reported by that key, as before.
+        cfg = _min_db_yaml(tmp_path, "plex:\n  tokne: dummy-plex-token-0000\n")
+        with pytest.raises(ValidationError) as info:
+            Settings.load_from_file(cfg)
+        text = str(info.value)
+        assert "plex.tokne" in text
+        assert "unknown key" not in text
+        assert "dummy-plex-token-0000" not in text
+
+    def test_known_keys_and_other_sections_are_left_as_written(self, tmp_path: Path) -> None:
+        from plexmix.config.settings import Settings
+
+        data = {
+            "ui": {"password": "dummy-ui-password-0000"},
+            "plex": {"url": "http://plexhost:32400", "token:x": None},
+            "not_a_section": {"any key:at all": 1},
+            "audio": ["not", "a", "mapping"],
+        }
+        cleaned = Settings._hide_odd_section_keys(data)
+        assert cleaned["ui"] == {"password": "dummy-ui-password-0000"}
+        assert cleaned["plex"] == {
+            "url": "http://plexhost:32400",
+            "unknown key (check for a missing space after a colon)": None,
+        }
+        assert cleaned["not_a_section"] == {"any key:at all": 1}
+        assert cleaned["audio"] == ["not", "a", "mapping"]
+
+    def test_top_level_that_is_not_a_mapping_names_the_file_not_the_value(
+        self, tmp_path: Path
+    ) -> None:
+        import yaml
+
+        from plexmix.config.settings import Settings
+
+        cfg = tmp_path / "config.yaml"
+        # A list, a single value, and a key that is not text.
+        for body in ("- dummy-ui-password-0000\n", "dummy-ui-password-0000\n", "1234567890: {}\n"):
+            cfg.write_text(body)
+            with pytest.raises(yaml.YAMLError) as info:
+                Settings.load_from_file(str(cfg))
+            text = str(info.value)
+            assert str(cfg) in text
+            assert "must hold a mapping of settings sections at the top level" in text
+            # What the web UI's error text reads.
+            assert info.value.problem == "must hold a mapping of settings sections at the top level"
+            for value in ("dummy-ui-password-0000", "1234567890"):
+                assert value not in text
+                assert value not in repr(info.value)
+            assert info.value.__cause__ is None and info.value.__context__ is None
+
+    def test_empty_config_file_still_loads(self, tmp_path: Path) -> None:
+        from plexmix.config.settings import Settings
+
+        cfg = tmp_path / "config.yaml"
+        for body in ("", "# only a comment\n", "---\n"):
+            cfg.write_text(body)
+            assert Settings.load_from_file(str(cfg)).playlist.default_length == 50
+
+    def test_env_override_skips_section_that_is_not_a_mapping(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pydantic import ValidationError
+
+        from plexmix.config.settings import Settings
+
+        monkeypatch.setenv("PLEX_TOKEN", "dummy-plex-token-0000")
+        monkeypatch.setenv("AUDIO_WORKERS", "7")
+        data = Settings._apply_env_overrides({"plex": ["a", "list"], "audio": {"workers": 2}})
+        assert data["plex"] == ["a", "list"]  # left as written, for validation to reject
+        assert data["audio"]["workers"] == 7  # a mapping section still takes the override
+
+        # Loading such a file ends in a validation error that names the section,
+        # not in a bare TypeError from writing the override into a list.
+        cfg = _min_db_yaml(tmp_path, "plex:\n  - dummy-plex-token-0000\n")
+        with pytest.raises(ValidationError) as info:
+            Settings.load_from_file(cfg)
+        text = str(info.value)
+        assert "\nplex\n" in text
+        assert "dummy-plex-token-0000" not in text
 
 
 class TestConfigHelpers:
