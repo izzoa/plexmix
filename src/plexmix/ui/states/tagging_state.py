@@ -974,7 +974,7 @@ class TaggingState(AppState):
         try:
             from plexmix.config.settings import Settings
             from plexmix.database.sqlite_manager import SQLiteManager
-            from plexmix.ai.tag_generator import TagGenerator
+            from plexmix.ai.tag_generator import TagGenerator, clean_tag_list
 
             # Settings, the track query, the provider (and, for builtin local
             # mode, the model), generation and saving all run in the executor so
@@ -1058,12 +1058,19 @@ class TaggingState(AppState):
 
                     saved_count = 0
                     for track_id, tag_data in results.items():
-                        if tag_data["tags"] or tag_data["environments"] or tag_data["instruments"]:
+                        # Only texts with content count (``clean_tag_list``), also for a
+                        # result that did not come through the parser. A column is
+                        # written only when its list has content: None leaves it as it
+                        # is, so a reply without instruments never blanks a track's.
+                        tags = clean_tag_list(tag_data.get("tags"))
+                        environments = clean_tag_list(tag_data.get("environments"))
+                        instruments = clean_tag_list(tag_data.get("instruments"))
+                        if tags or environments or instruments:
                             db.update_track_tags(
                                 track_id,
-                                tags=",".join(tag_data["tags"]),
-                                environments=",".join(tag_data["environments"]),
-                                instruments=",".join(tag_data["instruments"]),
+                                tags=",".join(tags) if tags else None,
+                                environments=",".join(environments) if environments else None,
+                                instruments=",".join(instruments) if instruments else None,
                             )
                             saved_count += 1
                 finally:

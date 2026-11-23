@@ -1,6 +1,6 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Optional, Dict, Callable, FrozenSet, List
+from typing import Any, Optional, Dict, Callable, FrozenSet, Iterable, List, Set, Tuple
 import logging
 from threading import Event
 from rich.progress import (
@@ -14,15 +14,35 @@ from rich.progress import (
 
 from ..plex.client import READ_KINDS, PlexClient, PlexReadReport
 from ..database.backup import backup_library
+from ..database.index_rebuild import (
+    IndexRebuild,
+    left_out_sentence,
+    rebuild_index,
+    tracks_in_the_way,
+)
 from ..database.sqlite_manager import SQLiteManager
 from ..database.models import Artist, Album, Track, Genre, SyncHistory
 from ..database.vector_index import VectorIndex
 from ..utils.embeddings import EmbeddingGenerator, create_track_text
-from ..utils.redaction import mask_urls_in_text
-from ..ai.tag_generator import TagGenerator
+from ..utils.redaction import REDACTED, mask_urls_in_text, redact_partly_hidden_keys
+from ..ai.tag_generator import RepeatedBatchFailure, TagGenerator, clean_tag_list
 from ..ai.errors import FatalProviderError
 from ..ai.base import AIProvider
 from ..config.settings import MusicBrainzSettings
+from ..services.regenerate_service import (
+    COMPONENT_AI,
+    COMPONENT_EMBEDDINGS,
+    COMPONENT_INDEX,
+    SCOPE_EMBEDDINGS,
+    SCOPE_TAGS,
+    RegenerateRefused,
+    RegenerateRun,
+    RunProvider,
+    finish_scope,
+    open_run,
+    preview_run,
+    remaining_track_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -54,13 +74,21 @@ REMOVAL_FAILED = "failed"
 
 _NOTHING_REMOVED = "Nothing was removed."
 _NOTHING_CHANGED = "Nothing was changed."
-_NOT_SYNCED = "The library was not synced."
 
-# ``regenerate_sync`` clears the tags and embeddings before it reads Plex. When the
-# sync after it fails, "nothing was changed" is true for the library sync only, so
-# this sentence is added to the history row. Callers add their own wording when
-# ``SyncEngine.cleared_before_sync`` is True.
-REGENERATE_CLEARED_NOTE = "The existing tags and embeddings had already been cleared."
+# Tracks per request to the AI provider and to the embedding provider. Every
+# batch is saved before the next request is sent.
+_TAG_BATCH_SIZE = 20
+_EMBEDDING_BATCH_SIZE = 50
+
+# A regenerate run stops its tags pass when this many requests in a row were not
+# answered: the AI provider is no longer reached, and a run that went on would keep
+# every track that is left and then pass for finished. A request that was answered
+# without usable text does not count (``tag_generator.provider_did_not_answer``).
+_MAX_FAILED_TAG_BATCHES = 3
+
+_REDACTED = REDACTED
+_MIN_SECRET_CHARS = 4
+_ERROR_TEXT_MAX_CHARS = 300
 
 
 def too_many_failed_reads(failed: int, listed: int) -> bool:
@@ -97,18 +125,66 @@ def _backup_failed_message(error: BaseException) -> str:
     return f"The backup could not be made: {reason}. {_NOTHING_REMOVED}"
 
 
-def _check_failed_message(reason: Any, nothing_changed: bool = True) -> str:
+def _check_failed_message(reason: Any) -> str:
     """The text of a failed connection check: the client's reason, then what that means.
 
-    The check runs before a sync reads or writes anything, and before a regenerate
-    clears anything, so nothing was changed. ``nothing_changed`` is False for the
-    one check that comes later: the sync that a regenerate starts after it has
-    cleared the tags and embeddings.
+    The check runs before a sync reads or writes anything. A regenerate run has
+    changed nothing by then either: it clears nothing, and it replaces tags and
+    embeddings only after the library was compared with Plex.
     """
     text = str(reason or "").strip() or "The Plex connection could not be checked"
     if not text.endswith((".", "!", "?")):
         text += "."
-    return f"{text} {_NOTHING_CHANGED if nothing_changed else _NOT_SYNCED}"
+    return f"{text} {_NOTHING_CHANGED}"
+
+
+def _sentence(text: str) -> str:
+    """``text`` with a full stop when it ends without one; "" stays ""."""
+    text = text.strip()
+    if text and not text.endswith((".", "!", "?", "…")):
+        text += "."
+    return text
+
+
+def _redact(text: str, secrets: Iterable[str] = ()) -> str:
+    """``text`` without known key values and without credentials inside an address.
+
+    A key that the provider repeats with its middle hidden goes as well, by the
+    rule the regenerate check and the CLI use (``redact_partly_hidden_keys``).
+    """
+    for secret in secrets:
+        if len(secret) >= _MIN_SECRET_CHARS:
+            text = text.replace(secret, _REDACTED)
+    return mask_urls_in_text(redact_partly_hidden_keys(text))
+
+
+def _plain_error_text(error: BaseException, secrets: Iterable[str] = ()) -> str:
+    """An error as one line that is safe to log and to store.
+
+    Known key values (``secrets``) are replaced, credentials inside an address are
+    masked, and the text is capped.
+    """
+    text = " ".join(_redact(str(error) or type(error).__name__, secrets).split())
+    if len(text) > _ERROR_TEXT_MAX_CHARS:
+        text = text[: _ERROR_TEXT_MAX_CHARS - 1] + "…"
+    return text
+
+
+def _holds_no_vectors(index: Any) -> bool:
+    """True when the loaded index is known to hold no vector (a test double states none)."""
+    held = getattr(getattr(index, "index", None), "ntotal", None)
+    return isinstance(held, int) and not isinstance(held, bool) and held == 0
+
+
+def _progress_display() -> Progress:
+    """The progress display of a run: one line per stage."""
+    return Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+    )
 
 
 def _removal_failed_message(error: BaseException) -> str:
@@ -165,6 +241,12 @@ class SyncOutcome:
     ``message`` is the text for ``reason``, ready to show. ``backup_folder`` and
     ``backup_size_bytes`` describe the backup made before a large removal.
 
+    ``index_left_out`` is not 0 when the embeddings stage of a plain sync could not
+    rebuild the search index: that many tracks hold an embedding of another model
+    or vector size, so the saved index was left as it is (see
+    ``plexmix.database.index_rebuild``). ``index_sentence`` is the text to show.
+    The sync itself did its work, and the run still counts as partial.
+
     ``compared`` is True once the compare stage has saved its work, and ``added``
     and ``updated`` are the tracks it wrote. Together with ``removed`` they say what
     a run had already changed when a later stage stopped it. They take no part in
@@ -184,6 +266,7 @@ class SyncOutcome:
     added: int = field(default=0, compare=False)
     updated: int = field(default=0, compare=False)
     compared: bool = field(default=False, compare=False)
+    index_left_out: int = 0
 
     @property
     def unread_tracks(self) -> int:
@@ -191,9 +274,19 @@ class SyncOutcome:
         return self.unread.get("tracks", 0)
 
     @property
+    def index_sentence(self) -> str:
+        """What to say about a search index that was left as it is; "" when it was not."""
+        return left_out_sentence(self.index_left_out)
+
+    @property
     def is_partial(self) -> bool:
-        """True when items were unread, or removals were skipped or held."""
-        return bool(self.reason) or any(self.unread.get(kind, 0) for kind in READ_KINDS)
+        """True when items were unread, removals were skipped or held, or the search
+        index could not be rebuilt."""
+        return (
+            bool(self.reason)
+            or any(self.unread.get(kind, 0) for kind in READ_KINDS)
+            or self.index_left_out > 0
+        )
 
     def unread_sentence(self, kind: str = "tracks") -> str:
         """What happened to the items of ``kind`` that could not be read; "" for none.
@@ -226,6 +319,8 @@ class SyncOutcome:
             )
             if not named and self.unread.get(kind, 0):
                 parts.append(self.unread_sentence(kind))
+        if self.index_left_out > 0:
+            parts.append(self.index_sentence)
         return " ".join(parts)
 
 
@@ -258,10 +353,419 @@ class RemovalResult:
     listed_again: int = 0
 
 
+@dataclass
+class RegeneratePass:
+    """One pass of a regenerate run: the tags or the embeddings.
+
+    ``requested`` says that the run was asked to do this pass, and ``started`` that
+    the pass began. ``continued`` is True when it took up an unfinished earlier run.
+    ``done_earlier`` is True for a tags pass that the earlier run had finished: this
+    run then tags only the tracks that have no tags at all. ``finished`` is True
+    when the pass reached its end, so no interrupt, cancel request or error stopped
+    it. ``error`` is what stopped it, as it was raised. Its text is not redacted, so
+    never print or log it.
+
+    ``to_do`` tracks were to be replaced and ``written`` rows were written. ``kept``
+    tracks of the to-do set were not replaced and hold the data they had before. A
+    pass that was requested and never started has every track to do and kept.
+    ``replaced_earlier`` tracks had been replaced since the marker's start time
+    when this pass took the run up again (0 for a new run): the work of the run it
+    continues.
+    """
+
+    requested: bool = False
+    started: bool = False
+    continued: bool = False
+    done_earlier: bool = False
+    finished: bool = False
+    error: Optional[BaseException] = field(default=None, repr=False, compare=False)
+    to_do_ids: Set[int] = field(default_factory=set, repr=False)
+    written_ids: Set[int] = field(default_factory=set, repr=False)
+    replaced_earlier: int = 0
+
+    @property
+    def to_do(self) -> int:
+        """Tracks this pass was to replace."""
+        return len(self.to_do_ids)
+
+    @property
+    def written(self) -> int:
+        """Rows this pass wrote."""
+        return len(self.written_ids)
+
+    @property
+    def kept_ids(self) -> Set[int]:
+        """The tracks of the to-do set that were not replaced."""
+        return self.to_do_ids - self.written_ids
+
+    @property
+    def kept(self) -> int:
+        """Tracks of the to-do set that hold the data they had before."""
+        return len(self.kept_ids)
+
+
+@dataclass
+class RegenerateResult:
+    """What one regenerate run did, for the caller's summary and exit status.
+
+    ``SyncEngine.regenerate_result`` holds a new one for every run of
+    ``regenerate_sync`` or ``regenerate_local``, also for a run that raises or is
+    interrupted. After any other sync it is empty (``requested`` is False).
+
+    ``tags`` and ``embeddings`` are the two passes. ``stopped_scope`` names the pass
+    that an error stopped part-way (``SCOPE_TAGS`` or ``SCOPE_EMBEDDINGS``, "" for
+    none). Such an error is not raised: the run ends, and ``error`` holds it for
+    classification (not redacted: never print or log it) while ``error_message`` is
+    the text to show. ``other_model_rows_removed`` embedding rows of other models
+    were removed after the embeddings pass replaced every track.
+
+    ``index_left_out`` is not 0 when the embeddings pass reached its end and the
+    search index could still not be rebuilt: that many tracks hold only an
+    embedding of another model or vector size, so the saved index was left as it
+    is. ``index_sentence`` is the text to show. Such a run is not a clean finish.
+    After a pass that was stopped part-way the index is left as it is too, and
+    that is not recorded here: the stop is what the run reports.
+    """
+
+    tags: RegeneratePass = field(default_factory=RegeneratePass)
+    embeddings: RegeneratePass = field(default_factory=RegeneratePass)
+    stopped_scope: str = ""
+    error: Optional[BaseException] = field(default=None, repr=False, compare=False)
+    error_message: str = ""
+    other_model_rows_removed: int = 0
+    index_left_out: int = 0
+
+    @property
+    def requested(self) -> bool:
+        """True for the result of a regenerate run."""
+        return self.tags.requested or self.embeddings.requested
+
+    @property
+    def index_sentence(self) -> str:
+        """What to say about a search index that was left as it is; "" when it was not."""
+        return left_out_sentence(self.index_left_out)
+
+    @property
+    def nothing_to_do(self) -> bool:
+        """True when the run reached its end and had no track to do: an empty library.
+
+        Such a run wrote nothing and is no failure.
+        """
+        parts = [part for part in (self.tags, self.embeddings) if part.requested]
+        return bool(parts) and all(part.finished and part.to_do == 0 for part in parts)
+
+    @property
+    def tags_written(self) -> int:
+        """Tag rows written in this run."""
+        return self.tags.written
+
+    @property
+    def embeddings_written(self) -> int:
+        """Embedding rows written in this run."""
+        return self.embeddings.written
+
+    @property
+    def rows_written(self) -> int:
+        """Tag rows and embedding rows written in this run."""
+        return self.tags.written + self.embeddings.written
+
+    @property
+    def wrote_nothing(self) -> bool:
+        """True when the run wrote no tags and no embeddings."""
+        return self.rows_written == 0
+
+    @property
+    def tracks_kept(self) -> int:
+        """Tracks that hold previous tags or a previous embedding this run was to replace."""
+        return len(self.tags.kept_ids | self.embeddings.kept_ids)
+
+    @property
+    def provider_failed(self) -> bool:
+        """True when an error stopped a pass part-way."""
+        return bool(self.stopped_scope)
+
+    @property
+    def finished(self) -> bool:
+        """True when every pass the run was asked to do reached its end."""
+        return all(part.finished for part in (self.tags, self.embeddings) if part.requested)
+
+    @property
+    def no_new_tags(self) -> bool:
+        """True when the tags pass reached its end and no tags were replaced since
+        the marker's start time, in this run or in the run it continues.
+
+        The AI provider then gave nothing usable for any track it was sent. Such a
+        run makes no embeddings either: their text would hold the tags from before,
+        so every one of them would be made again from what it was made from. False
+        for a pass that had no track to do, for a run that continues behind tags an
+        earlier run finished, and for a continued pass whose earlier run replaced
+        tags (``replaced_earlier``): the tracks that are left then keep their
+        previous tags, and the run goes on to the embeddings.
+        """
+        tags = self.tags
+        return (
+            tags.requested
+            and tags.finished
+            and not tags.done_earlier
+            and tags.to_do > 0
+            and tags.written == 0
+            and tags.replaced_earlier == 0
+        )
+
+    def describe(self) -> str:
+        """What the run left undone, for its history row. "" for a run that did its work."""
+        if not self.requested:
+            return ""
+        if self.error_message:
+            lead = self.error_message
+        elif self.no_new_tags and self.embeddings.requested and not self.embeddings.started:
+            # The embeddings pass was left out for that reason: it did not start.
+            lead = "No tags were regenerated, so no embedding was regenerated either."
+        elif not self.finished:
+            lead = "The regenerate run was stopped before it reached its end."
+        elif self.wrote_nothing and not self.nothing_to_do:
+            wanted = "tags or embeddings" if self.embeddings.requested else "tags"
+            lead = f"No {wanted} were regenerated."
+        else:
+            # The run did its work. What is left to say is an index it could not rebuild.
+            return self.index_sentence
+        kept = self.tracks_kept
+        if not kept:
+            return lead
+        return (
+            f"{lead} {_counted(kept, 'tracks')} "
+            f"{'keeps its' if kept == 1 else 'keep their'} previous data."
+        )
+
+
+@dataclass(frozen=True)
+class RegeneratePlan:
+    """What a regenerate run would do with the run marker as it is now.
+
+    ``tags`` is the tags pass and ``embeddings`` the embeddings pass (None for a
+    run of tags alone). ``tags_done_earlier`` is True when the run takes up an
+    earlier run of both whose tags pass had reached its end: only the embeddings
+    that run did not replace are made then, and ``tags`` does not apply (only
+    tracks without any tags are tagged).
+    """
+
+    tags: RegenerateRun
+    embeddings: Optional[RegenerateRun] = None
+    tags_done_earlier: bool = False
+
+    @property
+    def continued(self) -> bool:
+        """True when an unfinished earlier run is taken up again."""
+        return self.tags_done_earlier or self.tags.continued
+
+    @property
+    def remaining(self) -> int:
+        """Tracks the run still has to replace: all of them for a new run."""
+        if self.tags_done_earlier and self.embeddings is not None:
+            return self.embeddings.remaining
+        return self.tags.remaining
+
+    @property
+    def total_tracks(self) -> int:
+        """Tracks in the library."""
+        return self.tags.total_tracks
+
+    @property
+    def marker_path(self) -> Path:
+        """The marker file. Deleting it makes the next run start over."""
+        return self.tags.marker_path
+
+
+@dataclass(frozen=True)
+class _RegenerateRequest:
+    """What a regenerate run was asked to do. Set on the engine while the run lasts."""
+
+    generate_embeddings: bool
+    continue_run: bool
+    tags_provider: RunProvider
+    embeddings_provider: Optional[RunProvider]
+
+
+def _embeddings_after_tags(tags: RunProvider, embeddings: RunProvider) -> RunProvider:
+    """How the marker names the embeddings pass of a run of tags and embeddings.
+
+    The pass starts when the tags pass has reached its end, and the marker entry of
+    the tags is gone by then. So the entry of the embeddings also records the AI
+    provider and model the tags were made with. A later run takes the pass up again
+    only when both are unchanged, and an unfinished ``embeddings generate
+    --regenerate`` (which records the embedding model alone) is never mistaken for it.
+    """
+    return RunProvider(
+        embeddings.provider,
+        f"{embeddings.model} (tags: {tags.provider} {tags.model})",
+        embeddings.label,
+        embeddings.dimension,
+    )
+
+
+def plan_regenerate(
+    db: SQLiteManager,
+    tags_provider: RunProvider,
+    embeddings_provider: Optional[RunProvider] = None,
+    continue_run: bool = True,
+) -> RegeneratePlan:
+    """Say what a regenerate run of tags, or of tags and embeddings, would do now.
+
+    Nothing is written. A command asks its question from this, and the engine
+    follows the same rule when it runs. ``embeddings_provider`` is None for a run
+    of tags alone. Take both providers from ``regenerate_service.run_provider``.
+
+    A run of both regenerates the tags first and every embedding after them. One
+    case differs: the marker holds an unfinished embeddings pass of an earlier run
+    of both, made with the same providers and models, and no unfinished tags pass.
+    The tags of that run are complete, so only its remaining embeddings are made.
+    """
+    tags = preview_run(db, SCOPE_TAGS, tags_provider, continue_run)
+    if embeddings_provider is None:
+        return RegeneratePlan(tags=tags)
+    identity = _embeddings_after_tags(tags_provider, embeddings_provider)
+    embeddings = preview_run(db, SCOPE_EMBEDDINGS, identity, continue_run)
+    done_earlier = embeddings.continued and not tags.continued
+    if embeddings.continued and not done_earlier:
+        # The tags pass runs first, so every embedding is made anew after it.
+        embeddings = preview_run(db, SCOPE_EMBEDDINGS, identity, continue_run=False)
+    return RegeneratePlan(
+        tags=tags,
+        embeddings=replace(embeddings, provider=embeddings_provider),
+        tags_done_earlier=done_earlier,
+    )
+
+
+def remove_other_model_embeddings(db: SQLiteManager, embedding_model: str) -> int:
+    """Delete the embedding rows of other models. Return how many were deleted.
+
+    Only for tracks that have a row of ``embedding_model``. A track without one
+    keeps the embedding it has, whichever model made it: nothing is deleted before
+    its replacement exists.
+    """
+    cursor = db.get_connection().cursor()
+    cursor.execute(
+        """
+        DELETE FROM embeddings
+        WHERE embedding_model != ?
+          AND track_id IN (SELECT track_id FROM embeddings WHERE embedding_model = ?)
+        """,
+        (embedding_model, embedding_model),
+    )
+    removed = cursor.rowcount
+    db._commit()
+    return max(removed, 0)
+
+
+def rebuild_index_from_rows(
+    db: SQLiteManager, vector_index: VectorIndex, embedding_model: str
+) -> int:
+    """Rebuild the vector index from the rows of ``embedding_model`` and save it.
+
+    A thin wrapper over ``index_rebuild.rebuild_index``, which holds the rule: the
+    index is built and saved only when it is complete. Returns the number of
+    vectors in the index that was built, and 0 when none was: there was no row, or
+    a track holds an embedding of another model or vector size, and the saved
+    index was then left as it is. The whole result is ``vector_index.last_rebuild``.
+    """
+    return rebuild_index(db, vector_index, embedding_model).vectors
+
+
+def index_may_follow_rows(
+    db: SQLiteManager, vector_index: VectorIndex, embedding_model: str
+) -> bool:
+    """Whether an index built from the rows of ``embedding_model`` would be complete.
+
+    True when no track is in the way (``index_rebuild.tracks_in_the_way``), so
+    ``rebuild_index`` would build and save. Read-only. After a change of the
+    embedding provider or of the vector size, a pass that was stopped part-way has
+    replaced only some rows: the answer is then False, and the saved index and its
+    dimension mismatch stay until a run has replaced every track.
+    """
+    return tracks_in_the_way(db, vector_index, embedding_model) == 0
+
+
+def follow_rows_after_stopped_pass(
+    db: SQLiteManager, vector_index: VectorIndex, embedding_model: str
+) -> bool:
+    """After an embeddings pass that was stopped part-way: let the index follow the rows.
+
+    The rows are the new ones and the previous ones. ``rebuild_index`` builds the
+    index from them only when it is complete, and otherwise leaves the saved index
+    as it is and logs why. Nothing is raised: the rows are saved either way, and
+    the caller is reporting what stopped the pass. Returns True when the index was
+    rebuilt. The whole result is ``vector_index.last_rebuild``.
+    """
+    try:
+        return rebuild_index(db, vector_index, embedding_model).vectors > 0
+    except Exception as e:
+        logger.warning(
+            "Failed to rebuild the vector index after a stopped pass: %s", _plain_error_text(e)
+        )
+        return False
+
+
+def _close_embeddings_pass(
+    db: SQLiteManager,
+    vector_index: VectorIndex,
+    embedding_model: str,
+    run: Optional[RegenerateRun] = None,
+) -> Tuple[int, IndexRebuild]:
+    """What ``finish_embeddings_pass`` does, with the result of the index rebuild.
+
+    The marker entry of ``run`` is cleared only when no track is left to do. A track
+    the provider returned no vector for still holds the embedding it had, and it can
+    keep the search index from being rebuilt (``index_rebuild``). The entry stays
+    then, so that the next run makes only the embeddings that are left, in place of
+    starting over for every track and paying the provider again.
+    """
+    if run is not None:
+        nothing_left = not remaining_track_ids(db, run)
+        if nothing_left:
+            finish_scope(db, SCOPE_EMBEDDINGS)
+    else:
+        nothing_left = db.count_tracks_without_embeddings(embedding_model) == 0
+    removed = remove_other_model_embeddings(db, embedding_model) if nothing_left else 0
+    if removed:
+        logger.info("Removed %d embedding rows of other models", removed)
+    return removed, rebuild_index(db, vector_index, embedding_model)
+
+
+def finish_embeddings_pass(
+    db: SQLiteManager,
+    vector_index: VectorIndex,
+    embedding_model: str,
+    run: Optional[RegenerateRun] = None,
+) -> int:
+    """Close an embeddings pass that reached its end.
+
+    Call it only for such a pass: not after an interrupt, a cancel request or a
+    provider error. ``run`` is the marker run of the pass. Its marker entry is
+    cleared when no track is left to do, and stays while the provider returned no
+    vector for some track, so that the next run continues with those tracks. Pass
+    None for a pass that used no marker and embedded every track.
+
+    When no track is left to do, the embedding rows of other models are removed.
+    That is: every track has a row of ``embedding_model`` that was written since
+    ``run`` started (without a run: every track has a row of that model). The index
+    is then rebuilt from the rows of ``embedding_model`` and saved, through
+    ``index_rebuild.rebuild_index``: only when it is complete. When a track still
+    holds only an embedding of another model or vector size, the saved index is
+    left as it is.
+
+    Returns the number of rows of other models that were removed. What became of
+    the index is ``vector_index.last_rebuild`` (an ``IndexRebuild``): ``left_out``
+    is the number of tracks in the way, and ``saved`` says whether the files were
+    written.
+    """
+    removed, _rebuilt = _close_embeddings_pass(db, vector_index, embedding_model, run)
+    return removed
+
+
 class SyncEngine:
     def __init__(
         self,
-        plex_client: PlexClient,
+        plex_client: Optional[PlexClient],
         db_manager: SQLiteManager,
         embedding_generator: Optional[EmbeddingGenerator] = None,
         vector_index: Optional[VectorIndex] = None,
@@ -270,8 +774,19 @@ class SyncEngine:
         audio_settings: Optional[Any] = None,
         saved_index_path: Optional[Path] = None,
         saved_index_dimension: Optional[int] = None,
+        known_secrets: Optional[Iterable[Optional[str]]] = None,
     ):
-        self.plex = plex_client
+        # None only for an engine that never reads Plex (``regenerate_local``).
+        self._plex = plex_client
+        # Key values the caller knows (the provider keys from the settings). They
+        # are replaced in every error text the engine logs, stores or hands back,
+        # together with the keys found on the provider objects: not every provider
+        # object keeps its key where the engine can find it.
+        self._given_secrets: List[str] = [
+            value.strip()
+            for value in (known_secrets or ())
+            if isinstance(value, str) and len(value.strip()) >= _MIN_SECRET_CHARS
+        ]
         self.db = db_manager
         self.embedding_generator = embedding_generator
         self.vector_index = vector_index
@@ -279,10 +794,16 @@ class SyncEngine:
         # index object (a sync without embeddings, a confirmed removal). The backup
         # before a large removal copies the files from the path. The index is opened
         # only after such a backup, to drop the removed tracks' vectors: opening an
-        # index that cannot be loaded can destroy the file. A small removal makes no
+        # index that cannot be loaded moves its files aside under another name, and
+        # the backup then still holds them under their own. A small removal makes no
         # backup, so it leaves a saved index as it is.
         self.saved_index_path = saved_index_path
         self.saved_index_dimension = saved_index_dimension
+        # The index object the last run opened itself from ``saved_index_path`` for
+        # a removal, also when its files could not be loaded (``load_failed``). A
+        # caller reads it to tell the user about files that were moved aside. None
+        # when the run opened none.
+        self.opened_saved_index: Optional[VectorIndex] = None
         self.ai_provider = ai_provider
         self.tag_generator = TagGenerator(ai_provider) if ai_provider else None
         # Outcome of the last sync's AI tagging, for callers that report provider
@@ -290,14 +811,16 @@ class SyncEngine:
         # that stopped tagging (None when it ran to the end or didn't run).
         self.tags_saved: int = 0
         self.tagging_error: Optional[FatalProviderError] = None
+        # Embedding rows the last embedding stage wrote.
+        self.embeddings_saved: int = 0
         # What the last sync did about unread items and removals. Every run starts
         # a new one, so callers read it after the run, also after a run that raised.
         self.outcome: SyncOutcome = SyncOutcome()
-        # True once ``regenerate_sync`` has cleared the tags and embeddings. Callers
-        # read it when that run then failed, to say what the run did change.
-        self.cleared_before_sync: bool = False
-        # Added to the history row of a failed sync (see ``REGENERATE_CLEARED_NOTE``).
-        self._failure_note: str = ""
+        # What the last regenerate run wrote and kept. Every regenerate run starts a
+        # new one, and callers read it after the run, also after a run that raised.
+        self.regenerate_result: RegenerateResult = RegenerateResult()
+        # Set while ``regenerate_sync`` or ``regenerate_local`` runs.
+        self._regenerating: Optional[_RegenerateRequest] = None
         # How far the last ``remove_unlisted_tracks`` call got, for a caller whose
         # call was interrupted (Ctrl+C) and so returned nothing: None until its
         # backup exists, then a result that names the backup with 0 removed, then
@@ -308,6 +831,17 @@ class SyncEngine:
         # pipeline stage BEFORE embeddings so the embedding text includes audio
         # features. The UI runs its own audio pass and leaves this None.
         self.audio_settings = audio_settings
+
+    @property
+    def plex(self) -> PlexClient:
+        """The Plex client. An engine that was built without one cannot sync."""
+        if self._plex is None:
+            raise RuntimeError("This SyncEngine has no Plex client, so it cannot read Plex.")
+        return self._plex
+
+    @plex.setter
+    def plex(self, plex_client: Optional[PlexClient]) -> None:
+        self._plex = plex_client
 
     def incremental_sync(
         self,
@@ -326,10 +860,12 @@ class SyncEngine:
         """
         logger.info("Starting incremental library sync")
         self.outcome = SyncOutcome()
-        if not self._failure_note:
-            # A plain sync clears nothing. ``regenerate_sync`` sets the note before it
-            # calls this, so its own flag is kept.
-            self.cleared_before_sync = False
+        self.opened_saved_index = None
+        # Set by ``regenerate_sync`` for the run it starts here.
+        regenerate = self._regenerating
+        if regenerate is None:
+            # A plain sync regenerates nothing: an earlier result no longer applies.
+            self.regenerate_result = RegenerateResult()
         stats = {
             "tracks_added": 0,
             "tracks_updated": 0,
@@ -345,23 +881,13 @@ class SyncEngine:
         token_valid, token_msg = self.plex.validate_token()
         if not token_valid:
             logger.error("Plex token validation failed: %s", token_msg)
-            # After a regenerate has cleared (the note is set), "nothing was
-            # changed" would be false.
-            raise ConnectionError(
-                _check_failed_message(token_msg, nothing_changed=not self._failure_note)
-            )
+            raise ConnectionError(_check_failed_message(token_msg))
 
         if progress_callback:
             progress_callback(0.0, "Starting incremental sync...")
 
         try:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                TaskProgressColumn(),
-                TimeRemainingColumn(),
-            ) as progress:
+            with _progress_display() as progress:
                 if cancel_event and cancel_event.is_set():
                     raise KeyboardInterrupt("Sync cancelled by user")
 
@@ -423,7 +949,11 @@ class SyncEngine:
                 if cancel_event and cancel_event.is_set():
                     raise KeyboardInterrupt("Sync cancelled by user")
 
-                if self.tag_generator and self.ai_provider:
+                if regenerate is not None:
+                    self._regenerate_tags(
+                        regenerate, progress, progress_callback, cancel_event, 0.55, 0.65
+                    )
+                elif self.tag_generator and self.ai_provider:
                     task = progress.add_task("Generating AI tags...", total=None)
                     self._generate_tags_for_untagged_tracks(
                         progress, task, progress_callback, cancel_event, 0.55, 0.65
@@ -443,21 +973,34 @@ class SyncEngine:
                 if cancel_event and cancel_event.is_set():
                     raise KeyboardInterrupt("Sync cancelled by user")
 
-                if generate_embeddings and self.embedding_generator and self.vector_index:
+                if regenerate is not None:
+                    if regenerate.generate_embeddings:
+                        self._regenerate_embeddings(
+                            regenerate, progress, progress_callback, cancel_event, 0.75, 1.0
+                        )
+                elif generate_embeddings and self.embedding_generator and self.vector_index:
                     task = progress.add_task("Generating embeddings...", total=None)
                     self._generate_embeddings_for_new_tracks(
                         progress, task, progress_callback, cancel_event, 0.75, 1.0
                     )
 
             # A run that kept unread items, or skipped or held removals, is recorded
-            # as partial, with the reason.
-            partial = self.outcome.is_partial
+            # as partial, with the reason. So is a regenerate run that an error
+            # stopped part-way, or that replaced nothing.
+            notes = [self.outcome.describe() if self.outcome.is_partial else ""]
+            if regenerate is not None:
+                # A pass that never started has kept every track. Counted before the
+                # row is written, so the row and the result give the same number.
+                self._count_unstarted_passes()
+                notes.append(self.regenerate_result.describe())
+            warning = " ".join(note for note in notes if note)
+            partial = bool(warning) or self.outcome.is_partial
             sync_record = SyncHistory(
                 tracks_added=stats["tracks_added"],
                 tracks_updated=stats["tracks_updated"],
                 tracks_removed=stats["tracks_removed"],
                 status="partial" if partial else "success",
-                error_message=self.outcome.describe() if partial else None,
+                error_message=warning if partial else None,
             )
             self.db.insert_sync_record(sync_record)
 
@@ -496,11 +1039,9 @@ class SyncEngine:
         except Exception as e:
             # PlexAPI repeats the server address in its error text; hide any
             # credentials in it before the text reaches the log and the database.
-            error_text = mask_urls_in_text(str(e))
+            # A provider can repeat its key in an error, so known keys go as well.
+            error_text = _redact(str(e), self._known_secrets())
             logger.error(f"Incremental sync failed: {error_text}")
-            if self._failure_note:
-                # "Nothing was changed" is about the library sync; say what was.
-                error_text = f"{error_text} {self._failure_note}"
             # The compare stage and the removal step save their work when they end.
             # A later stage that fails leaves it in the library, so the row counts it.
             sync_record = SyncHistory(
@@ -519,36 +1060,38 @@ class SyncEngine:
         progress_callback: Optional[Callable[[float, str], None]] = None,
         cancel_event: Optional[Event] = None,
         allow_large_removals: bool = False,
+        continue_run: bool = True,
+        tags_provider: Optional[RunProvider] = None,
+        embeddings_provider: Optional[RunProvider] = None,
     ) -> SyncHistory:
-        logger.info("Starting regenerate sync - will clear and regenerate all tags and embeddings")
+        """Sync the library, then replace tags and embeddings in place.
+
+        Nothing is cleared first. A track keeps its tags and its embedding until the
+        new ones are saved, so a run that fails, is refused or is interrupted leaves
+        every track with what it had. ``self.regenerate_result`` says what the run
+        wrote and kept. Read it after the run, also after a run that raised.
+
+        The embeddings pass starts only when the tags pass reached its end. An error
+        of a provider that stops a pass part-way is not raised: the run ends, and
+        the result names the pass and the reason (``provider_failed``).
+
+        ``continue_run`` takes up an unfinished earlier run from the run marker
+        (see ``plan_regenerate``). False starts a new run for every track.
+        ``tags_provider`` and ``embeddings_provider`` are the provider and model
+        that the marker records. Pass the values of
+        ``regenerate_service.run_provider``, which the caller's own question uses
+        too. Without them they are read from the provider objects.
+
+        Raises:
+            RegenerateRefused: the engine has no AI provider, or embeddings were
+                asked for and it has no embedding generator or no vector index.
+                Nothing was changed, and Plex was not asked.
+        """
+        logger.info("Starting regenerate sync: tags and embeddings are replaced in place")
         self.outcome = SyncOutcome()
-        self.cleared_before_sync = False
-
-        # Validate the Plex connection and honor cancellation BEFORE the
-        # destructive clear. Otherwise a failed connection, or a Ctrl+C moments
-        # after starting, wipes every tag and embedding with nothing regenerated —
-        # discarding potentially hours of paid AI work.
-        if progress_callback:
-            progress_callback(0.0, "Validating Plex connection...")
-        token_valid, token_msg = self.plex.validate_token()
-        if not token_valid:
-            logger.error("Plex token validation failed: %s", token_msg)
-            raise ConnectionError(_check_failed_message(token_msg))
-        if cancel_event and cancel_event.is_set():
-            raise KeyboardInterrupt("Sync cancelled by user")
-
-        if progress_callback:
-            progress_callback(0.0, "Clearing existing tags and embeddings...")
-
-        cursor = self.db.get_connection().cursor()
-        cursor.execute("UPDATE tracks SET tags = NULL, environments = NULL, instruments = NULL")
-        cursor.execute("DELETE FROM embeddings")
-        self.db._commit()
-        logger.info("Cleared all existing tags and embeddings")
-        self.cleared_before_sync = True
-
-        # A sync that fails from here on did change something: its history row says so.
-        self._failure_note = REGENERATE_CLEARED_NOTE
+        self._begin_regenerate(
+            generate_embeddings, continue_run, tags_provider, embeddings_provider
+        )
         try:
             return self.incremental_sync(
                 generate_embeddings=generate_embeddings,
@@ -557,7 +1100,348 @@ class SyncEngine:
                 allow_large_removals=allow_large_removals,
             )
         finally:
-            self._failure_note = ""
+            self._end_regenerate()
+
+    def regenerate_local(
+        self,
+        generate_embeddings: bool = True,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        continue_run: bool = True,
+        tags_provider: Optional[RunProvider] = None,
+        embeddings_provider: Optional[RunProvider] = None,
+    ) -> RegenerateResult:
+        """Replace tags and embeddings in place, without reading Plex.
+
+        The two passes of ``regenerate_sync`` under one progress display, for the
+        tracks the database holds. The engine needs no Plex client for it, and no
+        sync history row is written. The rules, the arguments and the refusal are
+        those of ``regenerate_sync``. Returns ``self.regenerate_result``.
+        """
+        logger.info("Starting local regenerate: tags and embeddings are replaced in place")
+        request = self._begin_regenerate(
+            generate_embeddings, continue_run, tags_provider, embeddings_provider
+        )
+        try:
+            with _progress_display() as progress:
+                if cancel_event and cancel_event.is_set():
+                    raise KeyboardInterrupt("Regenerate cancelled by user")
+                self._regenerate_tags(request, progress, progress_callback, cancel_event, 0.0, 0.5)
+                if cancel_event and cancel_event.is_set():
+                    raise KeyboardInterrupt("Regenerate cancelled by user")
+                if request.generate_embeddings:
+                    self._regenerate_embeddings(
+                        request, progress, progress_callback, cancel_event, 0.5, 1.0
+                    )
+                if cancel_event and cancel_event.is_set():
+                    raise KeyboardInterrupt("Regenerate cancelled by user")
+            if progress_callback:
+                progress_callback(1.0, "Regenerate finished")
+            return self.regenerate_result
+        finally:
+            self._end_regenerate()
+
+    def _begin_regenerate(
+        self,
+        generate_embeddings: bool,
+        continue_run: bool,
+        tags_provider: Optional[RunProvider],
+        embeddings_provider: Optional[RunProvider],
+    ) -> _RegenerateRequest:
+        """Start a regenerate run: a new result, then the engine's own guard.
+
+        Raises ``RegenerateRefused`` before anything is read or written when the
+        engine was not given what the run needs.
+        """
+        wanted = bool(generate_embeddings)
+        self.regenerate_result = RegenerateResult(
+            tags=RegeneratePass(requested=True), embeddings=RegeneratePass(requested=wanted)
+        )
+        self.tags_saved = 0
+        self.tagging_error = None
+        self.embeddings_saved = 0
+        if self.ai_provider is None or self.tag_generator is None:
+            raise RegenerateRefused.not_given(COMPONENT_AI)
+        if wanted and self.embedding_generator is None:
+            raise RegenerateRefused.not_given(COMPONENT_EMBEDDINGS)
+        if wanted and self.vector_index is None:
+            raise RegenerateRefused.not_given(COMPONENT_INDEX)
+        request = _RegenerateRequest(
+            generate_embeddings=wanted,
+            continue_run=bool(continue_run),
+            tags_provider=tags_provider or self._tags_run_provider(),
+            embeddings_provider=self._sized(embeddings_provider) if wanted else None,
+        )
+        self._regenerating = request
+        return request
+
+    def _sized(self, embeddings_provider: Optional[RunProvider]) -> RunProvider:
+        """The embedding provider for the run marker, with its vector size.
+
+        The marker records the size, so that a run is never continued across a
+        change of it. A caller that names none gets the size of the generator.
+        """
+        own = self._embeddings_run_provider()
+        if embeddings_provider is None:
+            return own
+        if embeddings_provider.dimension is None and own.dimension is not None:
+            return replace(embeddings_provider, dimension=own.dimension)
+        return embeddings_provider
+
+    def _end_regenerate(self) -> None:
+        """End a regenerate run. A pass that never started has kept every track."""
+        self._regenerating = None
+        self._count_unstarted_passes()
+
+    def _count_unstarted_passes(self) -> None:
+        """Give every pass that was requested and never started its kept tracks: all."""
+        result = self.regenerate_result
+        unstarted = [
+            part
+            for part in (result.tags, result.embeddings)
+            if part.requested and not part.started and not part.to_do_ids
+        ]
+        if not unstarted:
+            return
+        try:
+            every_track = {track.id for track in self.db.get_all_tracks() if track.id is not None}
+        except Exception as e:
+            # Only the kept count is lost. The error of the run itself goes on.
+            logger.debug("Could not count the tracks a regenerate run kept: %s", type(e).__name__)
+            return
+        for part in unstarted:
+            part.to_do_ids = set(every_track)
+
+    def _tags_run_provider(self) -> RunProvider:
+        """The AI provider and model for the run marker, read from the provider object."""
+        name = getattr(self.ai_provider, "provider_name", None)
+        if not isinstance(name, str) or not name:
+            name = type(self.ai_provider).__name__
+        model = getattr(self.ai_provider, "model", None)
+        return RunProvider(name.lower(), model if isinstance(model, str) else "", name)
+
+    def _embeddings_run_provider(self) -> RunProvider:
+        """The embedding provider and model for the run marker, read from the generator.
+
+        The provider is the ``embedding_model`` value of the rows the generator writes.
+        """
+        generator = self.embedding_generator
+        name = getattr(generator, "provider_name", None)
+        if not isinstance(name, str) or not name:
+            name = type(generator).__name__
+        model = getattr(getattr(generator, "provider", None), "model_name", None)
+        size: Any = None
+        try:
+            size = generator.get_dimension() if generator is not None else None
+        except Exception as e:
+            logger.debug("Could not read the vector size of the generator: %s", type(e).__name__)
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            size = None
+        return RunProvider(name, model if isinstance(model, str) else "", name, size)
+
+    def _known_secrets(self) -> List[str]:
+        """The key values to keep out of error text.
+
+        Those the caller gave the engine (``known_secrets``), and those this run's
+        provider objects hold where the engine can find them.
+        """
+        inner = getattr(self.embedding_generator, "provider", None)
+        holders = [
+            self.ai_provider,
+            self.embedding_generator,
+            inner,
+            getattr(inner, "client", None),
+        ]
+        secrets: List[str] = list(self._given_secrets)
+        for holder in holders:
+            value = getattr(holder, "api_key", None) if holder is not None else None
+            if isinstance(value, str) and len(value.strip()) >= _MIN_SECRET_CHARS:
+                secrets.append(value.strip())
+        return secrets
+
+    def _open_scope(
+        self, scope: str, provider: RunProvider, continue_run: bool
+    ) -> Tuple[Optional[RegenerateRun], List[int]]:
+        """Start the marker run of ``scope`` or continue it. Return it with the tracks to do.
+
+        A marker that cannot be written does not stop the run. Every track is then
+        to do, and only the chance to continue this run later is lost.
+        """
+        try:
+            run = open_run(self.db, scope, provider, continue_run)
+        except OSError as e:
+            logger.warning(
+                "The regenerate marker could not be written (%s), so this run cannot be "
+                "continued later.",
+                type(e).__name__,
+            )
+            return None, [track.id for track in self.db.get_all_tracks() if track.id is not None]
+        return run, list(run.track_ids)
+
+    def _note_stopped_pass(self, scope: str, record: RegeneratePass) -> None:
+        """Put the error that stopped a pass into the run's result, with a text to show."""
+        error = record.error
+        if error is None:
+            return
+        result = self.regenerate_result
+        result.stopped_scope = scope
+        result.error = error
+        if isinstance(error, FatalProviderError):
+            # One of the fixed sentences of ``classify_provider_error``, or the
+            # fixed sentence of requests that failed in a row.
+            reason = _redact(error.user_message, self._known_secrets())
+            if isinstance(error, RepeatedBatchFailure) and error.cause is not None:
+                # What the provider said last, redacted and capped.
+                last = _plain_error_text(error.cause, self._known_secrets())
+                if last and last not in reason:
+                    reason = f"{_sentence(reason)} Last error: {last}"
+        else:
+            reason = _plain_error_text(error, self._known_secrets())
+        lead = "AI tagging stopped" if scope == SCOPE_TAGS else "Embedding generation stopped"
+        result.error_message = f"{lead}: {_sentence(reason)}"
+
+    def _regenerate_tags(
+        self,
+        request: _RegenerateRequest,
+        progress: Progress,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0,
+    ) -> None:
+        """The tags pass of a regenerate run: replace the tags of the tracks still to do.
+
+        Its marker entry is cleared when the pass reached its end and tags were
+        replaced since the marker's start time: in this run, or in the run it
+        continues. So a continued pass whose remaining tracks all got nothing does
+        not stay open for ever: those tracks keep their previous tags, and the run
+        goes on to the embeddings. A pass that had no track to do is cleared too.
+        """
+        record = self.regenerate_result.tags
+        plan = plan_regenerate(
+            self.db,
+            request.tags_provider,
+            request.embeddings_provider if request.generate_embeddings else None,
+            request.continue_run,
+        )
+        task = progress.add_task("Regenerating AI tags...", total=None)
+        if plan.tags_done_earlier:
+            # The run this one continues had finished its tags. Only tracks without
+            # any tags (new since then) are tagged before its embeddings go on.
+            record.done_earlier = True
+            self._generate_tags_for_untagged_tracks(
+                progress,
+                task,
+                progress_callback,
+                cancel_event,
+                progress_start,
+                progress_end,
+                record=record,
+            )
+            self._note_stopped_pass(SCOPE_TAGS, record)
+            return
+
+        run, to_do = self._open_scope(SCOPE_TAGS, request.tags_provider, request.continue_run)
+        record.continued = run is not None and run.continued
+        if run is not None and run.continued:
+            # What the run this one continues had replaced when it stopped.
+            record.replaced_earlier = max(run.total_tracks - run.remaining, 0)
+        self._generate_tags_for_untagged_tracks(
+            progress,
+            task,
+            progress_callback,
+            cancel_event,
+            progress_start,
+            progress_end,
+            to_do=to_do,
+            record=record,
+        )
+        self._note_stopped_pass(SCOPE_TAGS, record)
+        if (
+            run is not None
+            and record.finished
+            and (record.written or record.replaced_earlier or not record.to_do_ids)
+        ):
+            finish_scope(self.db, SCOPE_TAGS)
+
+    def _regenerate_embeddings(
+        self,
+        request: _RegenerateRequest,
+        progress: Progress,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+        cancel_event: Optional[Event] = None,
+        progress_start: float = 0.0,
+        progress_end: float = 1.0,
+    ) -> None:
+        """The embeddings pass of a regenerate run. It waits for the tags pass.
+
+        An embedding holds the tags in its text. One made before the new tags exist
+        would pass for done with the old text, so the pass does not start unless
+        the tags pass reached its end. When this pass reaches its end and wrote a
+        row (or continued a run that had), the index is rebuilt from the rows, as
+        ``finish_embeddings_pass`` does, and its marker entry is cleared when no
+        track is left to do. A track the provider returned no vector for keeps the
+        entry open, so that the next run makes only those embeddings. The index is
+        saved only when it is complete: tracks that are in the way are counted in
+        ``regenerate_result.index_left_out``.
+        """
+        result = self.regenerate_result
+        record = result.embeddings
+        generator, index = self.embedding_generator, self.vector_index
+        if generator is None or index is None or request.embeddings_provider is None:
+            return
+        if not result.tags.finished:
+            logger.info("The tags pass did not reach its end, so no embedding was regenerated")
+            return
+        if result.no_new_tags:
+            # Every embedding would be made again from the text it was made from.
+            logger.warning(
+                "The tags pass regenerated no tags, so no embedding was regenerated either"
+            )
+            return
+
+        task = progress.add_task("Regenerating embeddings...", total=None)
+        identity = _embeddings_after_tags(request.tags_provider, request.embeddings_provider)
+        # An earlier pass is taken up only behind tags that an earlier run finished.
+        # Tags written in this run make every embedding from before out of date.
+        run, to_do = self._open_scope(
+            SCOPE_EMBEDDINGS, identity, request.continue_run and result.tags.done_earlier
+        )
+        record.continued = run is not None and run.continued
+        if run is not None and run.continued:
+            # What the run this one continues had replaced when it stopped.
+            record.replaced_earlier = max(run.total_tracks - run.remaining, 0)
+        if record.continued and result.tags.written_ids:
+            # A track that got its tags only in this run (it had none when the
+            # earlier run embedded it) holds an embedding made from text without
+            # them. It counts as done by its time, so it is added here.
+            to_do = sorted(set(to_do) | result.tags.written_ids)
+        self._generate_embeddings_for_new_tracks(
+            progress,
+            task,
+            progress_callback,
+            cancel_event,
+            progress_start,
+            progress_end,
+            to_do=to_do,
+            record=record,
+        )
+        self._note_stopped_pass(SCOPE_EMBEDDINGS, record)
+
+        model = generator.provider_name
+        if record.finished and (record.written or record.replaced_earlier or not record.to_do_ids):
+            # Also for a pass that had no track to do (an empty library), so that
+            # its marker entry does not stay behind, and for a continued pass whose
+            # remaining tracks got no vector (the run before it replaced the others).
+            # The marker entry is cleared when no track is left to do.
+            removed, rebuilt = _close_embeddings_pass(self.db, index, model, run)
+            result.other_model_rows_removed = removed
+            result.index_left_out = rebuilt.left_out
+        elif record.written:
+            # Stopped part-way: the index follows the rows, the new and the previous,
+            # unless a track is in the way. The saved index then stays as it is, and
+            # the stop is what the run reports.
+            follow_rows_after_stopped_pass(self.db, index, model)
 
     def full_sync(
         self,
@@ -844,10 +1728,12 @@ class SyncEngine:
     def _open_saved_index(self) -> Optional[VectorIndex]:
         """Open the saved vector index of a run that has no index object, or None.
 
-        Call it only after a backup has copied the index files: an index file that
-        cannot be loaded does not survive the attempt. An index that holds no
-        vectors after loading is not returned: there is nothing to drop from it, and
-        saving it would put an empty index where an unreadable one was.
+        Call it only after a backup has copied the index files. Index files that
+        cannot be loaded are moved aside under another name when they are opened
+        (``VectorIndex.load_failed``), and the backup then still holds them under
+        their own. An index that holds no vectors after loading is not returned:
+        there is nothing to drop from it, and saving it would put an empty index at
+        the path as if it were the library's index.
         """
         path = self._index_path()
         dimension = self.saved_index_dimension
@@ -857,11 +1743,20 @@ class SyncEngine:
             if dimension <= 0 or not path.expanduser().exists():
                 return None
             index = VectorIndex(dimension=dimension, index_path=str(path))
+            # Kept for the caller, also when the load failed: it tells the user.
+            self.opened_saved_index = index
             if index.index is None or index.index.ntotal == 0:
-                logger.warning(
-                    "The saved vector index holds no vectors (it may not have been "
-                    "readable), so the removed tracks were not dropped from it."
-                )
+                if getattr(index, "load_failed", False) is True:
+                    logger.warning(
+                        "The saved vector index could not be loaded, so the removed "
+                        "tracks were not dropped from it. Run 'plexmix embeddings "
+                        "generate' to rebuild it."
+                    )
+                else:
+                    logger.warning(
+                        "The saved vector index holds no vectors, so the removed "
+                        "tracks were not dropped from it."
+                    )
                 return None
             return index
         except Exception as e:
@@ -910,6 +1805,13 @@ class SyncEngine:
             and index.index is not None
             and index.index_path is not None
             and not index.dimension_mismatch
+            # An index whose saved files could not be loaded is empty (its files were
+            # moved aside), and so is one that has no file. It has no vector to drop,
+            # and saving it would put an empty index at the path as if it were the
+            # library's: the embeddings stage then adds only the tracks it embeds and
+            # saves a partial index. The stage rebuilds it from the rows instead.
+            and getattr(index, "load_failed", False) is not True
+            and not _holds_no_vectors(index)
         ):
             try:
                 index.remove_vectors(track_ids)
@@ -1117,6 +2019,7 @@ class SyncEngine:
                     "the keys are not known"
                 )
         self.last_removal = None
+        self.opened_saved_index = None
 
         try:
             listed_keys = self.plex.list_track_keys()
@@ -1296,6 +2199,54 @@ class SyncEngine:
             or db_track.file_path != plex_track.file_path
         )
 
+    def _index_takes_updates(self) -> bool:
+        """True when the loaded index is the library's and can take new vectors one by one.
+
+        That is an index that holds vectors, whose dimension matches the embedding
+        provider and that loaded from its saved files. Any other index (none, a
+        mismatch, a failed load) is rebuilt from the rows instead, through
+        ``rebuild_index``. So is an index that holds no vector: its files are gone
+        (moved aside after a failed load, or deleted) or it was saved empty. Adding
+        only the vectors of this run to it would save a partial index, with the
+        success line and nothing to repair it, while the rows of the other tracks
+        are stored.
+        """
+        index = self.vector_index
+        return (
+            index is not None
+            and index.index is not None
+            and not index.dimension_mismatch
+            and getattr(index, "load_failed", False) is not True
+            and not _holds_no_vectors(index)
+        )
+
+    def _save_index_with(self, saved_vectors: List[tuple[int, List[float]]]) -> None:
+        """Put the vectors that were saved in this stage into the loaded index and save it.
+
+        An index whose saved files could not be loaded is empty, and adding only the
+        new vectors to it would save a nearly empty index as if it were the library's:
+        callers check ``_index_takes_updates`` first.
+        """
+        index = self.vector_index
+        assert index is not None
+        if saved_vectors:
+            new_track_ids = [tv[0] for tv in saved_vectors]
+            new_embeddings = [tv[1] for tv in saved_vectors]
+            # update_vectors removes old entries first, avoiding duplicates
+            index.update_vectors(new_embeddings, new_track_ids)
+            logger.info(f"Incrementally updated {len(new_embeddings)} vectors in FAISS index")
+        index.save_index(str(index.index_path))
+
+    def _update_index_after_stop(self, saved_vectors: List[tuple[int, List[float]]]) -> None:
+        """``_save_index_with`` for a stage that stopped: it logs a failure and never raises."""
+        try:
+            self._save_index_with(saved_vectors)
+        except Exception as e:
+            logger.warning(
+                "Failed to update the vector index after a stopped pass: %s",
+                _plain_error_text(e, self._known_secrets()),
+            )
+
     def _generate_embeddings_for_new_tracks(
         self,
         progress: Progress,
@@ -1304,20 +2255,54 @@ class SyncEngine:
         cancel_event: Optional[Event] = None,
         progress_start: float = 0.0,
         progress_end: float = 1.0,
+        to_do: Optional[Iterable[int]] = None,
+        record: Optional[RegeneratePass] = None,
     ) -> None:
+        """Generate embeddings and save them batch by batch.
+
+        Without ``to_do``, the tracks that have no embedding of the active model are
+        embedded, and the vector index is updated at the end. With ``to_do`` (a
+        regenerate run) exactly those tracks are embedded. Each keeps its row until
+        the new one is saved over it, and the caller rebuilds the index afterwards.
+        A request that the provider fails then stops the pass without raising, and
+        ``record.error`` holds the error.
+
+        ``record`` receives what the pass did, also when it is interrupted, and
+        ``self.embeddings_saved`` counts the rows written.
+        """
         if not self.embedding_generator or not self.vector_index:
             return
+        self.embeddings_saved = 0
+        if record is None:
+            record = RegeneratePass()
+        record.started = True
+        in_place = to_do is not None
 
         all_tracks = self.db.get_all_tracks()
-        # Scope to the active embedding model so switching provider/model re-embeds
-        # tracks that were only embedded by a previous model.
-        existing_track_ids = self.db.get_track_ids_with_embeddings(
-            self.embedding_generator.provider_name
-        )
-        tracks_needing_embeddings = [t for t in all_tracks if t.id not in existing_track_ids]
+        if to_do is None:
+            # Scope to the active embedding model so switching provider/model re-embeds
+            # tracks that were only embedded by a previous model.
+            existing_track_ids = self.db.get_track_ids_with_embeddings(
+                self.embedding_generator.provider_name
+            )
+            tracks_needing_embeddings = [t for t in all_tracks if t.id not in existing_track_ids]
+        else:
+            wanted = set(to_do)
+            tracks_needing_embeddings = [t for t in all_tracks if t.id in wanted]
+        record.to_do_ids = {t.id for t in tracks_needing_embeddings if t.id is not None}
 
         if not tracks_needing_embeddings:
             progress.update(task, description="No new tracks need embeddings")
+            record.finished = True
+            if not in_place and not self._index_takes_updates():
+                # Every track has a row of the active model by name, yet the saved
+                # index is none this run can add to: it is for another vector size,
+                # it could not be loaded, or there is none. It is rebuilt from the
+                # rows as after an embeddings pass, and only when it is complete.
+                # After a change of the vector size the rows are of the old size,
+                # so nothing is built, and the run is recorded as partial with the
+                # sentence that says what to run, as it is after a pass that wrote rows.
+                self._rebuild_index_from_rows()
             return
 
         progress.update(task, total=len(tracks_needing_embeddings))
@@ -1325,12 +2310,14 @@ class SyncEngine:
 
         from ..database.models import Embedding
 
-        batch_size = 50
+        batch_size = _EMBEDDING_BATCH_SIZE
         embeddings_saved = 0
         total_batches = (len(tracks_needing_embeddings) + batch_size - 1) // batch_size
         saved_vectors: List[
             tuple[int, List[float]]
         ] = []  # Collect (track_id, vector) in-memory for FAISS update
+        # True when a cancel request or a provider error ended the pass early.
+        stopped = False
 
         try:
             for i in range(0, len(tracks_needing_embeddings), batch_size):
@@ -1338,6 +2325,7 @@ class SyncEngine:
                     logger.warning(
                         f"Embedding generation cancelled. Saved {embeddings_saved} embeddings."
                     )
+                    stopped = True
                     break
 
                 batch_tracks = tracks_needing_embeddings[i : i + batch_size]
@@ -1383,9 +2371,23 @@ class SyncEngine:
                     f"Generating embeddings for batch {batch_num}/{total_batches} ({len(texts)} tracks)"
                 )
 
-                embeddings = self.embedding_generator.generate_batch_embeddings(
-                    texts, batch_size=50
-                )
+                try:
+                    embeddings = self.embedding_generator.generate_batch_embeddings(
+                        texts, batch_size=batch_size
+                    )
+                except Exception as e:
+                    if not in_place:
+                        raise
+                    # A regenerate run ends here and reports the error. Every track
+                    # that was not reached keeps the embedding it has.
+                    record.error = e
+                    stopped = True
+                    logger.error(
+                        "Embedding generation stopped after %d embeddings: %s",
+                        embeddings_saved,
+                        _plain_error_text(e, self._known_secrets()),
+                    )
+                    break
 
                 batch_embedding_objects = []
                 for track, embedding_vector in zip(batch_tracks, embeddings):
@@ -1400,8 +2402,15 @@ class SyncEngine:
                             vector=embedding_vector,
                         )
                     )
-                    saved_vectors.append((tid, embedding_vector))
+
+                # Saved first, counted after: the count is of rows that exist.
+                self.db.insert_embeddings_batch(batch_embedding_objects)
+
+                for saved in batch_embedding_objects:
+                    saved_vectors.append((saved.track_id, saved.vector))
+                    record.written_ids.add(saved.track_id)
                     embeddings_saved += 1
+                    self.embeddings_saved = embeddings_saved
                     progress.update(task, advance=1)
 
                     if progress_callback and embeddings_saved % 10 == 0:
@@ -1413,52 +2422,73 @@ class SyncEngine:
                             f"Generating embeddings... ({embeddings_saved}/{len(tracks_needing_embeddings)})",
                         )
 
-                self.db.insert_embeddings_batch(batch_embedding_objects)
-
                 logger.debug(f"Completed batch {batch_num}/{total_batches}")
 
         except KeyboardInterrupt:
             logger.warning(
                 f"Embedding generation interrupted. Saved {embeddings_saved} embeddings."
             )
-            # Rebuild the FAISS index from the DB (which holds the partial results)
-            # so the index doesn't diverge from the embeddings table after an
-            # interrupt. The rebuild is scoped to the active model.
+            # Let the index follow the rows that were saved, so that it doesn't diverge
+            # from the embeddings table after an interrupt.
             if self.vector_index is not None and embeddings_saved > 0:
-                try:
-                    partial = self.db.get_all_embeddings(self.embedding_generator.provider_name)
-                    if partial:
-                        self.vector_index.build_index(
-                            [v for _, v in partial], [t for t, _ in partial]
-                        )
-                        if self.vector_index.index_path is not None:
-                            self.vector_index.save_index(str(self.vector_index.index_path))
-                except Exception as e:
-                    logger.warning("Failed to persist partial embeddings to index: %s", e)
+                if not in_place and self._index_takes_updates():
+                    # An index that loaded cleanly takes the new vectors one by one,
+                    # as at the end of the stage: the tracks not reached keep their
+                    # earlier vectors, the others get the vectors of their rows. A
+                    # rebuild from the rows would be refused here when the provider
+                    # name changed and a track still holds only the earlier row.
+                    self._update_index_after_stop(saved_vectors)
+                else:
+                    # The index follows the rows only when it is complete then
+                    # (``index_rebuild.rebuild_index``). Never raises.
+                    follow_rows_after_stopped_pass(
+                        self.db, self.vector_index, self.embedding_generator.provider_name
+                    )
+            raise
+        except Exception:
+            # A plain run does not catch a provider error: it is raised to the caller.
+            # The rows that were saved are in the index first, as after Ctrl+C.
+            if not in_place and embeddings_saved > 0 and self._index_takes_updates():
+                self._update_index_after_stop(saved_vectors)
             raise
 
-        # Use incremental FAISS updates if index already exists with correct dimension
-        if self.vector_index.index is not None and not self.vector_index.dimension_mismatch:
-            if saved_vectors:
-                new_track_ids = [tv[0] for tv in saved_vectors]
-                new_embeddings = [tv[1] for tv in saved_vectors]
-                # update_vectors removes old entries first, avoiding duplicates
-                self.vector_index.update_vectors(new_embeddings, new_track_ids)
-                logger.info(f"Incrementally updated {len(new_embeddings)} vectors in FAISS index")
-        else:
-            # Full rebuild needed (new index or dimension mismatch). Scope to the
-            # active model so stale vectors from a previous provider/model don't
-            # get mixed in (which would crash the build with ragged dimensions).
-            all_embeddings = self.db.get_all_embeddings(self.embedding_generator.provider_name)
-            track_ids = [emb[0] for emb in all_embeddings]
-            vectors = [emb[1] for emb in all_embeddings]
-            self.vector_index.build_index(vectors, track_ids)
-            logger.info(f"Rebuilt FAISS index with {len(track_ids)} vectors")
+        record.finished = not stopped
+        if in_place:
+            # The caller rebuilds the index once, from the rows of the active model.
+            progress.update(task, description=f"Generated {embeddings_saved} embeddings")
+            logger.info(f"Generated embeddings for {embeddings_saved} tracks")
+            return
 
-        self.vector_index.save_index(str(self.vector_index.index_path))
+        # Use incremental FAISS updates if index already exists with correct dimension.
+        # An index whose saved files could not be loaded is empty: adding only the new
+        # vectors would save a nearly empty index as if it were the library's, so it
+        # is rebuilt from the database.
+        if self._index_takes_updates():
+            self._save_index_with(saved_vectors)
+        else:
+            # Full rebuild needed (new index, dimension mismatch or failed load), from
+            # the rows of the active model. It is saved only when it is complete.
+            # After a change of the vector size or of the provider, the tracks that
+            # were not replaced yet are in the way: the saved index and its
+            # mismatch then stay as they are, and the run is recorded as partial.
+            self._rebuild_index_from_rows()
 
         progress.update(task, description=f"Generated {embeddings_saved} embeddings")
         logger.info(f"Generated embeddings for {embeddings_saved} tracks")
+
+    def _rebuild_index_from_rows(self) -> None:
+        """Rebuild the saved index from the rows of the active model, through ``rebuild_index``.
+
+        Tracks in the way (a row of another model or vector size is all they hold)
+        keep it from being built and saved: the saved index stays as it is, and the
+        count goes to ``outcome.index_left_out``, which makes the run partial.
+        """
+        assert self.embedding_generator is not None and self.vector_index is not None
+        rebuilt = rebuild_index(self.db, self.vector_index, self.embedding_generator.provider_name)
+        if rebuilt.left_out:
+            self.outcome.index_left_out = rebuilt.left_out
+        else:
+            logger.info(f"Rebuilt FAISS index with {rebuilt.vectors} vectors")
 
     def _generate_tags_for_untagged_tracks(
         self,
@@ -1468,21 +2498,53 @@ class SyncEngine:
         cancel_event: Optional[Event] = None,
         progress_start: float = 0.0,
         progress_end: float = 1.0,
+        to_do: Optional[Iterable[int]] = None,
+        record: Optional[RegeneratePass] = None,
     ) -> None:
+        """Generate AI tags and save them after every batch.
+
+        Without ``to_do``, the tracks that have no tags at all are tagged. With
+        ``to_do`` (a regenerate run) exactly those tracks are, and each keeps its
+        tags until its new ones are saved.
+
+        An empty result is no result. When the provider returns no tag, no
+        environment and no instrument for a track (it left the track out, its reply
+        could not be read, or the request of that batch failed), nothing is written
+        for the track: its tags and its ``tags_generated_at`` stay as they are, and
+        it is not counted. An empty list never overwrites a column either: a reply
+        with tags and no instruments leaves the instruments the track has. With
+        ``to_do``, a reply without tags is no result for the track, whatever else
+        it holds: the track keeps all it has and stays to do.
+        ``self.tags_saved`` counts the rows written. ``record`` receives what the
+        pass did, also when it is interrupted.
+
+        In a regenerate run the pass stops when ``_MAX_FAILED_TAG_BATCHES`` requests
+        in a row failed. ``record.error`` then holds a ``RepeatedBatchFailure``.
+        """
         if not self.tag_generator:
             return
         self.tags_saved = 0
         self.tagging_error = None
+        if record is None:
+            record = RegeneratePass()
+        record.started = True
+        in_place = to_do is not None
 
         all_tracks = self.db.get_all_tracks()
-        tracks_needing_tags = []
-
-        for track in all_tracks:
-            if not track.tags and not track.environments and not track.instruments:
-                tracks_needing_tags.append(track)
+        if to_do is None:
+            tracks_needing_tags = [
+                track
+                for track in all_tracks
+                if not track.tags and not track.environments and not track.instruments
+            ]
+        else:
+            wanted = set(to_do)
+            tracks_needing_tags = [track for track in all_tracks if track.id in wanted]
+        record.to_do_ids = {track.id for track in tracks_needing_tags if track.id is not None}
 
         if not tracks_needing_tags:
             progress.update(task, description="No tracks need AI tags")
+            record.finished = True
             return
 
         progress.update(task, total=len(tracks_needing_tags))
@@ -1523,52 +2585,86 @@ class SyncEngine:
                 )
             progress.update(task, completed=tracks_tagged)
 
-        def _save_tag_results(results: Dict[int, Dict[str, Any]]) -> int:
-            saved = 0
-            for track in tracks_needing_tags:
-                if track.id in results:
-                    result = results[track.id]
-                    self.db.update_track_tags(
-                        track.id,
-                        tags=",".join(result.get("tags", [])),
-                        environments=",".join(result.get("environments", [])),
-                        instruments=",".join(result.get("instruments", [])),
-                    )
-                    saved += 1
-            return saved
+        written = record.written_ids
+        pending = set(record.to_do_ids)
+
+        def save_results(results: Any) -> None:
+            """Write the usable results that are not written yet, and count them."""
+            if not isinstance(results, dict):
+                return
+            for track_id, result in results.items():
+                if track_id not in pending or not isinstance(result, dict):
+                    continue
+                # Only texts with content count: a list of blanks is an empty list.
+                tags = clean_tag_list(result.get("tags"))
+                environments = clean_tag_list(result.get("environments"))
+                instruments = clean_tag_list(result.get("instruments"))
+                if not (tags or environments or instruments):
+                    # No result for this track: it keeps the tags it has.
+                    continue
+                if in_place and not tags:
+                    # A regenerate run replaces tags. A reply without them is no
+                    # replacement: the track keeps all it has and is not counted.
+                    continue
+                # A column is written only when its list has content. None leaves
+                # the column as it is, so an empty list never blanks what was there.
+                self.db.update_track_tags(
+                    track_id,
+                    tags=",".join(tags) if tags else None,
+                    environments=",".join(environments) if environments else None,
+                    instruments=",".join(instruments) if instruments else None,
+                )
+                pending.discard(track_id)
+                written.add(track_id)
+                self.tags_saved = len(written)
 
         partial_results: Dict[int, Dict[str, Any]] = {}
+        # A regenerate run does not go on asking a provider that no longer answers.
+        # A plain sync tries every batch, as it always did.
+        stop_after: Dict[str, Any] = {}
+        if self._regenerating is not None:
+            stop_after["max_failed_batches"] = _MAX_FAILED_TAG_BATCHES
         try:
             tag_results = self.tag_generator.generate_tags_batch(
                 track_data_list,
-                batch_size=20,
+                batch_size=_TAG_BATCH_SIZE,
                 progress_callback=tag_progress_callback,
                 cancel_event=cancel_event,
                 result_sink=partial_results,
+                on_batch=save_results,
+                **stop_after,
             )
-            tags_saved = _save_tag_results(tag_results)
-            self.tags_saved = tags_saved
-            progress.update(task, description=f"Generated tags for {tags_saved} tracks")
-            logger.info(f"Generated AI tags for {tags_saved} tracks")
+            # Every batch was saved when it arrived, so there is nothing left to write
+            # here or in the branches below. They cover a generator that hands its
+            # results back without reporting the batches.
+            save_results(tag_results)
+            record.finished = not (cancel_event is not None and cancel_event.is_set())
+            progress.update(task, description=f"Generated tags for {self.tags_saved} tracks")
+            logger.info(f"Generated AI tags for {self.tags_saved} tracks")
 
         except FatalProviderError as e:
             # Unrecoverable error (e.g. bad API key): stop tagging, keep partial
             # results, surface the reason once, and let the rest of sync proceed.
-            tags_saved = _save_tag_results(e.partial_results)
-            self.tags_saved = tags_saved
+            save_results(e.partial_results)
             self.tagging_error = e
-            logger.error("AI tagging stopped after %d tracks: %s", tags_saved, e.user_message)
+            record.error = e
+            logger.error("AI tagging stopped after %d tracks: %s", self.tags_saved, e.user_message)
             progress.update(task, description=f"AI tagging stopped: {e.user_message}")
             if progress_callback:
                 progress_callback(progress_end, f"AI tagging stopped: {e.user_message}")
         except KeyboardInterrupt:
-            # Persist tags generated before the interrupt so they aren't discarded
+            # Tags generated before the interrupt are saved already
             # (the CLI/UI tells the user "progress saved").
-            tags_saved = _save_tag_results(partial_results)
-            logger.warning("Tag generation interrupted; saved %d tagged tracks", tags_saved)
+            save_results(partial_results)
+            logger.warning("Tag generation interrupted; saved %d tagged tracks", self.tags_saved)
             raise
         except Exception as e:
-            logger.error(f"Tag generation failed: {e}")
+            record.error = e
+            logger.error(
+                "Tag generation failed after %d tracks: %s",
+                self.tags_saved,
+                _plain_error_text(e, self._known_secrets()),
+            )
             progress.update(task, description="Tag generation failed")
 
     def _analyze_audio_features(

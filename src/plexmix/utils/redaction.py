@@ -13,6 +13,14 @@ from typing import List, Optional, Tuple
 
 MASK = "***"
 
+# What takes the place of a key value, or of a word that shows part of one.
+REDACTED = "[redacted]"
+
+# A key that a provider repeats with its middle hidden ("sk-ab********wxyz") still
+# shows both ends. Four stars or more mark such a word; ``MASK`` has three.
+_HIDDEN_MIDDLE = "****"
+_WHITESPACE_RE = re.compile(r"(\s+)")
+
 # The value of an ``X-Plex-Token=`` query parameter, up to the next parameter.
 _TOKEN_PARAMETER_RE = re.compile(r"(X-Plex-Token=)[^&\s#]+", re.IGNORECASE)
 
@@ -137,6 +145,23 @@ def mask_urls_in_text(text: str) -> str:
     if "@" not in text:
         return text
     return _CREDENTIALS_RE.sub(_mask_credentials, text)
+
+
+def redact_partly_hidden_keys(text: str) -> str:
+    """Return ``text`` with every word that shows a key with its middle hidden replaced.
+
+    Some providers repeat the key they were sent in an error text as
+    ``sk-ab********wxyz``. Both ends are still readable, so the whole word becomes
+    ``[redacted]``. Everything else, the white space included, is returned as it
+    was. The text is read word by word, so a long text without spaces takes no
+    longer than a short one. The three stars that ``mask_urls_in_text`` writes are
+    not such a word and stay.
+    """
+    if not text or _HIDDEN_MIDDLE not in text:
+        return text
+    return "".join(
+        REDACTED if _HIDDEN_MIDDLE in piece else piece for piece in _WHITESPACE_RE.split(text)
+    )
 
 
 def mask_credentials_of(address: str, text: str) -> str:

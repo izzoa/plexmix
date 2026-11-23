@@ -5,16 +5,18 @@ from rich.console import Console
 from ..config.constants import EMBEDDING_BATCH_SIZE, TAG_BATCH_SIZE
 from ..config.settings import Settings
 from ..database.sqlite_manager import SQLiteManager
-from ..ai.tag_generator import TagGenerator
+from ..ai.tag_generator import TagGenerator, clean_tag_list
 from ..ai.errors import FatalProviderError
 from ..services.providers import (
     canonical_ai_provider as _canonical_ai_provider,
     resolve_ai_api_key as _resolve_ai_api_key,
     build_ai_provider as _build_ai_provider,
-    build_embedding_generator as _build_embedding_generator,
+    build_embedding_generator_with_reason as _build_embedding_generator_with_reason,
 )
 from ..services.sync_service import build_vector_index
 from ..services.tagging_service import generate_embeddings_for_tracks, rebuild_vector_index
+from .console_helpers import index_left_out, print_index_left_as_it_is, print_unreadable_index
+from .embedding_failure import print_embedding_failure
 
 tags_app = typer.Typer(
     name="tags", help="AI-based tag generation", pretty_exceptions_show_locals=False
@@ -155,12 +157,15 @@ def tags_generate(
                         if tag_data is None:
                             continue
 
+                        # Only texts with content count: a list of blanks ([""],
+                        # [" "], [None]) is an empty list, so it is never written
+                        # over a column and never counted as a result.
                         if isinstance(tag_data, dict):
-                            tags_list = tag_data.get("tags") or []
-                            env_list = tag_data.get("environments") or []
-                            inst_list = tag_data.get("instruments") or []
+                            tags_list = clean_tag_list(tag_data.get("tags"))
+                            env_list = clean_tag_list(tag_data.get("environments"))
+                            inst_list = clean_tag_list(tag_data.get("instruments"))
                         else:
-                            tags_list = tag_data if isinstance(tag_data, list) else []
+                            tags_list = clean_tag_list(tag_data)
                             env_list = []
                             inst_list = []
 
@@ -198,12 +203,14 @@ def tags_generate(
         if regenerate_embeddings and updated_count > 0:
             console.print("\n[bold]Regenerating embeddings for newly tagged tracks...[/bold]")
 
-            embedding_generator = _build_embedding_generator(settings)
+            embedding_generator, failure = _build_embedding_generator_with_reason(settings)
             if not embedding_generator:
-                console.print("[yellow]API key required for embedding provider. Skipping.[/yellow]")
+                print_embedding_failure(console, failure, style="yellow")
+                console.print("[yellow]Skipping.[/yellow]")
                 return
 
             vector_index = build_vector_index(settings, embedding_generator)
+            print_unreadable_index(console, vector_index)
             index_path = str(settings.database.get_index_path())
 
             # Use the ids accumulated across all batches (not just the last one).
@@ -245,6 +252,10 @@ def tags_generate(
                 console.print(
                     f"[green]Regenerated {embeddings_saved} embeddings with tags![/green]"
                 )
+                # The index is rebuilt from the rows only when it is complete. While
+                # tracks hold an embedding that was made with other embedding
+                # settings, the saved index is left as it is, and the user is told.
+                print_index_left_as_it_is(console, index_left_out(vector_index))
 
             except KeyboardInterrupt:
                 console.print("\n[yellow]Embedding regeneration interrupted by user.[/yellow]")

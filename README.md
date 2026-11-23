@@ -82,7 +82,8 @@ plexmix playlist import my_playlist.json
 # If you encounter issues (e.g., "0 candidate tracks")
 plexmix doctor
 
-# Regenerate all tags and embeddings from scratch (WARNING: destructive)
+# Make new AI tags and embeddings for every track. It asks first, and it replaces
+# them in place: each track keeps what it has until its new data is saved.
 plexmix sync regenerate
 ```
 
@@ -187,6 +188,7 @@ The web interface is built around a slim glass **icon rail** and a **command pal
   - **Readiness line** - Before you generate, a line under the prompt names the embedding provider and model that will receive your prompt, how many tracks are searchable, and whether the prompt stays on this machine (Local) or is sent to a cloud provider. While something stops generation (no synced library, no search index, a missing API key or local-model package, or a search index built with a different embedding size), **Generate** is disabled and the line says why, with a link to the fix. A failed network check never disables Generate
   - **Failures that stay** - If generation fails, a callout names the real cause (for example "Local models aren't installed", not "check your API keys") with one action, and stays until you dismiss it, generate again, or fix the cause
   - **Rerun filters as chips** - Filters loaded by **Rerun** in History that the Options panel doesn't show (year, tempo, energy, key, danceability, skipping tracks from recent playlists) appear as removable chips, with **Clear all**
+  - **If the connection drops** - If the page can't reach PlexMix while a playlist is being generated (PlexMix was stopped, or the network dropped), the progress bar, the percentage and **Cancel** give way to a quiet "Reconnecting to PlexMix…" line, and after a few seconds to a "Lost connection to PlexMix" alert. Neither says the playlist is lost, because it may still be generating on the server. Both clear on their own when the connection returns. If PlexMix was restarted while the playlist was being generated, the Generator comes back with your prompt in the box and a "That playlist didn't finish" message, and **Generate** starts it again (see [Troubleshooting](#troubleshooting))
 - **📚 Library Manager** - Browse, sort by Title/Artist/Album, filter by text, genre, year range, tag and audio analysis (the audio filter appears once some tracks are analyzed), see each track's tag, embedding, audio and MusicBrainz status at a glance, sync with live progress, bulk tag/delete operations
   - **Selection bar** - Stays in view while you scroll and counts selected tracks on other pages ("50 selected · 50 on other pages"); the Tag and Delete confirmations say the same
   - **Bulk Tag adds by default** - **Tag** adds the tags you enter to each selected track's existing tags (duplicates are skipped). **Replace** is an explicit choice: the dialog says how many selected tracks already have tags that will be overwritten, and the button turns into a red **Replace tags**
@@ -242,7 +244,7 @@ The Dashboard status strip, the Doctor connection rows and the Generator readine
 - **🎬 Generator showpiece** - An animated "AI-thinking" pipeline with a live particle vector-field, a four-phase tracker bound to the real generation pipeline, and a streaming terminal log
 - **🌓 Light-first theme + appearance controls** - Light by default with a dark toggle (auto logo switching), plus Density (comfortable/compact) and Accent-intensity (subtle/balanced/vivid) preferences in Settings → Appearance
 - **⌨️ Keyboard-driven** - Vim-style `g+key` navigation (`g` then `d`, `g`, `l`, `t`, `h`, `x` or `s`, without a page reload), ⌘K or Ctrl+K (or `/`) to open the palette, ↑↓ to move the highlight, Enter to run the highlighted command, `Esc` to close it and return focus to where you were, ⌘/Ctrl+Enter to generate from the Generator prompt, and Enter to apply the Library and History filters or run Tagging's Preview
-- **🔍 Zoom-friendly layout** - Works at 200% browser zoom and in windows down to 320px wide; the rail scrolls, the top bar compacts, and pages reflow without sideways scrolling (the Library table scrolls inside its own box)
+- **🔍 Zoom-friendly layout** - Works at 200% browser zoom and in windows down to 320px wide; the rail scrolls, the top bar compacts, pages reflow without sideways scrolling (the Library table scrolls inside its own box), and dialogs fit the window too
 - **Real-time Progress** - Live updates for sync, tagging, and generation operations
 - **Resilient UX** - Form validation, loading placeholders on the Dashboard, Library, Tagging, History and Doctor until their data arrives (never a false empty state or a zero), errors that name their real cause and link to the fix and stay on screen next to what failed, and confirmations before Doctor fixes, tagging and whole-library embedding that say how much will be done, which provider runs it and what data leaves your machine
 
@@ -410,8 +412,12 @@ plexmix sync --audio
 # Sync with MusicBrainz metadata enrichment
 plexmix sync --musicbrainz
 
-# Regenerate everything from scratch (WARNING: Deletes ALL tags and embeddings)
+# Sync, then make new AI tags and embeddings for every track. It asks first.
+# Nothing is cleared: each track keeps what it has until its new data is saved (see below)
 plexmix sync regenerate
+
+# The same without a terminal (cron, scripts): --yes answers the question
+plexmix sync regenerate --yes
 
 # Legacy alias for incremental sync
 plexmix sync full
@@ -431,11 +437,11 @@ plexmix sync --allow-removals
 | `incremental` (default) | ✅ Syncs changes only | ✅ Preserves existing | ✅ Preserves existing | Regular updates, new tracks added |
 | `incremental --audio` | ✅ Syncs changes only | ✅ Preserves existing | ✅ Preserves existing | Sync + audio feature analysis |
 | `full` (alias) | ✅ Syncs changes only | ✅ Preserves existing | ✅ Preserves existing | Same as incremental (kept for compatibility) |
-| `regenerate` | ✅ Syncs everything | ⚠️ **DELETES ALL** | ⚠️ **DELETES ALL** | Starting fresh, fixing corrupt data |
+| `regenerate` | ✅ Syncs changes only | 🔄 Replaces all, in place | 🔄 Replaces all, in place | New tags and embeddings for every track, for example after a change of AI model |
 
 **When to use each:**
 - **`plexmix sync`** → Default for daily use, adding new music
-- **`plexmix sync regenerate`** → When you want to completely regenerate all AI data (tags, embeddings)
+- **`plexmix sync regenerate`** → When you want new AI data (tags, embeddings) for every track. See [Regenerating tags and embeddings](#regenerating-tags-and-embeddings)
 
 **Removing tracks that Plex no longer lists:**
 
@@ -444,19 +450,49 @@ A sync removes a track from the PlexMix library only when Plex's list of the lib
 - **Threshold.** A removal is large when it is more than 50 tracks **and** more than 5 percent of the tracks PlexMix holds. Smaller removals are applied without a question.
 - **The question.** The sync does not apply a large removal by itself. It finishes, keeps those tracks, and then asks, for example, `Remove 5,443 of 5,943 tracks?`. The default answer is No, which keeps the tracks. On Yes, PlexMix checks Plex again, makes a backup, and removes only the tracks that Plex still does not list. A track that went missing after the question was asked is kept, and the sync says how many there are. It also says how many of the confirmed tracks Plex lists again; those are kept too. A removal is applied whole or not at all. If you press Ctrl+C before it is saved, nothing is removed. Either way the output says whether tracks were removed and where the backup is.
 - **No terminal.** A sync started by cron, a script or a pipe cannot ask. It keeps the tracks, prints how many it kept, and exits with status 1. Add `--allow-removals` to let such a run apply a large removal without a question. With a subcommand, the flag can stand before or after its name: `plexmix sync full --allow-removals`.
-- **Backup.** Each large removal first writes a full copy of the database and of the search index files into a new folder, `backups/<YYYYMMDD_HHMMSS>/` beside the database (by default under `~/.plexmix/backups/`). The sync prints the folder and its size, also when the removal after it fails or is interrupted. If the copy cannot be made, nothing is removed. PlexMix does not delete old copies. Each one is as large as your database, so delete the ones you no longer need, above all when a scheduled sync runs with `--allow-removals`. The copy holds the search index also when the sync runs without embeddings (`--no-embeddings`, or the sync that `plexmix doctor` offers). Two limits:
-  - The index files are copied as they are on disk at that moment. When a sync runs with embeddings on and the index file cannot be loaded, PlexMix discards that file as the command starts, before the backup is made. The copy then holds the database only.
-  - `plexmix sync regenerate` clears the tags and embeddings before it reads Plex. A backup made during that command holds the tracks and playlists, but not the tags and embeddings that were cleared.
+- **Backup.** Each large removal first writes a full copy of the database and of the search index files into a new folder, `backups/<YYYYMMDD_HHMMSS>/` beside the database (by default under `~/.plexmix/backups/`). The sync prints the folder and its size, also when the removal after it fails or is interrupted. If the copy cannot be made, nothing is removed. PlexMix does not delete old copies. Each one is as large as your database, so delete the ones you no longer need, above all when a scheduled sync runs with `--allow-removals`. The copy holds the search index also when the sync runs without embeddings (`--no-embeddings`, or the sync that `plexmix doctor` offers). One limit: the index files are copied as they are on disk at that moment. When a sync runs with embeddings on and the index file cannot be loaded, PlexMix moves that file and its metadata file aside as the command starts, before the backup is made (see ["The search index could not be loaded"](#the-search-index-could-not-be-loaded)). The copy then holds the database only, and the two files stay in their folder under their new names.
 - **Restoring a backup.** There is no restore command. Stop PlexMix first (the web UI too). Delete `plexmix.db-wal` and `plexmix.db-shm` beside the database if they exist. Then copy the files from the backup folder over the database file and the two index files (by default `plexmix.db`, `embeddings.index` and `embeddings.metadata` in `~/.plexmix/`).
 - **Exit status.** A sync exits with status 0 when it finished and every large removal was applied or you answered No. It exits with status 1, and prints no "completed successfully" line, when:
-  - Plex stopped answering or could not list the library, or the connection check at the start of the sync failed. The sync changed nothing, and its last sentence says so. One exception: `plexmix sync regenerate` clears the tags and embeddings before it reads Plex, and says so when it stops this way.
+  - Plex stopped answering or could not list the library, or the connection check at the start of the sync failed. The sync changed nothing, and its last sentence says so. This holds for `plexmix sync regenerate` too: it clears nothing before it reads Plex.
   - More than 10 and more than 1 percent of the artists, albums or tracks could not be read. What could be read is added and updated, and nothing is removed.
   - A large removal is waiting and the sync could not ask.
   - Plex listed 0 tracks while PlexMix holds tracks. Nothing is removed, with or without `--allow-removals`. If the Plex library really is empty, run `plexmix db reset`.
   - The backup could not be made, the tracks could not be deleted, or the second check of Plex failed or found more tracks missing than you confirmed. Nothing is removed.
   - A later stage failed after the library had been compared with Plex, for example because the embedding provider went away. The tracks that were added, updated and removed by then stay that way. The sync prints those counts and the backup folder before it ends. An error other than a lost connection also ends in an error report.
+  - `plexmix sync regenerate` only: it could not ask its question, a provider was not ready, it regenerated nothing, or a provider failure stopped it part-way. See [Regenerating tags and embeddings](#regenerating-tags-and-embeddings).
 
 A sync started from the web UI follows the same rules. When it holds a large removal back, the Library page shows a notice with a **Review removal** button. The notice stays until the next sync or until the web UI is restarted. The confirmation belongs to the database and the Plex library that sync compared. If the database path, the Plex address or the Plex library in the settings changes afterwards, confirming removes nothing and ends the notice; run a sync again. **Cancel** in the job bar stops a confirmed removal until its deletes are saved: nothing is removed then, and the result says where the backup is.
+
+#### Regenerating tags and embeddings
+
+Three commands make new AI tags or new embeddings for tracks that already have them:
+
+| Command | What it does |
+|---------|--------------|
+| `plexmix sync regenerate` | Syncs with Plex, then makes new AI tags and new embeddings for every track. With `--no-embeddings` it makes new tags only |
+| `plexmix doctor --force` | Makes new AI tags and new embeddings for every track, without reading Plex |
+| `plexmix embeddings generate --regenerate` | Makes a new embedding for every track |
+
+All three follow the same rules:
+
+- **Nothing is cleared first.** Each track keeps its tags and its embedding until the new ones are saved. New data is saved batch by batch while the command runs. After a failure, a refusal or Ctrl+C, every track has either its new or its previous tags and embedding. No track is left without them.
+- **The question.** The command first says what it will do: how many tracks it covers, and which provider and model make the tags and the embeddings. Then it asks, for example, `Regenerate the AI tags and embeddings of 5,943 tracks?`. The default answer is No. On No it prints "Operation cancelled.", changes nothing, sends nothing to a provider, and exits with status 0.
+- **No terminal.** A command started by cron, a script, a pipe or `docker exec` without `-it` cannot ask. It changes nothing, says that `--yes` is needed, and exits with status 1. Add `--yes` to run without the question, for example `plexmix sync regenerate --yes`. `--yes` answers only this question. A large removal of tracks during `plexmix sync regenerate` still needs `--allow-removals` (see above).
+- **Provider check.** After the question, the command sends one small test request to each provider it needs. If a provider has no API key, cannot be started or does not answer, the command names the provider and the cause, for example `The AI provider Gemini is not ready: no API key is stored.` It then changes nothing and exits with status 1. It does not go on without AI tagging. A provider that the run does not need is not checked: `plexmix sync regenerate --no-embeddings` needs no embedding provider.
+- **Tracks that keep their previous data.** When the AI provider returns nothing usable for a track, the track keeps the tags it has. That is the case when the reply leaves the track out, holds no tags for it or cannot be read, or when the request for its batch fails. An empty list in a reply never replaces what a track has: a reply with tags and no instruments leaves the track's instruments as they are. Items that are blank (`""`, `" "`, `null`) are dropped before a list is judged, so a list that holds only blanks counts as empty. In a run of tags and embeddings, the embeddings are made only after the tags have reached the end of the library, because an embedding is made from the tags. If the tags are stopped before that, every track keeps its previous embedding.
+- **A provider that stops answering.** When the AI provider does not answer three requests in a row (a timeout, a rate limit, a server error, or a connection that is refused or closed), the run stops there and exits with status 1. Every track it did not reach keeps its tags, and no embedding is made. A reply that the provider did give but that holds nothing to use (an empty reply, a reply that is not JSON) counts as answered: the tracks of that batch keep their tags, and the run goes on. A new run in which the AI provider returns no usable tags for any track fails too: each embedding would then be made again from the text it was made from. Run the same command again to continue.
+- **The result.** The output has one line for each kind of data the command regenerates, for example `AI tags: 2,400 tracks regenerated, 3,543 keep their previous tags.` The exit status is:
+  - 0 when the run reached its end and regenerated at least one track, or when it continued an earlier run that had regenerated some (see "Continuing"). If some tracks keep their previous data, or the search index could not be rebuilt (see "The search index" below), the command reports warnings in place of its success line.
+  - 1, with no success line, when the run regenerated nothing (a continued run counts the tracks that the run before it replaced), when a new run made no new tags (no embedding is made then), or when a provider failure stopped it part-way. The output gives the reason and the counts.
+  - 130 after Ctrl+C. The output gives the counts so far.
+  - 0, with the line "The PlexMix library holds no tracks, so there is nothing to regenerate.", when the library holds no tracks: nothing is changed and no marker file is left. For `plexmix sync regenerate` that is the library after its sync.
+  - `plexmix sync regenerate` also has the exit statuses of a sync, listed above.
+- **Continuing.** After Ctrl+C or a failure part-way, run the same command again. It makes new data only for the tracks that are left, and it clears nothing. Its question says so, for example: `An earlier regenerate run did not finish. This run continues it: 3,543 of 5,943 tracks remain.` When the earlier run of tags and embeddings was stopped while it made AI tags, that count is the tracks that still need new tags, and the question adds that every embedding is made again after them, because an embedding is made from its track's tags. The tip at the end of a stopped run names the command with the options it was run with, for example `plexmix sync regenerate --no-embeddings`. If the AI provider returns nothing usable for the tracks that are left, the continued run does not fail again, also a run of tags alone: those tracks keep their previous tags, the command ends with warnings and says how many they are, and a run that includes embeddings goes on to them. Only a new run in which the provider returns nothing usable for any track fails. The same holds for the embeddings: when the provider returns no vector for some tracks, the run keeps their entry open, so that the same command run again makes only those embeddings, ends with warnings and costs one request, not the whole library. A track that gets its first tags in a continued run is embedded again, because its earlier embedding was made without them.
+- **The search index.** A search index that is rebuilt from the stored embeddings replaces the saved one only when it covers every track that has an embedding: every such track must hold an embedding of the current provider, model and vector size. A run that reaches its end with a new embedding for every track rebuilds the index from them. After a change of the provider, the model or the vector size, the tracks a stopped run did not reach still hold an embedding of the earlier settings. Then nothing is built and nothing is saved: the saved index stays as it is, byte for byte. After a change of the vector size, `plexmix create` and the web UI keep reporting the dimension mismatch, so they still say that the embeddings must be regenerated. After a change of the provider or the model that keeps the vector size, nothing reports a mismatch: `plexmix create` goes on with the saved index, whose vectors are those of the earlier provider, and in the web UI only the failed job's own message says that the search index was not updated. The index is replaced when a run reaches its end. (A plain `plexmix sync` that is stopped while it embeds tracks, after you changed the provider and kept the vector size, is the one exception: it adds the embeddings it had already saved to the saved index one by one, so the index still covers every track, and the next sync adds the rest.) A command that finds tracks in the way says: `The search index was left as it is: 380 tracks hold an embedding that was made with other embedding settings. Run 'plexmix embeddings generate --regenerate' to replace them.` A stopped run reports its stop and not this sentence; the log holds it. A run that reaches its end with tracks still in the way (the provider returned fewer vectors than it was sent, or vectors of the wrong size) ends with exit status 0, with warnings in place of its success line and with that sentence. The command that was run, run again, continues with only those tracks.
+- **The marker file.** PlexMix remembers an unfinished run in a small file beside the database, `plexmix.db.regenerate.json` (by default `~/.plexmix/plexmix.db.regenerate.json`, in Docker `/data/plexmix.db.regenerate.json`). It holds when the run started and which provider and model it used (for the embeddings also the vector size). It holds no API key. PlexMix deletes the file when a run has finished its work. The embeddings entry stays while the provider has returned no vector for some track: the next run then makes only those embeddings. Delete the file to start over with all tracks.
+- **Starting over.** A run starts over with all tracks by itself when the provider, the model or (for the embeddings) the vector size has changed since the earlier run. To start over by hand, delete the marker file and run the command again. The question of a continued run names the file. After a run that reached its end, nothing is left to continue, so the next run covers all tracks again.
+
+**In the web UI**, two actions follow the same rules: the Library page's sync mode **Regenerate (replace tags + embeddings)** and Doctor's **Rebuild embeddings** fix. Neither clears anything first. Each checks its providers before it changes anything, and a provider that is not ready ends the job as failed, with the cause. The confirmation of each states the number of tracks, the provider and model, and whether track details are sent to a cloud provider. Four things differ from the commands. Both actions always process every track, and never continue an earlier run. **Cancel** stops the job where it is: every track then has either its new or its previous data, and the message says how many tracks were regenerated. A Regenerate sync does not start while the Library page's **Generate embeddings** job or a Doctor fix is running, and while it runs, **Generate embeddings** and Doctor's two embedding fixes do not start. Doctor's other fixes do not look at it, and **Generate embeddings** and Doctor's embedding fixes do not look at each other. And a web UI job that cannot rebuild the search index follows the rule above: **Generate embeddings**, Doctor's embedding fixes and a Regenerate sync whose last step is refused end as failed with "The search index was not updated", the number of tracks in the way and what to do, such as Doctor's **Rebuild embeddings**. When you cancel one of Doctor's two embedding fixes it ends as cancelled and says the same; a cancelled **Generate embeddings** job does not touch the index and only says that it was cancelled, and a cancelled Regenerate sync says how many tracks it had regenerated. The embeddings that were saved stay, and the saved index is untouched. After a change of the vector size, the readiness row and Doctor still show the mismatch and its fix. After a change of the provider or the model that keeps the vector size they show none, because nothing is mismatched in the index: the job's own message is what says that the search index was not updated. Doctor's **Rebuild embeddings**, run to its end, replaces the index and ends the mismatch. With audio analysis on sync switched on, a Regenerate sync analyses the audio before it makes the embeddings, so the new embeddings include the audio features.
 
 ### Database Health Check
 
@@ -464,8 +500,12 @@ A sync started from the web UI follows the same rules. When it holds a large rem
 # Diagnose and fix database issues
 plexmix doctor
 
-# Force regenerate all tags and embeddings (DEPRECATED: use 'plexmix sync regenerate' instead)
+# Make new AI tags and embeddings for every track, without reading Plex. It asks first
+# and clears nothing (DEPRECATED: use 'plexmix sync regenerate' instead)
 plexmix doctor --force
+
+# The same without a terminal (cron, scripts): --yes answers the question
+plexmix doctor --force --yes
 ```
 
 **What does `plexmix doctor` do?**
@@ -473,7 +513,8 @@ plexmix doctor --force
 - Shows database health status (track count, embeddings, orphans)
 - Interactively removes orphaned data
 - Regenerates missing embeddings
-- Rebuilds vector index
+- Rebuilds the search index when it would cover every track that has an embedding. Otherwise it leaves the saved index as it is and prints the sentence of ["The search index was left as it is"](#the-search-index-was-left-as-it-is)
+- Does not call the database healthy while tracks hold an embedding that was made with other embedding settings: it prints the same sentence in place of "Database is healthy!"
 
 **When to use:**
 - After "No tracks found matching criteria" errors
@@ -481,7 +522,16 @@ plexmix doctor --force
 - After database corruption or manual track deletion
 - Periodic maintenance to keep database healthy
 
-**Note:** For complete regeneration of all tags and embeddings, use `plexmix sync regenerate` instead of `doctor --force`
+**What does `plexmix doctor --force` do?**
+- Makes new AI tags and a new embedding for every track the PlexMix library holds. It does not read Plex, so it adds and removes no tracks.
+- Asks first. The question states the number of tracks and the provider and model for the tags and for the embeddings. The default answer is No. Without a terminal the command needs `--yes`.
+- Checks the AI provider and the embedding provider before it changes anything. If one of them is not ready, it names the provider and the cause, changes nothing and exits with status 1.
+- Clears nothing first. Each track keeps its tags and its embedding until the new ones are saved, also when the run fails or you press Ctrl+C.
+- Can be continued. After Ctrl+C or a failure part-way, run `plexmix doctor --force` again: it makes new data only for the tracks that are left. To start over with all tracks, delete the marker file `plexmix.db.regenerate.json` beside the database first.
+
+The full rules, with the exit statuses, are in [Regenerating tags and embeddings](#regenerating-tags-and-embeddings).
+
+**Note:** `plexmix sync regenerate` does the same after it has synced the library with Plex. Use it instead of `doctor --force` for a complete regeneration of all tags and embeddings.
 
 ### Database Management
 
@@ -560,9 +610,26 @@ plexmix tags generate --no-regenerate-embeddings
 # Generate embeddings for tracks without them
 plexmix embeddings generate
 
-# Regenerate all embeddings from scratch
+# Make a new embedding for every track. It asks first, and it replaces them in place:
+# each track keeps its embedding until the new one is saved
 plexmix embeddings generate --regenerate
+
+# The same without a terminal (cron, scripts): --yes answers the question
+plexmix embeddings generate --regenerate --yes
 ```
+
+`plexmix embeddings generate` makes embeddings only for the tracks that have none from the current embedding provider. It asks nothing, and it rebuilds the search index from the stored embeddings when that gives an index of every track that has an embedding. When tracks hold an embedding that was made with other embedding settings (another vector size, for example), it leaves the saved index as it is, prints the sentence of ["The search index was left as it is"](#the-search-index-was-left-as-it-is) in yellow, and prints no line that says the index was rebuilt or saved. `plexmix tags generate` and `plexmix sync` follow the same rule. `plexmix sync` then ends with "finished with warnings" and exit status 0 in place of its success line, because the library sync itself is done.
+
+`plexmix embeddings generate --regenerate` replaces the embedding of every track:
+- It asks first. The question states the number of tracks and the embedding provider and model. The default answer is No. Without a terminal the command needs `--yes`.
+- It sends one small test request to the embedding provider before it changes anything. If the provider is not ready, every embedding stays as it is and the command exits with status 1.
+- Nothing is deleted first. If the provider fails part-way or you press Ctrl+C, every track still has an embedding: its new one or its previous one. The output gives both counts, for example `Embeddings: 2,400 tracks regenerated, 3,543 keep their previous embedding.`
+- Run `plexmix embeddings generate --regenerate` again to continue. It then makes only the embeddings that are left. It continues only a run of this command. To continue an interrupted `plexmix sync regenerate` or `plexmix doctor --force`, run that command again.
+- To start over with all tracks, delete the marker file `plexmix.db.regenerate.json` beside the database and run the command again.
+- When every track has its new embedding, the embeddings that another provider or model made are removed, and the search index is rebuilt.
+- If a run is stopped after you changed the vector size (another local model, another custom dimension), the tracks it did not reach still hold an embedding of the earlier size. The saved search index stays as it was, and so does the dimension mismatch, the warning that the embeddings must be regenerated. `plexmix embeddings generate` leaves the index alone and says how many tracks are in the way. Run `plexmix embeddings generate --regenerate` again to replace them: the index is replaced when the run reaches its end.
+
+The full rules, with the exit statuses, are in [Regenerating tags and embeddings](#regenerating-tags-and-embeddings).
 
 **What are tags?**
 AI-generated metadata (per track) that enhances semantic search:
@@ -817,7 +884,7 @@ PlexMix stores all music metadata locally:
 
 #### How the “Local” Provider Works
 
-When you choose `local` on the Settings page, PlexMix instantiates the selected Hugging Face `sentence-transformers` model directly in-process—no HTTP endpoints, API keys, or port configuration are needed. The model weights download once into your Hugging Face cache (e.g., `~/.cache/huggingface`) and subsequent embedding calls run entirely on your machine, which keeps everything offline and private.
+When you choose `local` on the Settings page, PlexMix runs the selected Hugging Face `sentence-transformers` model in a separate worker process that it starts and stops itself—no HTTP endpoints, API keys, or port configuration are needed. The web server and the command line never load the model libraries (torch and scikit-learn) themselves: opening Settings only checks that the package is installed, and Settings' *Test Embeddings* and *Download / Cache Model* buttons use a short-lived worker of their own, which is stopped when the check ends. A check waits at most 10 minutes for the model to load and 5 minutes for an answer, then stops the worker and says so. The model weights download once into your Hugging Face cache (e.g., `~/.cache/huggingface`) and subsequent embedding calls run entirely on your machine, which keeps everything offline and private.
 
 Set `PLEXMIX_LOCAL_EMBEDDING_DEVICE` (default `cpu`) if you want to force a specific device (e.g., `cpu` to avoid macOS MPS instability, or `cuda` when running on a GPU server). The UI and CLI will reuse that cached model/device combination whenever local embeddings are needed.
 
@@ -838,6 +905,7 @@ When you select "Local (Offline)" as the AI provider you can toggle between **Ma
    - Click *Download / Warm Up Model* to prefetch weights into your Hugging Face cache
    - Models are loaded in a background worker and reused across tagging/playlist runs
    - Set `PLEXMIX_LOCAL_LLM_DEVICE` to `cpu`, `cuda`, or `mps` to force device placement (defaults to `auto`)
+   - With the default `auto` setting the built-in local LLM needs the `accelerate` package (`pip install accelerate`). Install it, or set `PLEXMIX_LOCAL_LLM_DEVICE=cpu`. *Download / Warm Up Model* runs the model in a short-lived worker process, the same way tagging does, and reports a missing `accelerate` package as "Missing dependency"
 
 2. **Custom Endpoint**
    - Point PlexMix at any OpenAI-compatible URL (e.g., `http://localhost:11434/v1/chat/completions` for Ollama)
@@ -888,8 +956,8 @@ PlexMix publishes multi-platform Docker images (amd64 + arm64) to GitHub Contain
 
 | Tag | Includes | Size | Best For |
 |-----|----------|------|----------|
-| `:latest` / `:0.13.0` | Cloud AI SDKs, Reflex UI, FAISS, Essentia | ~470MB | Users with API keys (Gemini, OpenAI, Claude, Cohere) |
-| `:latest-local` / `:0.13.0-local` | Everything above + PyTorch, sentence-transformers | ~4GB+ | Fully offline: local embeddings + local LLM, no API keys needed |
+| `:latest` / `:0.14.0` | Cloud AI SDKs, Reflex UI, FAISS, Essentia | ~470MB | Users with API keys (Gemini, OpenAI, Claude, Cohere) |
+| `:latest-local` / `:0.14.0-local` | Everything above + PyTorch, sentence-transformers | ~4GB+ | Fully offline: local embeddings + local LLM, no API keys needed |
 
 ### Quick Start
 
@@ -1076,6 +1144,13 @@ poetry run pytest --cov=plexmix --cov-report=html
 - Check internet connection
 - Try local embeddings: `--embedding-provider local`
 
+### "Cannot connect to server", or a command that fails with Local embeddings on macOS
+- **What you see:** on macOS with local embeddings (the `plexmix[local]` extra), the web UI shows "Cannot connect to server" while or after it generates a playlist, most often after you opened Settings first, because the backend process stopped. Or `plexmix create`, `plexmix sync`, `plexmix embeddings generate` or `plexmix tags generate` fails when it starts the local model, and `plexmix create` prints "API key required for embedding provider", which was the wrong reason for a Local provider.
+- **Cause:** the search index library (FAISS) and the local model libraries (torch and scikit-learn) each ship their own copy of the threading runtime (OpenMP). On macOS, FAISS's copy next to torch's in one process ends the process with a segmentation fault or an `OMP: Error #15` abort.
+- **Fix:** this is fixed in 0.14.0, so upgrade. PlexMix now loads local models only in their own worker process, never in the web server or in the command line, and loads FAISS only where a search index is used. The commands also name the real reason when the embedding provider cannot start ("Local models aren't installed", "The local model couldn't load") and say that an API key is required only when none is stored.
+- **Stopgap on 0.13.0 or earlier:** put `OMP_NUM_THREADS=1` in front of the command, for example `OMP_NUM_THREADS=1 plexmix ui` or `OMP_NUM_THREADS=1 plexmix create "rainy day" --limit 25`. In testing it avoided the segmentation fault. It does not prevent every abort (the `OMP: Error #15` abort still happened), and it slows local embedding down, by about 2 to 4 times in a rough measurement.
+- **If the Generator says "Lost connection to PlexMix" instead:** that alert is the page noticing the same stop while a playlist is generated. See [Lost connection to PlexMix or That playlist didn't finish](#lost-connection-to-plexmix-or-that-playlist-didnt-finish) for what it means and how to start PlexMix again.
+
 ### "AI tagging stopped" / "rejected before it reached the model"
 - This means the AI provider rejected the request at the network edge before it reached the model — tagging stops immediately instead of retrying every track.
 - **Most common cause:** a malformed or invalid API key. Re-enter the key in Settings (or `plexmix config`); leading/trailing spaces and newlines are now stripped automatically, but an otherwise-wrong key still needs correcting.
@@ -1100,6 +1175,27 @@ poetry run pytest --cov=plexmix --cov-report=html
 - This usually means embeddings reference old track IDs
 - **Solution:** Run `plexmix doctor` to detect and fix orphaned embeddings
 - The doctor will clean up orphaned data and regenerate embeddings
+
+### "The search index could not be loaded"
+- The search index is two files, `embeddings.index` and `embeddings.metadata` (by default in `~/.plexmix/`). This line means that PlexMix could not read them, for example because one of them is damaged or was only partly copied.
+- PlexMix does not delete the files. It renames both by adding `.unreadable-` and the date and time to the name, for example `embeddings.index.unreadable-20261118-142530` and `embeddings.metadata.unreadable-20261118-142530`. The line gives the new names. The command then goes on with an empty search index.
+- Your embeddings are not affected. They are stored in the database, and the search index is built from them. Run `plexmix embeddings generate` to rebuild the search index. When every track already has an embedding, this makes no request to the embedding provider.
+- A plain `plexmix sync` that runs with embeddings rebuilds the search index too, from every stored embedding and not only from the tracks it embeds in that run, also when no track needs an embedding. A sync that removes tracks while the files are moved aside saves no empty search index.
+- PlexMix does not use the `.unreadable-*` files again, and it does not delete them. Delete them yourself when playlists work again.
+- If the line says that a file "could not be moved aside", PlexMix could not rename it, for example because the folder is read-only. The file stays where it is, and that run saves no search index over it. The command then ends with a warning in place of its success line and says that the search index was not saved. Move the file away yourself, then run `plexmix embeddings generate`.
+- A sync that removes tracks without embeddings (`plexmix sync --no-embeddings --allow-removals`, or a removal you confirm) opens the search index to take the removed tracks out of it. It prints the same line when it cannot load the index.
+- The web UI shows no such line. It renames the files in the same way and writes the message to its log. It then reports "The search index needs rebuilding" with a **Build search index** action.
+
+### "The search index was left as it is"
+- The full line is: `The search index was left as it is: 380 tracks hold an embedding that was made with other embedding settings. Run 'plexmix embeddings generate --regenerate' to replace them.` It appears after you changed the embedding provider, the model or the vector size, when a run did not give every track a new embedding. A plain `plexmix sync` and plain `plexmix doctor` print it too, also when no track lacks an embedding, for as long as tracks hold an embedding of the earlier settings.
+- PlexMix rebuilds the search index from the stored embeddings only when the new index covers every track that has an embedding. An index of only the tracks that fit would replace the saved one and leave the other tracks out of the search. After a change of the vector size it would also hide the dimension mismatch, the warning that the embeddings must be regenerated. So PlexMix builds nothing and saves nothing. The saved index files are not touched. After a change of the vector size, `plexmix create` still reports the dimension mismatch until the embeddings are replaced. After a change of the provider or the model that keeps the vector size, nothing reports a mismatch, and the saved index still holds the vectors of the earlier provider until they are replaced.
+- Run `plexmix embeddings generate --regenerate` (or `plexmix sync regenerate`, or Doctor's **Rebuild embeddings** in the web UI). A run that was stopped continues where it stopped, and so does a run that reached its end while the provider returned no vector for some tracks: it makes only those. The index is replaced when the run reaches its end with every track replaced. You can also switch back to the provider that made the embeddings in `plexmix config init`.
+
+### "Lost connection to PlexMix" or "That playlist didn't finish"
+- **"Lost connection to PlexMix"** is an alert on the Generator. It means the page can't reach PlexMix while a playlist is being generated: PlexMix was stopped or crashed, the container stopped, or the network between your browser and PlexMix dropped. A line that says "Reconnecting to PlexMix…" comes first, and the alert follows after a few seconds. The page keeps trying, and both disappear on their own when the connection returns. A short network drop therefore recovers by itself, and the page then shows what really happened: the progress, the finished playlist or the failure. The playlist may still be generating on PlexMix while you see the alert. PlexMix stops a playlist whose page has stayed away for about two to three minutes.
+- If the alert stays, PlexMix has probably stopped. Start it again with `plexmix ui` (press Ctrl+C first if the terminal that ran it is still busy), or restart the container if you use Docker (`docker compose restart plexmix`). The open page keeps trying to reconnect and picks up again on its own, so you usually do not need to reload it. If PlexMix keeps stopping while you generate with Local embeddings on macOS, see ["Cannot connect to server", or a command that fails with Local embeddings on macOS](#cannot-connect-to-server-or-a-command-that-fails-with-local-embeddings-on-macos).
+- **"That playlist didn't finish"** is a yellow message under the prompt. It means PlexMix stopped working on the playlist before it was done, most often because PlexMix was restarted while the page was open. Your prompt is put back in the box. Press **Generate** to start again. Dismiss the message when you have read it; it does not come back.
+- To bring the prompt back after a restart, the browser remembers the prompt text of a playlist that is being generated, and nothing else about it. It keeps the text in that tab only (the tab's session storage), forgets it when the playlist finishes, fails or is cancelled, and loses it when you close the tab. Another tab does not see it.
 
 ### Performance Tips
 

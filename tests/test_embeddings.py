@@ -1,13 +1,16 @@
+import importlib.util
 import pytest
 import sys
 from unittest.mock import patch, MagicMock
 
 from plexmix.utils.embeddings import create_track_text, EmbeddingGenerator
 
-_has_sentence_transformers = True
+# Never import the package here: it loads torch into the pytest process, next to the FAISS
+# tests, which crashes on macOS (tests/test_process_isolation.py). Local models run in a
+# worker process; the test process only asks whether they are installed.
 try:
-    import sentence_transformers  # noqa: F401
-except ImportError:
+    _has_sentence_transformers = importlib.util.find_spec("sentence_transformers") is not None
+except (ImportError, ValueError):
     _has_sentence_transformers = False
 
 requires_local = pytest.mark.skipif(

@@ -528,14 +528,17 @@ class SettingsState(AppState):
         self.is_page_loading = False
         return events
 
-    def _detect_local_deps(self):
-        """Check if local AI dependencies (sentence-transformers/PyTorch) are installed."""
-        try:
-            import sentence_transformers  # noqa: F401
+    def _detect_local_deps(self) -> None:
+        """Check if local AI dependencies (sentence-transformers/PyTorch) are installed.
 
-            self.local_deps_available = True
-        except ImportError:
-            self.local_deps_available = False
+        Asks the package finder and never imports the package: importing it here loaded
+        torch into the server process, which blocked the event loop for 10 s or more and put
+        torch's OpenMP runtime next to FAISS's (a crash on macOS). Models run in worker
+        processes (``plexmix.utils.embeddings``).
+        """
+        from plexmix.utils.embeddings import local_embedding_deps_available
+
+        self.local_deps_available = local_embedding_deps_available()
 
     def load_settings(self) -> Any:
         """Reload the form from the config file and refresh secret status.

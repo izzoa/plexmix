@@ -4,7 +4,7 @@ import sqlite3
 import tempfile
 import threading
 from contextlib import closing
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
@@ -1487,3 +1487,172 @@ def test_backup_library_without_a_database_file_creates_nothing(tmp_path: Path) 
         backup_library(manager, None)
 
     assert list(tmp_path.iterdir()) == []
+
+
+# ── fix-cli-secrets-and-data-loss 3.2: which tracks a regenerate run still has to do ──
+
+_NOON = datetime(2026, 11, 18, 12, 0, 0)
+
+
+def _regen_tracks(db: SQLiteManager, count: int) -> list[int]:
+    artist_id = db.insert_artist(Artist(plex_key="rg-artist", name="Artist"))
+    album_id = db.insert_album(Album(plex_key="rg-album", title="Album", artist_id=artist_id))
+    return [
+        db.insert_track(
+            Track(plex_key=f"rg-{i}", title=f"Song {i}", artist_id=artist_id, album_id=album_id)
+        )
+        for i in range(count)
+    ]
+
+
+def _stamp_tags(db: SQLiteManager, track_id: int, stamp: Optional[str]) -> None:
+    conn = db.get_connection()
+    conn.execute("UPDATE tracks SET tags_generated_at = ? WHERE id = ?", (stamp, track_id))
+    conn.commit()
+
+
+def _embed_at(db: SQLiteManager, track_id: int, model: str, updated_at: datetime) -> None:
+    db.insert_embedding(
+        Embedding(
+            track_id=track_id,
+            embedding_model=model,
+            embedding_dim=2,
+            vector=[0.1, 0.2],
+            updated_at=updated_at,
+        )
+    )
+
+
+def test_tracks_to_retag_since(db_manager: SQLiteManager) -> None:
+    """A track is to do when its tags were never stamped, were stamped before the
+    time, or carry a stamp that is not a time. A stamp of the very second is done."""
+    never, older, same_second, newer, garbage, iso_older = _regen_tracks(db_manager, 6)
+    _stamp_tags(db_manager, older, "2026-11-18 11:59:59")
+    _stamp_tags(db_manager, same_second, "2026-11-18 12:00:00")
+    _stamp_tags(db_manager, newer, "2026-11-18 12:00:01")
+    _stamp_tags(db_manager, garbage, "not a time")
+    _stamp_tags(db_manager, iso_older, "2026-11-18T11:00:00Z")
+    expected = [never, older, garbage, iso_older]
+
+    changes_before = db_manager.get_connection().total_changes
+    assert db_manager.get_track_ids_to_retag_since(_NOON) == expected
+    # A time with a zone is the same moment: 12:00 UTC is 14:00 at +02:00.
+    assert db_manager.get_track_ids_to_retag_since(_NOON.replace(tzinfo=timezone.utc)) == expected
+    plus_two = timezone(timedelta(hours=2))
+    assert (
+        db_manager.get_track_ids_to_retag_since(datetime(2026, 11, 18, 14, 0, 0, tzinfo=plus_two))
+        == expected
+    )
+    # Fractions of a second are dropped: the stamps hold whole seconds.
+    assert db_manager.get_track_ids_to_retag_since(_NOON.replace(microsecond=999_999)) == expected
+    assert db_manager.get_connection().total_changes == changes_before
+
+    # The stamp that update_track_tags writes is a UTC time the query can compare.
+    db_manager.update_track_tags(never, tags="calm")
+    now = datetime.now(timezone.utc)
+    assert never not in db_manager.get_track_ids_to_retag_since(now - timedelta(hours=1))
+    assert never in db_manager.get_track_ids_to_retag_since(now + timedelta(hours=1))
+    # A metadata update of the track (what a sync does) leaves the stamp alone.
+    stamped = db_manager.get_track_by_id(never)
+    assert stamped is not None and stamped.tags_generated_at is not None
+    assert db_manager.insert_track(stamped.model_copy(update={"title": "Renamed"})) == never
+    synced = db_manager.get_track_by_id(never)
+    assert synced is not None and synced.title == "Renamed"
+    assert synced.tags_generated_at == stamped.tags_generated_at
+
+
+def test_tracks_to_reembed_since(db_manager: SQLiteManager) -> None:
+    """A track is to do when it has no embedding row for the model, or a row that
+    was last written before the time. Rows of other models do not count."""
+    no_row, older, newer, other_model, same_second, both = _regen_tracks(db_manager, 6)
+    _embed_at(db_manager, older, "openai", datetime(2026, 11, 18, 11, 59, 59, 900_000))
+    _embed_at(db_manager, newer, "openai", datetime(2026, 11, 18, 12, 0, 1))
+    _embed_at(db_manager, other_model, "gemini", datetime(2026, 11, 18, 13, 0, 0))
+    _embed_at(db_manager, same_second, "openai", datetime(2026, 11, 18, 12, 0, 0, 500_000))
+    _embed_at(db_manager, both, "gemini", datetime(2026, 11, 18, 13, 0, 0))
+    _embed_at(db_manager, both, "openai", datetime(2026, 11, 18, 10, 0, 0))
+
+    changes_before = db_manager.get_connection().total_changes
+    assert db_manager.get_track_ids_to_reembed_since("openai", _NOON) == [
+        no_row,
+        older,
+        other_model,
+        both,
+    ]
+    assert db_manager.get_track_ids_to_reembed_since("gemini", _NOON) == [
+        no_row,
+        older,
+        newer,
+        same_second,
+    ]
+    assert db_manager.get_track_ids_to_reembed_since(
+        "openai", _NOON.replace(tzinfo=timezone.utc)
+    ) == [no_row, older, other_model, both]
+    # The model is a bound value, never part of the statement.
+    everything = [no_row, older, newer, other_model, same_second, both]
+    assert db_manager.get_track_ids_to_reembed_since("x' OR '1'='1", _NOON) == everything
+    assert db_manager.get_connection().total_changes == changes_before
+
+    # A row without a readable time is to do.
+    conn = db_manager.get_connection()
+    conn.execute("UPDATE embeddings SET updated_at = NULL WHERE track_id = ?", (newer,))
+    conn.commit()
+    assert newer in db_manager.get_track_ids_to_reembed_since("openai", _NOON)
+
+    # Writing a row again moves its time: the upsert takes the new updated_at.
+    db_manager.insert_embedding(
+        Embedding(track_id=older, embedding_model="openai", embedding_dim=2, vector=[0.3, 0.4])
+    )
+    db_manager.insert_embeddings_batch(
+        [Embedding(track_id=both, embedding_model="openai", embedding_dim=2, vector=[0.5, 0.6])]
+    )
+    now = datetime.now(timezone.utc)
+    recent = db_manager.get_track_ids_to_reembed_since("openai", now - timedelta(hours=1))
+    assert older not in recent and both not in recent
+    later = db_manager.get_track_ids_to_reembed_since("openai", now + timedelta(hours=1))
+    assert older in later and both in later
+
+
+def test_tracks_with_only_other_embeddings(db_manager: SQLiteManager) -> None:
+    """A track is counted when it holds an embedding, and none of the model and size.
+
+    A search index of that model and size cannot hold such a track. A track without
+    any embedding is not counted, and neither is a row whose track is gone.
+    """
+    fits, other_size, other_model, both, none, deleted = _regen_tracks(db_manager, 6)
+    for track_id, model, size in (
+        (fits, "custom", 8),
+        (other_size, "custom", 4),
+        (other_model, "openai", 8),
+        (both, "openai", 4),
+        (both, "custom", 8),
+        (deleted, "custom", 4),
+    ):
+        db_manager.insert_embedding(
+            Embedding(
+                track_id=track_id, embedding_model=model, embedding_dim=size, vector=[0.5] * size
+            )
+        )
+    conn = db_manager.get_connection()
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute("DELETE FROM tracks WHERE id = ?", (deleted,))
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM embeddings WHERE track_id = ?", (deleted,))
+    assert cursor.fetchone()[0] == 1  # the row stayed behind without its track
+
+    changes_before = conn.total_changes
+    count = db_manager.count_tracks_with_only_other_embeddings
+    assert count("custom", 8) == 2  # other_size, other_model
+    assert count("custom", 4) == 3  # fits, other_model, both
+    assert count("openai", 8) == 3  # fits, other_size, both
+    # None leaves that part of the test out.
+    assert count("custom", None) == 1  # other_model
+    assert count(None, 8) == 1  # other_size
+    assert count(None, None) == 0 and count() == 0
+    assert count("a model without rows", 8) == 4
+    # The model is a bound value, never part of the statement.
+    assert count("x' OR '1'='1", 8) == 4
+    assert conn.total_changes == changes_before
+    assert none not in db_manager.get_track_ids_with_embeddings()

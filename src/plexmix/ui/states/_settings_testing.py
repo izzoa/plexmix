@@ -365,6 +365,16 @@ async def test_ai_provider_impl(state: Any) -> None:
             state.testing_connection = False
 
 
+def _is_local_model_failure(exc: BaseException) -> bool:
+    """Whether ``exc`` is a local embedding model that failed to load or to start."""
+    # One source of truth: the prefixes providers.py maps to "model load failed" for Generate.
+    from plexmix.services.providers import _LOCAL_MODEL_FAILURE_PREFIXES
+
+    return isinstance(exc, RuntimeError) and str(exc).strip().startswith(
+        _LOCAL_MODEL_FAILURE_PREFIXES
+    )
+
+
 async def test_embedding_provider_impl(state: Any) -> None:
     """Test the configured embedding provider with a sample text."""
     async with state:
@@ -471,14 +481,30 @@ async def test_embedding_provider_impl(state: Any) -> None:
                 state.embedding_test_status = "Testing local embedding model..."
 
             def test_local_embed():
-                from sentence_transformers import SentenceTransformer
+                # In a short-lived worker process: the server never imports torch.
+                from plexmix.utils.embeddings import probe_local_embedding_model
 
                 model_name = state.embedding_model or "all-MiniLM-L6-v2"
-                model = SentenceTransformer(model_name)
-                embedding = model.encode(test_text)
-                return len(embedding)
+                return probe_local_embedding_model(model_name, test_text)
 
-            dim = await loop.run_in_executor(None, test_local_embed)
+            try:
+                dim = await loop.run_in_executor(None, test_local_embed)
+            except TimeoutError as e:
+                from plexmix.services.readiness import Cause
+
+                # Only the check's own time limit (a model that never loaded or never
+                # answered), not whatever else this handler runs. It is a local model
+                # problem: not "Connection timed out. Check the server URL" (what
+                # _friendly_error makes of it) and not the "timeout" readiness cause, which
+                # says "check the endpoint in Settings" (what _record_provider_failure
+                # makes of it).
+                _record("embeddings", "failing", Cause.MODEL_LOAD_FAILED.value, fingerprint=emb_fp)
+                async with state:
+                    state.embedding_test_status = (
+                        f"✗ {e}. Use Download first, or try a smaller model."
+                    )
+                    state.testing_connection = False
+                return
 
         else:
             raise ValueError(f"Unknown embedding provider '{provider}'")
@@ -508,13 +534,20 @@ async def test_embedding_provider_impl(state: Any) -> None:
     except Exception as e:
         from plexmix.services.registry import requires_embedding_api_key
 
-        _record_provider_failure(
-            "embeddings",
-            e,
-            emb_fp,
-            key_required=requires_embedding_api_key(emb_id),
-            key=emb_secret,
-        )
+        if emb_id == "local" and _is_local_model_failure(e):
+            from plexmix.services.readiness import Cause
+
+            # The same two messages providers.py maps to "model load failed" for Generate;
+            # "unknown" would hide the remedy (a smaller model or another provider).
+            _record("embeddings", "failing", Cause.MODEL_LOAD_FAILED.value, fingerprint=emb_fp)
+        else:
+            _record_provider_failure(
+                "embeddings",
+                e,
+                emb_fp,
+                key_required=requires_embedding_api_key(emb_id),
+                key=emb_secret,
+            )
         async with state:
             state.embedding_test_status = f"✗ {_friendly_error(e, secrets)}"
             state.testing_connection = False

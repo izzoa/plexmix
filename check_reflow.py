@@ -13,6 +13,9 @@ Usage (from the repo root, with the UI already running)::
     python check_reflow.py --out /tmp/reflow-run    # write the JSON somewhere specific
     python check_reflow.py --informational          # also 390x844, 320x256, 512x384, 1024x768
     python check_reflow.py --viewport 720x450 --routes /generator,/library --themes dark
+    python check_reflow.py --require-fixtures       # a skipped fixture fails the run
+    python check_reflow.py --confirm-dialogs        # also open the delete confirmation
+    python check_reflow.py --skip-dialogs           # leave check 8 (the dialogs) out
 
 Requirements:
 
@@ -20,7 +23,10 @@ Requirements:
   dependency, like ``take_screenshots.py``).
 - The UI running at ``--base`` (default ``http://localhost:3000``): ``plexmix ui`` (the
   production build) or ``plexmix ui --dev``. A synced library gives the Library, Tagging and
-  History checks real rows; on an empty install those fixtures are reported as skipped.
+  History checks real rows, and a saved playlist gives the History dialogs something to
+  open; on an empty install those fixtures are reported as skipped (in each route's notes,
+  in ``summary.json`` under ``skipped`` and in the last console line), and
+  ``--require-fixtures`` turns a skipped fixture into a gating failure.
 - If the UI asks for a password, put it in the ``PLEXMIX_UI_PASSWORD`` environment
   variable. The value is never printed or written to the output.
 
@@ -73,6 +79,35 @@ Checks, per route, viewport and theme (the ``check`` field of each failure):
    scrollbar and (at 768 CSS px or less) its edge shadows, and the narrow Settings tab strip
    shows its scrollbar.
 
+8. ``dialog`` and ``dialog-floor``: the dialogs are opened and measured like the palette. On
+   /history the first playlist card opens the playlist detail, which is measured once its
+   track rows have rendered. A fixture then gives its first two tracks a long title, artist
+   and a 70-character token (the dialog's width follows its longest track line, so real data
+   alone is not a stable test) and its header a 70-character name and the 280-character
+   prompt, and the detail is measured again. With ``--confirm-dialogs`` the detail's Delete
+   button then opens the delete confirmation on top. On the first route of each viewport and
+   theme the rail's Changelog button opens the changelog. Each measurement waits until the
+   dialog's overlay has kept one size for a few animation frames in a row.
+
+   Hard checks, check id ``dialog`` (these gate). For each dialog: it opened (and a playlist
+   whose card counts tracks shows track rows); its overlay does not scroll sideways (more than
+   1px); the panel lies inside the viewport with a side margin; neither the panel nor a region
+   inside it scrolls sideways; every control in it, after ``scrollIntoView({block: "nearest"})``
+   with any sideways scroll put back, is on screen and is what ``elementFromPoint`` finds at its
+   centre (an ancestor of the control counts only when the control wraps over several lines,
+   like an inline link); and Escape closes it.
+
+   Design floors, check id ``dialog-floor`` (each failure has ``"soft": true`` and a ``"floor"``
+   id; a floor gates when its id is in ``DIALOG_GATING_FLOORS``, which holds all five: each was
+   measured in the running app and passed before it was switched on, and an id left out of the
+   set is reported only). In the playlist detail: ``rows``, the track list shows
+   ``HISTORY_MIN_VISIBLE_ROWS`` rows (or all of a shorter playlist's rows), and ``layer-y``, the
+   overlay does not scroll vertically at 400 CSS px of height or more. With the fixture:
+   ``header-lines``, the name and the prompt show at most ``CLAMP_MAX_LINES`` lines each and
+   the clamp does not cut the top of the name's first line;
+   ``title-width``, a long track's title column is at least ``HISTORY_TITLE_MIN_WIDTH`` px wide;
+   and ``row-parts``, its duration and Move buttons lie inside the list.
+
 It also records informational probes that later tasks read (rail width; the label of the
 last navigation item in a scrolled rail on hover and on keyboard focus, with a screenshot of
 each; grid column counts; Library table geometry; the Tagging title column).
@@ -83,11 +118,20 @@ repo). The console shows a pass/fail line per route.
 
 What it touches: it drives a headless Chromium over a pipe and binds no port. It never reads
 PlexMix's config, data directory or the keyring. It only navigates, presses Tab, opens and
-closes the palette (which refreshes its recent prompts) and edits the DOM in the browser. It
-never clicks Save, Sync, Generate, a vibe pill or anything else that changes data.
+closes the palette (which refreshes its recent prompts) and the dialogs of check 8, and
+edits the DOM in the browser. It never clicks Save, Sync, Generate, a vibe pill or anything
+else that changes data. Check 8 clicks the first playlist card (that reads the playlist) and
+the rail's Changelog button. Only with ``--confirm-dialogs`` does it click one more button, the
+playlist detail's Delete (the one button with ``aria-haspopup="dialog"`` whose text is exactly
+"Delete"), and that click only shows the confirmation: it clicks nothing inside a confirmation,
+never presses Enter and closes both dialogs with Escape, so nothing is deleted. If no
+confirmation appears after that click, the run reports one gating failure and never clicks
+that button again. Point ``--confirm-dialogs`` at a throwaway profile (``PLEXMIX_DATA_DIR``
+set to a scratch directory), never at a library you care about.
 
-Exit status: 0 when no gating check fails, 1 when any does, 2 when the UI cannot be reached
-or asks for a password that was not given.
+Exit status: 0 when no gating check fails, 1 when any does (or, with ``--require-fixtures``,
+when a fixture was skipped on a gate viewport), 2 when the UI cannot be reached or asks for a
+password that was not given.
 """
 
 from __future__ import annotations
@@ -143,6 +187,48 @@ REFLEX_BADGE = 'a[href^="https://reflex.dev"]'
 NARROW_RAIL_MAX_VW = 480
 NARROW_RAIL_MAX_WIDTH = 56.0
 PALETTE_SIDE_MARGIN = 4.0
+# Check 8 (dialogs). The side margin matches the palette's.
+DIALOG_SIDE_MARGIN = 4.0
+DIALOG_OPEN_TIMEOUT_MS = 5000
+# A dialog is measured once its overlay kept one size for this many animation frames in a row
+# (design D13: waits on state, not fixed sleeps); the wait gives up after the timeout and the
+# measurement is taken anyway (``settled`` is False in it).
+DIALOG_STABLE_FRAMES = 6
+DIALOG_SETTLE_TIMEOUT_MS = 10_000
+# A loaded machine took up to 15 s to close a dialog on Escape (the first draft waited 3 s).
+DIALOG_CLOSE_TIMEOUT_MS = 20_000
+# How long a playlist whose card counts tracks may take to render its first track row.
+HISTORY_ROWS_TIMEOUT_MS = 15_000
+# The playlist detail's own floors, set from the live run of webui-dialog-fit (production build,
+# Chromium 159, classic scrollbars, light and dark, a 50-track playlist): its track list keeps
+# this many rows in view (or all the rows of a shorter playlist) and its overlay stays unscrolled
+# at DIALOG_FIT_MIN_VH or taller (the three gate sizes; the 320x256 informational size cannot
+# hold a list), and a long track keeps a title column as wide as the Recently tagged one
+# (TAG_TITLE_MIN_WIDTH). The spec's numbers, two rows and 120px, are met with room to spare:
+# rows visible with the long-string fixture 2.84 (320x640), 2.75 (640x400) and 3.76 (720x450),
+# as loaded 3.29, 3.6 and 4.61; fixture title column 204, 398 and 410px.
+HISTORY_MIN_VISIBLE_ROWS = 2.0
+HISTORY_TITLE_MIN_WIDTH = 120.0
+DIALOG_FIT_MIN_VH = 400
+# Check ids of check 8: ``dialog`` holds the hard checks, ``dialog-floor`` the design floors.
+DIALOG_CHECK = "dialog"
+DIALOG_FLOOR_CHECK = "dialog-floor"
+# The floors, by id (the ``floor`` of each soft failure): ``rows`` track rows visible,
+# ``layer-y`` the playlist detail's overlay unscrolled vertically, ``header-lines`` the name
+# and prompt clamp (at most two lines, and the name's first line not cut off at the top),
+# ``title-width`` the long track's title column, ``row-parts`` a track's duration and Move
+# buttons inside the list.
+DIALOG_FLOORS: tuple[str, ...] = ("rows", "layer-y", "header-lines", "title-width", "row-parts")
+# The floors that gate, by id. Each was measured live and passed at all three gate sizes in
+# both themes before its id was added (design D13, task 8.1); a floor that could not be measured
+# live stays out of the set and is only reported. A floor failure keeps its own check id,
+# ``dialog-floor``, and gates through ``failure_gates``.
+DIALOG_GATING_FLOORS: frozenset[str] = frozenset(
+    {"rows", "layer-y", "header-lines", "title-width", "row-parts"}
+)
+# The note of the delete-confirmation step when its button is not the single "Delete" one that
+# opens a dialog. It says "fixture skipped", so --require-fixtures counts it.
+CONFIRM_BUTTON_NOTE = "skipped: no single Delete button that opens a dialog"
 MAX_RAIL_TABS = 30
 SETTLE_MS = 700
 # How long a focused rail control may take to show its label (plexmix.js reopens a label
@@ -151,6 +237,9 @@ LABEL_TIMEOUT_MS = 1500
 # Fixture limits: the clamped prompt (pill and results heading) and the Recently tagged
 # title column (design D6, D8).
 CLAMP_MAX_LINES = 2
+# The most a clamped title's first line may start above its clip edge before the tops of its
+# letters count as cut (px; a line's content area can poke out by a fraction of a pixel).
+TITLE_CUT_MAX = 0.5
 TAG_TITLE_MIN_WIDTH = 120.0
 # The Library table's edge shadows apply at this CSS width or less (redesign.css, zoom-fit
 # pages block): its 36rem table cannot overflow its box on anything wider.
@@ -248,6 +337,17 @@ _JS_HELPERS = r"""
     if (!lh) lh = parseFloat(cs.fontSize) * 1.2;
     const h = el.getBoundingClientRect().height - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
     return Math.round(h / lh);
+  };
+  // How far the first line of an element's text starts above the edge that clips it: 0 when the
+  // element does not clip. Radix pulls the first line of a trimmed heading (rt-r-lt-start) above
+  // its box, so an overflow other than visible cuts the tops off its glyphs.
+  const topCut = (el) => {
+    if (!el || getComputedStyle(el).overflowY === 'visible') return 0;
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    let top = Infinity;
+    for (const r of range.getClientRects()) if (r.width > 0 && r.height > 0) top = Math.min(top, r.top);
+    return top === Infinity ? 0 : Math.max(0, +(clipBox(el).top - top).toFixed(1));
   };
 """
 
@@ -552,6 +652,178 @@ PALETTE_JS = _js(
 """
 )
 
+# Check 8. The topmost open Radix Themes dialog (role dialog or alertdialog): the last one
+# in the document, as each opens in its own portal at the end of <body>.
+DIALOG_SELECTOR = '[role="dialog"], [role="alertdialog"]'
+HISTORY_CARD_SELECTOR = ".pl-card"
+HISTORY_LIST_SETTLED_SELECTOR = ".pl-card, main .empty, #hist-error-region .callout"
+HISTORY_DIALOG_SELECTOR = ".pl-dialog"
+# The one button in the playlist detail that opens another dialog (the delete confirmation).
+HISTORY_CONFIRM_OPENER = '.pl-dialog button[aria-haspopup="dialog"]'
+HISTORY_CONFIRM_NAME = "Delete"
+HISTORY_ROW_SELECTOR = ".pl-dialog .pl-trk"
+ALERT_SELECTOR = '[role="alertdialog"]'
+CHANGELOG_BUTTON_SELECTOR = 'nav.rail button[aria-label="Changelog"]'
+DIALOG_JS = _js(
+    r"""
+  const open = [...document.querySelectorAll('[role="dialog"], [role="alertdialog"]')].filter(shown);
+  const d = open[open.length - 1];
+  if (!d) return {open: false};
+  const overlay = d.closest('.rt-BaseDialogScroll');
+  const scrollers = [overlay, d, ...d.querySelectorAll('*')].filter(Boolean);
+  const sideways = () => scrollers.some((el) => Math.abs(el.scrollLeft) > 0.5);
+  const unscrollX = () => { for (const el of scrollers) if (el.scrollLeft) el.scrollLeft = 0; };
+  const labelled = d.getAttribute('aria-labelledby');
+  const title = labelled && document.getElementById(labelled);
+  const r = d.getBoundingClientRect();
+  const out = {open: true, vw, vh, role: d.getAttribute('role'), el: desc(d),
+    title: title ? (title.textContent || '').trim().slice(0, 80) : null, stacked: open.length,
+    panel: R(r), maxWidth: getComputedStyle(d).maxWidth,
+    overlayOverflowX: overlay ? overlay.scrollWidth - overlay.clientWidth : 0,
+    overlayOverflowY: overlay ? overlay.scrollHeight - overlay.clientHeight : 0,
+    panelOverflowX: d.scrollWidth - d.clientWidth,
+    innerScrollers: [], controls: 0, unreachable: [], unreachableCount: 0, underBadge: 0};
+  // A region inside the dialog that scrolls sideways (the changelog's notes, a track list).
+  const allow = args.allow.join(',');
+  for (const el of d.querySelectorAll('*')) {
+    if (el.matches(allow) || el.scrollWidth <= el.clientWidth + 1) continue;
+    const ox = getComputedStyle(el).overflowX;
+    if (ox !== 'auto' && ox !== 'scroll') continue;
+    out.innerScrollers.push({el: desc(el), by: el.scrollWidth - el.clientWidth});
+  }
+  // Every control: bring it into view the way focus would, then put any sideways scroll
+  // back, so a control that needs one to be seen counts as off screen.
+  const sel = 'button, a[href], input, select, textarea, [role="menuitem"], [tabindex="0"]';
+  for (const c of d.querySelectorAll(sel)) {
+    if (!shown(c)) continue;
+    out.controls++;
+    c.scrollIntoView({block: 'nearest', inline: 'nearest'});
+    const neededSideways = sideways();
+    unscrollX();
+    const cr = c.getBoundingClientRect();
+    const onScreen = cr.left >= -0.5 && cr.right <= vw + 0.5 && cr.top >= -0.5 && cr.bottom <= vh + 0.5;
+    const cx = cr.left + cr.width / 2, cy = cr.top + cr.height / 2;
+    const hit = (cx >= 0 && cx < vw && cy >= 0 && cy < vh) ? document.elementFromPoint(cx, cy) : null;
+    // The control, or something inside it, is under its centre. An ancestor of the control
+    // counts only for one that wraps over several lines (an inline link: its centre can fall
+    // in the gap between its line boxes). Any other ancestor means the control is clipped
+    // by a scroller or covered, and is not reachable there.
+    const wraps = c.getClientRects().length > 1;
+    const ok = onScreen && !!hit && (hit === c || c.contains(hit) || (wraps && hit.contains(c)));
+    if (ok) continue;
+    if (onScreen && hit && hit.closest(args.badge)) { out.underBadge++; continue; }
+    out.unreachableCount++;
+    if (out.unreachable.length < 12) {
+      out.unreachable.push({el: desc(c), rect: R(cr), neededSideways, onScreen, hit: hit ? desc(hit) : null});
+    }
+  }
+  for (const el of scrollers) { el.scrollTop = 0; el.scrollLeft = 0; }
+  // The playlist detail: how much of its track list shows, and each fixture row's parts.
+  const list = d.querySelector('.modal-body');
+  const rows = list ? [...list.querySelectorAll('.pl-trk')] : [];
+  if (list && rows.length) {
+    const rowHeight = rows[0].getBoundingClientRect().height;
+    out.trackList = {clientHeight: list.clientHeight, rowHeight: +rowHeight.toFixed(1),
+      rows: rows.length, rowsVisible: rowHeight ? +(list.clientHeight / rowHeight).toFixed(2) : 0};
+    if (d.hasAttribute('data-reflow-fixture')) {
+      out.fixtureHeader = {titleLines: boxLines(d.querySelector('.pl-dialog-title')),
+        promptLines: boxLines(d.querySelector('.pl-dialog-mood')),
+        titleCut: topCut(d.querySelector('.pl-dialog-title'))};
+    }
+    out.fixtureRows = rows.filter((row) => row.hasAttribute('data-reflow-fixture')).map((row) => {
+      const box = clipBox(list), info = row.querySelector('.info');
+      const inside = (e) => { if (!e) return false; const q = e.getBoundingClientRect();
+        return q.width > 0 && q.left >= box.left - 0.5 && q.right <= box.right + 0.5; };
+      return {titleColumnWidth: info ? +info.getBoundingClientRect().width.toFixed(1) : 0,
+        duration: inside(row.querySelector('.dur')),
+        moveButtons: [...row.querySelectorAll('button')].every(inside)};
+    });
+  }
+  return out;
+"""
+)
+
+# Check 8 fixture: long values in the open playlist detail's first two tracks. Text nodes are
+# edited in place (React keeps its references). Returns "ok" or "skipped: <why>".
+HISTORY_DIALOG_FIXTURE_JS = _js(
+    r"""
+  const d = document.querySelector('.pl-dialog');
+  if (!d) return 'skipped: no open playlist detail';
+  const rows = d.querySelectorAll('.pl-trk');
+  if (rows.length < 2) return 'skipped: fewer than 2 tracks in the playlist';
+  const put = (el, text) => {
+    if (!el) return;
+    const node = el.firstChild;
+    if (node && node.nodeType === 3 && el.childNodes.length === 1) node.nodeValue = text;
+    else el.textContent = text;
+  };
+  // .info holds the title line then the artist line, whatever their class names are.
+  const fill = (row, title, artist) => {
+    const info = row.querySelector('.info');
+    if (!info) return;
+    put(info.children[0], title);
+    put(info.children[1], artist);
+    row.setAttribute('data-reflow-fixture', 'row');
+  };
+  fill(rows[0], args.long, args.artists);
+  fill(rows[1], args.token, args.token);
+  // The header: a 70-character playlist name and a 280-character prompt (the quoted span
+  // is three text nodes: the opening quote, the prompt, the closing quote).
+  put(d.querySelector('.pl-dialog-title'), args.token);
+  const mood = d.querySelector('.pl-dialog-mood');
+  if (mood) {
+    const texts = [...mood.childNodes].filter((n) => n.nodeType === 3);
+    if (texts.length === 3) texts[1].nodeValue = args.prompt;
+    else mood.textContent = '“' + args.prompt + '”';
+  }
+  d.setAttribute('data-reflow-fixture', 'dialog');
+  return 'ok';
+"""
+)
+
+# Check 8 wait. Ready when exactly ``n`` dialogs are open and the topmost one's overlay (the
+# full-window layer that scrolls) and panel kept the same sizes for ``frames`` animation frames
+# in a row. "Stable" means unchanged, not scrollWidth == clientWidth: on the unfixed app the
+# overlay's scrollWidth is 652 in a clientWidth of 320, and the changelog's overlay scrolls
+# vertically on short viewports. Run with ``polling="raf"``.
+DIALOG_STABLE_JS = r"""([sel, n, frames]) => {
+  const open = [...document.querySelectorAll(sel)].filter((e) => {
+    const r = e.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  });
+  const state = window.__reflowDialogStable || (window.__reflowDialogStable = {key: null, same: 0});
+  if (open.length !== n) { state.key = null; state.same = 0; return false; }
+  const d = open[open.length - 1];
+  const layer = d.closest('.rt-BaseDialogScroll') || d;
+  const r = d.getBoundingClientRect();
+  const key = [layer.scrollWidth, layer.scrollHeight, layer.clientWidth, layer.clientHeight,
+    Math.round(r.width * 10), Math.round(r.height * 10)].join(',');
+  if (state.key === key) state.same++; else { state.key = key; state.same = 0; }
+  return state.same >= frames;
+}"""
+
+# Check 8: how many tracks the playlist has, from the open detail's stats line ("50 tracks ·
+# 3h 12m") or, failing that, the first History card's meta line ("50 tracks · 2026-11-22").
+# None when neither line can be read.
+HISTORY_TRACK_COUNT_JS = r"""() => {
+  const num = (el) => {
+    const m = el ? (el.textContent || '').trim().match(/^(\d+)\s+tracks?\b/) : null;
+    return m ? parseInt(m[1], 10) : null;
+  };
+  const d = document.querySelector('.pl-dialog');
+  const fromDialog = num(d && d.querySelector('.pl-dialog-stats'));
+  return fromDialog !== null ? fromDialog : num(document.querySelector('.pl-card .pl-meta'));
+}"""
+
+# Check 8: the buttons that match the confirmation opener's selector, and the name of the
+# single one (its aria-label, else its text). Read-only.
+CONFIRM_OPENER_JS = r"""(sel) => {
+  const buttons = [...document.querySelectorAll(sel)];
+  const only = buttons.length === 1 ? buttons[0] : null;
+  return {count: buttons.length,
+    name: only ? (only.getAttribute('aria-label') || only.textContent || '').trim() : null};
+}"""
+
 # Informational probes (no failures): what later tasks verify against.
 PROBES_JS = _js(
     r"""
@@ -810,6 +1082,19 @@ class Viewport:
         return f"{self.width}x{self.height}"
 
 
+@dataclass
+class ConfirmGuard:
+    """Run-level state of the opt-in delete-confirmation step (``--confirm-dialogs``).
+
+    One object is shared by every viewport and theme of a run. ``tripped`` is set when the
+    Delete button was clicked and no alert dialog appeared: after that the button is never
+    clicked again in the run (design D13).
+    """
+
+    enabled: bool = False
+    tripped: bool = False
+
+
 class UiUnreachable(RuntimeError):
     """The UI did not answer or never rendered its shell."""
 
@@ -986,6 +1271,198 @@ def palette_check(page: Page) -> dict[str, Any]:
     page.wait_for_timeout(150)
     page.evaluate(RESET_JS)
     return result
+
+
+def _click(page: Page, selector: str) -> bool:
+    """Click the first ``selector`` match from script (no pointer); False when there is none.
+
+    A scripted click works on a control that is off screen or under another box, which is
+    exactly what the dialog checks are there to find.
+    """
+    return bool(
+        page.evaluate(
+            "(sel) => { const el = document.querySelector(sel); if (!el) return false;"
+            " el.click(); return true; }",
+            selector,
+        )
+    )
+
+
+def _open_dialogs(page: Page) -> int:
+    """How many dialogs are open (shown ``role=dialog`` or ``role=alertdialog`` elements)."""
+    return int(
+        page.evaluate(
+            "(sel) => [...document.querySelectorAll(sel)].filter((e) =>"
+            " e.getBoundingClientRect().width > 0).length",
+            DIALOG_SELECTOR,
+        )
+    )
+
+
+def _wait_dialog_settled(page: Page, expect_open: int) -> bool:
+    """Wait until ``expect_open`` dialogs are open and the topmost one's overlay kept one size.
+
+    Waits on state, not on a fixed sleep: the overlay's scroll and client sizes and the panel's
+    size are unchanged for ``DIALOG_STABLE_FRAMES`` animation frames in a row. Returns False when
+    that did not happen within ``DIALOG_SETTLE_TIMEOUT_MS``.
+    """
+    page.evaluate("() => { delete window.__reflowDialogStable; }")
+    try:
+        page.wait_for_function(
+            DIALOG_STABLE_JS,
+            arg=[DIALOG_SELECTOR, expect_open, DIALOG_STABLE_FRAMES],
+            timeout=DIALOG_SETTLE_TIMEOUT_MS,
+            polling="raf",
+        )
+    except PlaywrightTimeoutError:
+        return False
+    return True
+
+
+def _measure_dialog(page: Page, expect_open: int) -> dict[str, Any]:
+    """Check 8's measurements of the topmost open dialog, once ``expect_open`` are open and
+    the topmost one has stopped changing size. ``settled`` says whether it did."""
+    settled = _wait_dialog_settled(page, expect_open)
+    measured: dict[str, Any] = page.evaluate(
+        DIALOG_JS, {"allow": list(INNER_SCROLLERS), "badge": REFLEX_BADGE}
+    )
+    measured["settled"] = settled
+    return measured
+
+
+def _dismiss_dialog(page: Page, expect_open: int) -> bool:
+    """Press Escape (never Enter, never a click) until only ``expect_open`` dialogs remain.
+
+    One press, then a long wait (``DIALOG_CLOSE_TIMEOUT_MS``: a loaded machine took 15 s). Only a
+    dialog that is still open after that gets a second press.
+    """
+    for _ in range(2):
+        page.keyboard.press("Escape")
+        try:
+            page.wait_for_function(
+                "([sel, n]) => [...document.querySelectorAll(sel)].filter((e) =>"
+                " e.getBoundingClientRect().width > 0).length <= n",
+                arg=[DIALOG_SELECTOR, expect_open],
+                timeout=DIALOG_CLOSE_TIMEOUT_MS,
+            )
+            return True
+        except PlaywrightTimeoutError:
+            continue
+    return False
+
+
+def _confirm_dialog_step(page: Page, guard: ConfirmGuard, result: dict[str, Any]) -> None:
+    """The opt-in step: open the delete confirmation from the detail, measure it, close it.
+
+    The detail's Delete button is clicked only when exactly one button matches
+    ``HISTORY_CONFIRM_OPENER`` and its name is exactly "Delete"; otherwise the step is a skipped
+    fixture and nothing is clicked. If no alert dialog appears after the click, ``guard`` is
+    tripped (one hard failure, and the button is never clicked again in the run). Nothing inside
+    the confirmation is clicked and Enter is never pressed: Escape closes it, and the caller then
+    closes the detail with Escape.
+    """
+    if guard.tripped:
+        result["confirmStatus"] = (
+            "skipped: the delete confirmation did not open earlier in this run, so its "
+            "button is not clicked again"
+        )
+        return
+    opener: dict[str, Any] = page.evaluate(CONFIRM_OPENER_JS, HISTORY_CONFIRM_OPENER)
+    if opener["count"] != 1 or opener["name"] != HISTORY_CONFIRM_NAME:
+        result["confirmStatus"] = CONFIRM_BUTTON_NOTE
+        return
+    before = _open_dialogs(page)
+    _click(page, HISTORY_CONFIRM_OPENER)
+    try:
+        page.wait_for_selector(ALERT_SELECTOR, state="visible", timeout=DIALOG_OPEN_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        guard.tripped = True
+        result["confirm"] = {"open": False}
+        return
+    confirm = _measure_dialog(page, before + 1)
+    confirm["closed"] = _dismiss_dialog(page, expect_open=before)
+    result["confirm"] = confirm
+
+
+def history_dialogs_check(page: Page, guard: Optional[ConfirmGuard] = None) -> dict[str, Any]:
+    """Open the first playlist's detail and measure it, as loaded and with the long-string
+    fixture; with an enabled ``guard`` also its delete confirmation.
+
+    Read-only: the card click reads the playlist and the fixture edits the DOM. The footer
+    button with ``aria-haspopup="dialog"`` is clicked only with ``guard.enabled`` and only shows
+    the confirmation (see ``_confirm_dialog_step``); every dialog is dismissed with Escape.
+    Returns ``{"status": "skipped: <why>"}`` when the install has no saved playlist.
+    """
+    page.evaluate(RESET_JS)
+    try:  # the cards, an empty state or the load error: whichever the list settles on
+        page.wait_for_selector(HISTORY_LIST_SETTLED_SELECTOR, timeout=DIALOG_OPEN_TIMEOUT_MS)
+    except PlaywrightTimeoutError:
+        return {"status": "skipped: the History list did not render"}
+    if page.locator(HISTORY_CARD_SELECTOR).count() == 0:
+        return {"status": "skipped: no saved playlists"}
+    result: dict[str, Any] = {"status": "ok"}
+    _click(page, HISTORY_CARD_SELECTOR)
+    try:
+        page.wait_for_selector(
+            HISTORY_DIALOG_SELECTOR, state="visible", timeout=DIALOG_OPEN_TIMEOUT_MS
+        )
+    except PlaywrightTimeoutError:
+        result["detail"] = {"open": False}
+        return result
+    # The tracks arrive after the dialog opens: wait for the first row before measuring. A
+    # playlist that counts tracks and renders no row is a failure; one with none needs no wait.
+    count = page.evaluate(HISTORY_TRACK_COUNT_JS)
+    result["trackCount"] = count
+    if count != 0:
+        try:
+            page.wait_for_selector(
+                HISTORY_ROW_SELECTOR, state="visible", timeout=HISTORY_ROWS_TIMEOUT_MS
+            )
+        except PlaywrightTimeoutError:
+            result["rowsMissing"] = bool(count)
+    result["detail"] = _measure_dialog(page, 1)
+    fixture = str(
+        page.evaluate(
+            HISTORY_DIALOG_FIXTURE_JS,
+            {
+                "long": LONG_TITLE,
+                "artists": LONG_ARTISTS,
+                "token": TOKEN_70,
+                "prompt": PROMPT_280,
+            },
+        )
+    )
+    result["fixtureStatus"] = fixture
+    if fixture == "ok":
+        result["detailFixture"] = _measure_dialog(page, 1)
+    if guard is not None and guard.enabled:
+        _confirm_dialog_step(page, guard, result)
+    result["detail"]["closed"] = _dismiss_dialog(page, expect_open=0)
+    page.wait_for_timeout(150)
+    page.evaluate(RESET_JS)
+    return result
+
+
+def changelog_dialog_check(page: Page) -> dict[str, Any]:
+    """Open the changelog from the rail, measure it, and close it with Escape."""
+    page.evaluate(RESET_JS)
+    before = _open_dialogs(page)
+    if not _click(page, CHANGELOG_BUTTON_SELECTOR):
+        return {"status": "skipped: no Changelog button in the rail"}
+    try:
+        page.wait_for_function(
+            "([sel, n]) => [...document.querySelectorAll(sel)].filter((e) =>"
+            " e.getBoundingClientRect().width > 0).length > n",
+            arg=[DIALOG_SELECTOR, before],
+            timeout=DIALOG_OPEN_TIMEOUT_MS,
+        )
+    except PlaywrightTimeoutError:
+        return {"status": "ok", "dialog": {"open": False}}
+    dialog = _measure_dialog(page, before + 1)
+    dialog["closed"] = _dismiss_dialog(page, expect_open=before)
+    page.wait_for_timeout(150)
+    page.evaluate(RESET_JS)
+    return {"status": "ok", "dialog": dialog}
 
 
 # ── Turning measurements into failures ────────────────────────────────
@@ -1185,6 +1662,178 @@ def palette_failures(palette: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _floor(floor: str, detail: str) -> dict[str, Any]:
+    """One design-floor failure of check 8: soft, and named by its floor id."""
+    return {"check": DIALOG_FLOOR_CHECK, "floor": floor, "soft": True, "detail": detail}
+
+
+def failure_gates(
+    failure: dict[str, Any], viewport_gate: bool, gating_floors: Optional[frozenset[str]] = None
+) -> bool:
+    """Whether ``failure`` changes the exit status.
+
+    A hard failure gates when its viewport gates. A soft failure (a design floor of check 8)
+    gates only when its viewport gates and its floor id is in ``gating_floors``, which defaults
+    to ``DIALOG_GATING_FLOORS`` (a floor left out of that set is reported, not enforced).
+    """
+    if not viewport_gate:
+        return False
+    if not failure.get("soft"):
+        return True
+    floors = DIALOG_GATING_FLOORS if gating_floors is None else gating_floors
+    return failure.get("floor") in floors
+
+
+def dialog_failures(
+    name: str, dialog: dict[str, Any], *, history: bool = False, fixture: bool = False
+) -> list[dict[str, Any]]:
+    """Check 8: an open dialog fits the viewport and every control in it can be reached.
+
+    ``name`` starts each message ("History detail", "Delete confirmation", "Changelog"). The
+    hard checks (check ``dialog``) are the same for every dialog. ``history`` adds the playlist
+    detail's floors ``rows`` and ``layer-y`` at ``DIALOG_FIT_MIN_VH`` or taller; ``fixture`` marks
+    the measurement taken after the long-string fixture and adds the floors ``header-lines``,
+    ``title-width`` and ``row-parts``. Floors are soft failures (check ``dialog-floor``).
+    """
+    label = f"{name} (long-string fixture)" if fixture else name
+    if not dialog.get("open"):
+        return [_failure(DIALOG_CHECK, f"{label}: the dialog did not open")]
+    out: list[dict[str, Any]] = []
+    vw, vh, panel = dialog["vw"], dialog["vh"], dialog["panel"]
+    sideways = dialog.get("overlayOverflowX") or 0
+    if sideways > 1:
+        out.append(
+            _failure(
+                DIALOG_CHECK,
+                f"{label}: the dialog overlay scrolls sideways by {sideways}px "
+                f"(panel {panel['width']}px wide in a {vw}px viewport)",
+            )
+        )
+    if panel["left"] < DIALOG_SIDE_MARGIN or panel["right"] > vw - DIALOG_SIDE_MARGIN:
+        out.append(
+            _failure(
+                DIALOG_CHECK,
+                f"{label}: the panel spans {panel['left']}..{panel['right']} of {vw}px "
+                f"(needs a {DIALOG_SIDE_MARGIN:.0f}px margin on both sides)",
+            )
+        )
+    inner = dialog.get("panelOverflowX") or 0
+    if inner > 1:
+        out.append(_failure(DIALOG_CHECK, f"{label}: the panel scrolls sideways by {inner}px"))
+    regions = dialog.get("innerScrollers") or []
+    if regions:
+        shown = "; ".join(f"{r['el']} by {r['by']}px" for r in regions[:3])
+        out.append(
+            _failure(DIALOG_CHECK, f"{label}: {len(regions)} region(s) scroll sideways: {shown}")
+        )
+    count = dialog.get("unreachableCount") or 0
+    if count:
+        parts = []
+        for control in (dialog.get("unreachable") or [])[:4]:
+            rect = control["rect"]
+            why = (
+                "needs a sideways scroll"
+                if control.get("neededSideways") or not control.get("onScreen")
+                else f"covered by {control.get('hit')}"
+            )
+            parts.append(f"{control['el']} ({rect['left']}..{rect['right']}, {why})")
+        out.append(
+            _failure(
+                DIALOG_CHECK,
+                f"{label}: {count} of {dialog.get('controls')} control(s) off screen or "
+                f"covered: " + "; ".join(parts),
+            )
+        )
+    if dialog.get("closed") is False:
+        out.append(_failure(DIALOG_CHECK, f"{label}: the dialog did not close on Escape"))
+    if history and vh >= DIALOG_FIT_MIN_VH:
+        tracks = dialog.get("trackList")
+        if tracks:
+            # A playlist shorter than the floor can only show its own rows.
+            needed = min(HISTORY_MIN_VISIBLE_ROWS, float(tracks["rows"]))
+            if tracks["rowsVisible"] + 0.02 < needed:
+                out.append(
+                    _floor(
+                        "rows",
+                        f"{label}: the track list shows {tracks['rowsVisible']} rows "
+                        f"({tracks['clientHeight']}px of a {panel['height']}px panel; at least "
+                        f"{needed:g} needed)",
+                    )
+                )
+        scroll = dialog.get("overlayOverflowY") or 0
+        if scroll > 1:
+            out.append(
+                _floor(
+                    "layer-y",
+                    f"{label}: the dialog overlay scrolls by {scroll}px (only the track "
+                    f"list should scroll)",
+                )
+            )
+    if fixture:
+        header = dialog.get("fixtureHeader") or {}
+        for part, key in (("playlist name", "titleLines"), ("prompt", "promptLines")):
+            if (header.get(key) or 0) > CLAMP_MAX_LINES:
+                out.append(
+                    _floor(
+                        "header-lines",
+                        f"{label}: the {part} shows {header[key]} lines (max {CLAMP_MAX_LINES})",
+                    )
+                )
+        cut = header.get("titleCut") or 0
+        if cut > TITLE_CUT_MAX:
+            out.append(
+                _floor(
+                    "header-lines",
+                    f"{label}: the playlist name's first line starts {cut}px above the edge "
+                    f"that clips it (the tops of its letters are cut off)",
+                )
+            )
+        for index, row in enumerate(dialog.get("fixtureRows") or []):
+            width = row.get("titleColumnWidth") or 0
+            if width < HISTORY_TITLE_MIN_WIDTH:
+                out.append(
+                    _floor(
+                        "title-width",
+                        f"{label}: track row {index + 1}: title column {width}px wide "
+                        f"(at least {HISTORY_TITLE_MIN_WIDTH:.0f}px)",
+                    )
+                )
+            missing = [part for part in ("duration", "moveButtons") if not row.get(part)]
+            if missing:
+                out.append(
+                    _floor(
+                        "row-parts",
+                        f"{label}: track row {index + 1}: {', '.join(missing)} not inside "
+                        f"the track list",
+                    )
+                )
+    return out
+
+
+def history_dialogs_failures(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Check 8 on /history: the playlist detail (as loaded, then with the fixture) and its
+    delete confirmation. A skipped fixture is a note, not a failure; a card that counts
+    tracks while the detail renders no track row is a hard failure."""
+    if result.get("status") != "ok":
+        return []
+    out = dialog_failures("History detail", result["detail"], history=True)
+    if result.get("rowsMissing"):
+        out.append(
+            _failure(
+                DIALOG_CHECK,
+                f"History detail: the playlist counts {result.get('trackCount')} track(s) "
+                f"but the detail shows no track row",
+            )
+        )
+    if "detailFixture" in result:
+        out += dialog_failures(
+            "History detail", result["detailFixture"], history=True, fixture=True
+        )
+    if "confirm" in result:
+        out += dialog_failures("Delete confirmation", result["confirm"])
+    return out
+
+
 def scrollcue_failures(probes: dict[str, Any], vw: int) -> list[dict[str, Any]]:
     """Check 7: an inner region that scrolls sideways shows that it does.
 
@@ -1294,8 +1943,16 @@ def check_route(
     settle_timeout: float,
     label_shot: Optional[Path],
     probe_label: bool,
+    dialogs: bool = True,
+    guard: Optional[ConfirmGuard] = None,
 ) -> dict[str, Any]:
-    """Run checks 1-7 on one route; returns its measurements and failures."""
+    """Run checks 1-8 on one route; returns its measurements and failures.
+
+    ``probe_label`` is True on the first route of a viewport and theme: the rail-label
+    probe and (with ``dialogs``) the changelog dialog run there, once per run of routes.
+    ``guard`` (enabled by ``--confirm-dialogs``) lets the History check open the delete
+    confirmation.
+    """
     open_route(page, base + route, password)
     result: dict[str, Any] = {"url": page.url, "notes": []}
     busy = settle(page, settle_timeout)
@@ -1335,6 +1992,26 @@ def check_route(
     result["palette"] = palette
     failures += palette_failures(palette)
 
+    if dialogs:
+        checked: dict[str, Any] = {}
+        if probe_label:
+            changelog = changelog_dialog_check(page)
+            checked["changelog"] = changelog
+            if changelog["status"] == "ok":
+                failures += dialog_failures("Changelog", changelog["dialog"])
+            else:
+                result["notes"].append(f"dialog fixture {changelog['status']}")
+        if route == "/history":
+            history = history_dialogs_check(page, guard)
+            checked["history"] = history
+            failures += history_dialogs_failures(history)
+            for key in ("status", "fixtureStatus", "confirmStatus"):
+                status = str(history.get(key, "ok"))
+                if status != "ok":
+                    result["notes"].append(f"dialog fixture {status}")
+        if checked:
+            result["dialogs"] = checked
+
     if route in FIXTURE_JS:
         args = {
             "prompt": PROMPT_280,
@@ -1371,6 +2048,7 @@ def run_viewport(
     routes: Sequence[str],
     password: Optional[str],
     out_dir: Path,
+    guard: Optional[ConfirmGuard] = None,
 ) -> dict[str, Any]:
     """Every route at one viewport and theme, in its own browser context."""
     context = browser.new_context(
@@ -1421,9 +2099,16 @@ def run_viewport(
                 args.settle_timeout,
                 shot,
                 probe_label=index == 0,
+                dialogs=not args.skip_dialogs,
+                guard=guard,
             )
             for failure in route_result["failures"]:
-                failure.update(route=route, viewport=vp.label, theme=theme, gate=vp.gate)
+                failure.update(
+                    route=route,
+                    viewport=vp.label,
+                    theme=theme,
+                    gate=failure_gates(failure, vp.gate),
+                )
             report["routes"][route] = route_result
             report["failures"].extend(route_result["failures"])
     finally:
@@ -1493,6 +2178,24 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--no-screenshots", action="store_true", help="skip the rail-label screenshots"
     )
+    parser.add_argument(
+        "--skip-dialogs",
+        action="store_true",
+        help="skip check 8 (the History detail, delete confirmation and changelog dialogs)",
+    )
+    parser.add_argument(
+        "--confirm-dialogs",
+        action="store_true",
+        help=(
+            "also open the playlist detail's delete confirmation: clicks its Delete button, "
+            "which only shows the dialog (use a throwaway PLEXMIX_DATA_DIR)"
+        ),
+    )
+    parser.add_argument(
+        "--require-fixtures",
+        action="store_true",
+        help="fail (exit 1) when a fixture is skipped, e.g. no saved playlist or track rows",
+    )
     return parser
 
 
@@ -1519,10 +2222,36 @@ def print_report(report: dict[str, Any]) -> None:
             detail = failure["detail"]
             if len(detail) > 220:
                 detail = detail[:217] + "..."
-            print(f"      {failure['check']}: {detail}")
+            check = failure["check"] + (f"/{failure['floor']}" if failure.get("floor") else "")
+            if failure.get("soft") and vp["gate"] and not failure.get("gate"):
+                check += " (floor, not gating)"
+            print(f"      {check}: {detail}")
     for failure in report["failures"]:
         if failure["check"] == "theme":
             print(f"  theme: {failure['detail']}")
+
+
+def skipped_fixtures(reports: Sequence[dict[str, Any]]) -> list[dict[str, str]]:
+    """Fixtures that could not run on a gate viewport (an empty install): the route notes
+    "fixture skipped: ..." and "dialog fixture skipped: ...", one entry per note."""
+    return [
+        {
+            "route": route,
+            "viewport": f"{r['viewport']['width']}x{r['viewport']['height']}",
+            "theme": r["theme"],
+            "what": note,
+        }
+        for r in reports
+        if r["viewport"]["gate"]
+        for route, result in r["routes"].items()
+        for note in result["notes"]
+        if "fixture skipped" in note
+    ]
+
+
+def exit_status(gating: Sequence[Any], skipped: Sequence[Any], require_fixtures: bool) -> int:
+    """1 when a check gates, or when a fixture was skipped and ``--require-fixtures`` is set."""
+    return 1 if gating or (require_fixtures and skipped) else 0
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -1540,6 +2269,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     viewports = viewports_for(args)
     started = time.time()
     reports: list[dict[str, Any]] = []
+    guard = ConfirmGuard(enabled=bool(args.confirm_dialogs) and not args.skip_dialogs)
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(
@@ -1549,7 +2279,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 for vp in viewports:
                     for theme in args.themes:
                         report = run_viewport(
-                            browser, args, vp, theme, args.routes, password, out_dir
+                            browser, args, vp, theme, args.routes, password, out_dir, guard
                         )
                         print_report(report)
                         reports.append(report)
@@ -1558,9 +2288,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     except (UiUnreachable, SignInRequired) as exc:
         sys.stderr.write(f"check_reflow.py: {exc}\n")
         return 2
+    skipped = skipped_fixtures(reports)
     gating = [f for r in reports for f in r["failures"] if f["gate"]]
     informational = [f for r in reports for f in r["failures"] if not f["gate"]]
-    exit_code = 1 if gating else 0
+    exit_code = exit_status(gating, skipped, args.require_fixtures)
     summary = {
         "tool": "check_reflow.py",
         "base": args.base,
@@ -1570,6 +2301,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "seconds": round(time.time() - started, 1),
         "gatingFailures": gating,
         "informationalFailures": informational,
+        "skipped": skipped,
+        "requireFixtures": bool(args.require_fixtures),
+        "dialogChecks": {
+            "skipped": bool(args.skip_dialogs),
+            "confirm": guard.enabled,
+            "confirmTripped": guard.tripped,
+            "gatingFloors": sorted(DIALOG_GATING_FLOORS),
+        },
         "exitCode": exit_code,
     }
     (out_dir / "summary.json").write_text(
@@ -1579,6 +2318,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"\n{len(gating)} gating failure(s), {len(informational)} informational; "
         f"JSON in {out_dir}"
     )
+    if skipped:
+        kinds = sorted({s["what"] for s in skipped})
+        verdict = "FAILING the run (--require-fixtures)" if args.require_fixtures else "not checked"
+        print(f"{len(skipped)} fixture(s) skipped, {verdict}: " + "; ".join(kinds))
     return exit_code
 
 

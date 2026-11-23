@@ -453,6 +453,459 @@ class TestGenerationAcrossTabs:
         assert fresh_jobs.get_cancel_event(TOKEN_A, "generation") is running
 
 
+def _loadable(state: Any) -> Any:
+    """A signed-in state whose ``on_load`` touches no config, database or session sweep."""
+    state.check_auth = MagicMock(return_value=True)
+    state.load_app_data = MagicMock()
+    state._load_audio_stats = MagicMock()
+    state._load_templates = MagicMock()
+    state._plex_readiness_events = MagicMock(return_value=[])
+    state._rerun_generation_config = ""
+    state.readiness = {}
+    return state
+
+
+def _stuck(state: Any) -> Any:
+    """A session still marked as generating (what a kept session looks like after a restart)."""
+    state.is_generating = True
+    state.generation_progress = 10
+    state.generation_message = "Searching for candidate tracks..."
+    state.generation_log = ["Starting playlist generation...", "Searching for candidate tracks..."]
+    return _loadable(state)
+
+
+class TestOrphanedGenerationOnLoad:
+    """A page load ends a generation that no longer exists instead of showing it for ever."""
+
+    def test_orphan_returns_to_the_prompt_with_a_callout(self, fresh_jobs: JobManager) -> None:
+        from plexmix.ui.states import generator_state as gs
+
+        state = _stuck(_make_state(TOKEN_A, mood="rainy day melancholy"))
+        generation = state._generation_id
+
+        assert state.on_load() is None
+
+        assert state.is_generating is False
+        assert (state.generation_progress, state.generation_message, state.generation_log) == (
+            0,
+            "",
+            [],
+        )
+        assert state.generation_error["title"] == gs.INTERRUPTED_TITLE
+        assert state.generation_error["body"] == gs.INTERRUPTED_BODY
+        assert state.generation_error["tone"] == "warning"
+        assert state.generation_error["component"] == "generation"
+        assert state.mood_query == "rainy day melancholy"  # the prompt is kept
+        assert state._generation_id == generation + 1  # stragglers of that run are dropped
+
+    def test_callout_stays_until_dismissed(self, fresh_jobs: JobManager) -> None:
+        from plexmix.ui.states import generator_state as gs
+
+        state = _stuck(_make_state(TOKEN_A))
+        state.on_load()
+        state.on_load()  # navigate away and back
+        assert state.generation_error["title"] == gs.INTERRUPTED_TITLE
+        state.dismiss_error()
+        assert state.generation_error["title"] == ""
+
+    def test_live_generation_is_left_alone(self, fresh_jobs: JobManager) -> None:
+        state = _stuck(_make_state(TOKEN_A))
+        cancel = fresh_jobs.start(TOKEN_A, "generation")
+
+        state.on_load()
+
+        assert state.is_generating is True and state.generation_progress == 10
+        assert state.generation_error["title"] == ""
+        assert not cancel.is_set()
+
+    def test_another_tabs_generation_does_not_count(self, fresh_jobs: JobManager) -> None:
+        other = fresh_jobs.start(TOKEN_B, "generation")
+        state = _stuck(_make_state(TOKEN_A))
+
+        state.on_load()
+
+        assert state.is_generating is False
+        assert not other.is_set()
+
+    def test_reaped_generation_is_reported(self, fresh_jobs: JobManager) -> None:
+        from plexmix.ui.states import generator_state as gs
+
+        state = _stuck(_make_state(TOKEN_A))
+        fresh_jobs.start(TOKEN_A, "generation")
+        fresh_jobs.cleanup_client(TOKEN_A)  # what reap_disconnected does after the grace period
+
+        state.on_load()
+
+        assert state.is_generating is False
+        assert state.generation_error["title"] == gs.INTERRUPTED_TITLE
+
+    def test_idle_session_is_untouched(self, fresh_jobs: JobManager) -> None:
+        state = _stuck(_make_state(TOKEN_A))
+        state.is_generating = False
+        state.on_load()
+        assert state.generation_error["title"] == ""
+
+    def test_signed_out_load_is_untouched(self, fresh_jobs: JobManager) -> None:
+        state = _stuck(_make_state(TOKEN_A, mood="rainy day melancholy"))
+        state.check_auth = MagicMock(return_value=False)
+        generation = state._generation_id
+
+        assert state.on_load() is None
+
+        assert state.is_generating is True and state.generation_progress == 10
+        assert state.generation_log == [
+            "Starting playlist generation...",
+            "Searching for candidate tracks...",
+        ]
+        assert state.generation_error["title"] == ""
+        assert state._generation_id == generation
+        state.load_app_data.assert_not_called()
+        assert state.is_page_loading is False
+
+
+_PROMPT = "rainy day melancholy"
+
+
+class TestInterruptedPromptRestore:
+    """The browser remembers the prompt of a generation in flight (``in_flight_prompt``).
+
+    A load that finds it with no running generation, no results and no failure says the
+    playlist did not finish and brings an empty prompt back.
+    """
+
+    # ── set when a generation starts, cleared where it ends ──────────────
+
+    def test_it_is_the_prompt_while_a_generation_runs_and_empty_after_the_results(
+        self, fresh_jobs: JobManager, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        state = _make_state(TOKEN_A, mood=_PROMPT)
+        seen: Dict[str, Any] = {}
+
+        def during(cancel_event: Optional[threading.Event]) -> None:
+            seen["value"] = state.in_flight_prompt
+            seen["running"] = state.is_generating
+
+        _install_fake_generation(monkeypatch, tmp_path, during)
+        assert state.in_flight_prompt == ""
+
+        asyncio.run(state.generate_playlist())
+
+        assert seen == {"value": _PROMPT, "running": True}  # nothing but the prompt text
+        assert [t["id"] for t in state.generated_playlist] == ["1"]
+        assert state.in_flight_prompt == ""
+
+    def test_a_failed_run_ends_with_it_empty(
+        self, fresh_jobs: JobManager, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        state = _make_state(TOKEN_A, mood=_PROMPT)
+        seen: Dict[str, Any] = {}
+
+        def during(cancel_event: Optional[threading.Event]) -> None:
+            seen["value"] = state.in_flight_prompt
+            raise RuntimeError("the search failed")
+
+        _install_fake_generation(monkeypatch, tmp_path, during)
+
+        asyncio.run(state.generate_playlist())
+
+        assert seen["value"] == _PROMPT
+        assert state.generation_error["title"] != ""  # the failure is shown
+        assert state.is_generating is False
+        assert state.in_flight_prompt == ""
+
+    def test_fail_generation_empties_it(self) -> None:
+        from plexmix.ui.states.generator_state import generation_error_for
+
+        state = _make_state(TOKEN_A, mood=_PROMPT)
+        state.is_generating = True
+        state.in_flight_prompt = _PROMPT
+
+        asyncio.run(
+            state._fail_generation(
+                generation_error_for("generation", "", {"title": "Search failed", "body": "b"})
+            )
+        )
+
+        assert state.is_generating is False
+        assert state.in_flight_prompt == ""
+
+    def test_cancel_empties_it(self, fresh_jobs: JobManager) -> None:
+        state = _make_state(TOKEN_A, mood=_PROMPT)
+        fresh_jobs.start(TOKEN_A, "generation")
+        state.is_generating = True
+        state.in_flight_prompt = _PROMPT
+
+        state.cancel_generation()
+
+        assert state.in_flight_prompt == ""
+
+    def test_replacing_the_prompt_on_an_idle_session_empties_it(self) -> None:
+        state = _make_state(TOKEN_A, mood=_PROMPT)
+        state.in_flight_prompt = _PROMPT
+
+        state.prefill_prompt("late night drive")
+
+        assert state.mood_query == "late night drive"
+        assert state.in_flight_prompt == ""
+
+    def test_a_template_empties_it(self) -> None:
+        state = _make_state(TOKEN_A, mood="")
+        state.templates = [{"id": "1", "mood_query": "focus music"}]
+        state.in_flight_prompt = _PROMPT
+
+        state.apply_template("1")
+
+        assert state.mood_query == "focus music"
+        assert state.in_flight_prompt == ""
+
+    def test_replacing_the_prompt_while_a_generation_runs_keeps_it(self) -> None:
+        state = _make_state(TOKEN_A, mood=_PROMPT)
+        state.is_generating = True
+        state.in_flight_prompt = _PROMPT
+
+        state.prefill_prompt("late night drive")  # refused: the run keeps its prompt
+
+        assert state.mood_query == _PROMPT
+        assert state.in_flight_prompt == _PROMPT
+
+    def test_a_reaped_run_leaves_it_set(
+        self, fresh_jobs: JobManager, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        state = _make_state(TOKEN_A, mood=_PROMPT)
+        seen: Dict[str, Any] = {}
+
+        def during(cancel_event: Optional[threading.Event]) -> None:
+            fresh_jobs.cleanup_client(TOKEN_A)  # the reaper, after the grace period
+            seen["cancelled"] = cancel_event is not None and cancel_event.is_set()
+
+        _install_fake_generation(monkeypatch, tmp_path, during)
+
+        asyncio.run(state.generate_playlist())
+
+        assert seen["cancelled"] is True
+        assert state.is_generating is False
+        assert state.generated_playlist == []
+        assert state.in_flight_prompt == _PROMPT  # the tab is away; its own copy stays too
+
+    def test_a_superseded_run_leaves_the_newer_runs_value(
+        self, fresh_jobs: JobManager, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        state = _make_state(TOKEN_A, mood=_PROMPT)
+
+        def during(cancel_event: Optional[threading.Event]) -> None:
+            state._generation_id += 1  # a newer generation took over, with its own prompt
+            state.in_flight_prompt = "a newer prompt"
+
+        _install_fake_generation(monkeypatch, tmp_path, during)
+
+        asyncio.run(state.generate_playlist())
+
+        assert state.in_flight_prompt == "a newer prompt"
+
+    # ── used by the page load ────────────────────────────────────────────
+
+    def test_a_fresh_state_gets_the_prompt_and_the_message_back(self) -> None:
+        from plexmix.ui.states import generator_state as gs
+
+        state = _loadable(_make_state(TOKEN_A, mood=""))
+        state.in_flight_prompt = _PROMPT
+
+        result = state.on_load()
+
+        assert result == [("set_value", gs.PROMPT_INPUT_ID, _PROMPT)]
+        assert state.mood_query == _PROMPT
+        assert state.prompt_count_label == "20/280"
+        error = state.generation_error
+        assert error["title"] == gs.INTERRUPTED_TITLE
+        assert error["body"] == gs.INTERRUPTED_BODY
+        assert (error["tone"], error["component"]) == ("warning", "generation")
+        assert state.in_flight_prompt == ""  # used once
+        assert state.is_generating is False
+        assert state.is_page_loading is False
+
+    def test_a_long_value_is_cut_to_the_prompt_limit(self) -> None:
+        from plexmix.ui.states import generator_state as gs
+
+        state = _loadable(_make_state(TOKEN_A, mood=""))
+        state.in_flight_prompt = "w" * 300
+
+        result = state.on_load()
+
+        assert state.mood_query == "w" * gs.PROMPT_MAX_CHARS == "w" * 280
+        assert result == [("set_value", gs.PROMPT_INPUT_ID, "w" * 280)]
+        assert state.prompt_count_label == "280/280"
+        assert state.in_flight_prompt == ""
+
+    def test_a_whitespace_only_value_is_emptied_and_shows_nothing(self) -> None:
+        state = _loadable(_make_state(TOKEN_A, mood=""))
+        state.in_flight_prompt = "  \n \t "
+
+        assert state.on_load() is None
+
+        assert state.in_flight_prompt == ""
+        assert state.mood_query == ""
+        assert state.generation_error["title"] == ""
+
+    def test_results_on_screen_empty_it_and_change_nothing_else(self) -> None:
+        state = _loadable(_make_state(TOKEN_A, mood="rainy day jazz"))
+        shown = [{"id": "1", "title": "Song", "artist": "Band"}]
+        state.generated_playlist = list(shown)
+        state.in_flight_prompt = "an older prompt"  # the stale copy the hydrate brings back
+
+        assert state.on_load() is None
+
+        assert state.in_flight_prompt == ""
+        assert state.generation_error["title"] == ""
+        assert state.mood_query == "rainy day jazz"
+        assert state.generated_playlist == shown
+
+        state.new_playlist()  # back to the idle prompt
+        assert state.on_load() is None
+        assert state.generation_error["title"] == ""  # a finished run is not reported later
+
+    def test_another_failure_callout_empties_it_and_changes_nothing_else(self) -> None:
+        from plexmix.ui.states.generator_state import NO_MATCH_TITLE, generation_error_for
+
+        state = _loadable(_make_state(TOKEN_A, mood=""))
+        shown = generation_error_for(
+            "generation", "", {"title": NO_MATCH_TITLE, "body": "b"}, tone="warning"
+        )
+        state.generation_error = shown
+        state.in_flight_prompt = _PROMPT
+
+        assert state.on_load() is None
+
+        assert state.in_flight_prompt == ""
+        assert state.generation_error == shown
+        assert state.mood_query == ""
+
+    def test_a_running_generation_keeps_it_and_is_left_alone(self, fresh_jobs: JobManager) -> None:
+        state = _loadable(_make_state(TOKEN_A, mood=_PROMPT))
+        cancel = fresh_jobs.start(TOKEN_A, "generation")
+        state.is_generating = True
+        state.generation_progress = 10
+        state.in_flight_prompt = _PROMPT
+
+        assert state.on_load() is None
+
+        assert state.in_flight_prompt == _PROMPT
+        assert state.is_generating is True and state.generation_progress == 10
+        assert state.generation_error["title"] == ""
+        assert not cancel.is_set()
+
+    def test_an_idle_session_with_the_prompt_set_keeps_it(self) -> None:
+        """What a reaped run leaves behind: the session kept its prompt and nothing else."""
+        from plexmix.ui.states import generator_state as gs
+
+        state = _loadable(_make_state(TOKEN_A, mood=_PROMPT))
+        state.in_flight_prompt = _PROMPT
+
+        assert state.on_load() is None  # no set_value: the field already shows the prompt
+
+        assert state.mood_query == _PROMPT
+        assert state.generation_error["title"] == gs.INTERRUPTED_TITLE
+        assert state.in_flight_prompt == ""
+
+    def test_a_reaped_run_is_explained_at_the_next_load(
+        self, fresh_jobs: JobManager, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        from plexmix.ui.states import generator_state as gs
+
+        state = _make_state(TOKEN_A, mood=_PROMPT)
+
+        def during(cancel_event: Optional[threading.Event]) -> None:
+            fresh_jobs.cleanup_client(TOKEN_A)
+
+        _install_fake_generation(monkeypatch, tmp_path, during)
+        asyncio.run(state.generate_playlist())
+        assert state.generation_error["title"] == ""  # the run ended silently
+
+        assert _loadable(state).on_load() is None  # the tab comes back
+
+        assert state.generation_error["title"] == gs.INTERRUPTED_TITLE
+        assert state.mood_query == _PROMPT
+        assert state.in_flight_prompt == ""
+
+    def test_a_stuck_session_with_a_remembered_prompt_shows_one_callout(
+        self, fresh_jobs: JobManager
+    ) -> None:
+        from plexmix.ui.states import generator_state as gs
+
+        state = _stuck(_make_state(TOKEN_A, mood=_PROMPT))
+        state.in_flight_prompt = _PROMPT
+
+        assert state.on_load() is None  # the guard's callout only; no set_value
+
+        assert state.is_generating is False
+        assert state.generation_error == gs.generation_error_for(
+            "generation",
+            "",
+            {"title": gs.INTERRUPTED_TITLE, "body": gs.INTERRUPTED_BODY},
+            tone="warning",
+        )
+        assert state.mood_query == _PROMPT
+        assert state.in_flight_prompt == ""
+
+    def test_a_signed_out_load_keeps_it_and_the_next_signed_in_load_restores(self) -> None:
+        from plexmix.ui.states import generator_state as gs
+
+        state = _loadable(_make_state(TOKEN_A, mood=""))
+        state.in_flight_prompt = _PROMPT
+        state.check_auth = MagicMock(return_value=False)
+
+        assert state.on_load() is None
+
+        assert state.in_flight_prompt == _PROMPT
+        assert state.mood_query == ""
+        assert state.generation_error["title"] == ""
+
+        state.check_auth = MagicMock(return_value=True)  # signed in; the Generator is reloaded
+        assert state.on_load() == [("set_value", gs.PROMPT_INPUT_ID, _PROMPT)]
+        assert state.mood_query == _PROMPT
+        assert state.generation_error["title"] == gs.INTERRUPTED_TITLE
+        assert state.in_flight_prompt == ""
+
+    def test_a_pending_rerun_wins(self) -> None:
+        import json
+
+        from plexmix.ui.states import generator_state as gs
+
+        state = _loadable(_make_state(TOKEN_A, mood=""))
+        state.in_flight_prompt = _PROMPT
+        state._rerun_generation_config = json.dumps({"mood_query": "sunday morning coffee"})
+
+        result = state.on_load()
+
+        assert result == [("set_value", gs.PROMPT_INPUT_ID, "sunday morning coffee")]
+        assert state.mood_query == "sunday morning coffee"
+        assert state.generation_error["title"] == ""  # no "didn't finish" above another prompt
+        assert state.in_flight_prompt == ""
+
+    def test_after_a_restore_dismiss_and_a_second_load_show_nothing(self) -> None:
+        state = _loadable(_make_state(TOKEN_A, mood=""))
+        state.in_flight_prompt = _PROMPT
+        state.on_load()
+        assert state.generation_error["title"] != ""
+
+        state.dismiss_error()
+        assert state.generation_error["title"] == ""
+        assert state.on_load() is None  # a reload: nothing is remembered any more
+
+        assert state.generation_error["title"] == ""
+        assert state.mood_query == _PROMPT
+
+    def test_the_remembered_text_is_never_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        import logging
+
+        caplog.set_level(logging.DEBUG)
+        state = _loadable(_make_state(TOKEN_A, mood=""))
+        state.in_flight_prompt = "a very private vibe 4417"
+
+        state.on_load()
+
+        assert "a very private vibe 4417" not in caplog.text
+
+
 # ── Draft-only sessions, the periodic sweep and the landing route ────
 
 

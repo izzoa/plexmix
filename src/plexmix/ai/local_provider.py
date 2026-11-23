@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import importlib.util
 import json
 import logging
 import multiprocessing as mp
@@ -10,6 +11,8 @@ import time
 from typing import Any, Dict, Optional
 
 import requests
+
+from plexmix.utils.embeddings import receive_worker_reply, stop_worker_process
 
 from .base import AIProvider
 
@@ -61,6 +64,29 @@ LOCAL_LLM_MODELS: Dict[str, Dict[str, Any]] = {
 
 LOCAL_LLM_DEVICE = os.getenv("PLEXMIX_LOCAL_LLM_DEVICE", "auto")
 LOCAL_LLM_DEFAULT_MODEL = "google/gemma-3-1b-it"
+
+# Time limits for the Settings "Download / Warm Up Model" check (``warm_up_local_llm``), the
+# same two values as the embedding checks in ``plexmix.utils.embeddings``: 10 minutes for the
+# model to load, 5 minutes for one answer. The long-lived worker that tagging and playlist
+# generation share keeps no limit.
+LOCAL_LLM_READY_TIMEOUT = 600.0
+LOCAL_LLM_ANSWER_TIMEOUT = 300.0
+
+_ACCELERATE_MISSING = (
+    "accelerate not installed. Run: pip install accelerate, or set PLEXMIX_LOCAL_LLM_DEVICE=cpu"
+)
+
+
+def _package_installed(name: str) -> bool:
+    """Whether ``name`` is installed, WITHOUT importing it (see ``find_spec``).
+
+    ``False`` on ``ImportError`` and ``ValueError``: a test stub in ``sys.modules`` without a
+    ``__spec__`` raises ``ValueError`` from a bare ``find_spec``.
+    """
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
 
 
 class LocalLLMProvider(AIProvider):
@@ -349,6 +375,80 @@ class LocalLLMProvider(AIProvider):
         return self._call_endpoint_with_params(
             prompt, self.temperature, self.max_output_tokens, timeout=60
         )
+
+
+def warm_up_local_llm(model: str) -> None:
+    """Load ``model`` in a throwaway worker process and generate a few tokens.
+
+    For the Settings "Download / Warm Up Model" button, which used to load the model with
+    torch and transformers inside the server process. The worker is always stopped, and
+    ``LocalLLMProvider.worker_cache`` is never read or written. Raises:
+
+    * ``ImportError`` when ``transformers`` or ``torch`` is not installed, or, with the
+      device setting ``auto``, ``accelerate`` (its device placement needs it). No process
+      is started in these cases.
+    * ``RuntimeError`` when the model fails to load or to generate, or the worker dies.
+    * ``TimeoutError`` when no "ready" arrives within ``LOCAL_LLM_READY_TIMEOUT`` or no
+      answer within ``LOCAL_LLM_ANSWER_TIMEOUT``. The child is stopped first.
+    """
+    for package in ("transformers", "torch"):
+        if not _package_installed(package):
+            raise ImportError(f"{package} not installed")
+    if LOCAL_LLM_DEVICE == "auto" and not _package_installed("accelerate"):
+        raise ImportError(_ACCELERATE_MISSING)
+
+    model_config = LOCAL_LLM_MODELS.get(model, {})
+    ctx = mp.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe()
+    worker = ctx.Process(
+        target=_local_llm_worker,
+        args=(
+            model,
+            bool(model_config.get("trust_remote_code", False)),
+            model_config.get("torch_dtype", "auto"),
+            LOCAL_LLM_DEVICE,
+            child_conn,
+        ),
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except BaseException:
+        parent_conn.close()
+        child_conn.close()
+        raise
+    # Close the parent's copy of the child end so recv() raises EOFError if the worker dies.
+    child_conn.close()
+    try:
+        try:
+            handshake = receive_worker_reply(
+                parent_conn,
+                worker,
+                LOCAL_LLM_READY_TIMEOUT,
+                f"Local LLM {model} did not finish loading within {LOCAL_LLM_READY_TIMEOUT:g} "
+                "seconds",
+            )
+        except (EOFError, ConnectionError) as exc:
+            raise RuntimeError(f"Failed to start local LLM worker for {model}") from exc
+        if handshake.get("status") != "ready":
+            error = handshake.get("error", "Unknown error")
+            raise RuntimeError(f"Failed to load local LLM {model}: {error}")
+        try:
+            parent_conn.send(
+                {"cmd": "generate", "prompt": "Warm up playlist curation", "max_tokens": 8}
+            )
+            result = receive_worker_reply(
+                parent_conn,
+                worker,
+                LOCAL_LLM_ANSWER_TIMEOUT,
+                f"Local LLM {model} did not answer within {LOCAL_LLM_ANSWER_TIMEOUT:g} seconds",
+            )
+        except (EOFError, ConnectionError) as exc:
+            raise RuntimeError(f"Local LLM worker for {model} stopped unexpectedly") from exc
+        if result.get("status") != "ok":
+            raise RuntimeError(result.get("error", "Unknown local generation error"))
+    finally:
+        stop_worker_process(parent_conn, worker)
 
 
 def _local_llm_worker(

@@ -713,6 +713,86 @@ class TestStartGuard:
         assert entry is not None and entry.status == "completed"
         assert entry.extra["tags_generated_count"] == 2
 
+    @pytest.mark.parametrize(
+        "reply",
+        [
+            {"tags": [""], "environments": [""], "instruments": [""]},
+            {"tags": [" ", "\t"], "environments": [None], "instruments": [{"a": 1}, True]},
+            {"tags": ["", ""], "environments": [], "instruments": ["  "]},
+        ],
+        ids=["empty-texts", "blanks-and-junk", "two-empty-items"],
+    )
+    def test_a_reply_of_blank_items_writes_nothing_and_blanks_nothing(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, reply: dict[str, Any]
+    ) -> None:
+        """A result that did not come through the parser is cleaned before it is saved."""
+        from plexmix.database.sqlite_manager import SQLiteManager
+
+        write_config(_isolated, OPENAI_AI_YAML)
+        monkeypatch.setenv("OPENAI_API_KEY", SENTINEL_OPENAI)
+        make_library(_isolated, {"Yundi": (2, 2)})
+        with SQLiteManager(str(_isolated / "plexmix.db")) as db:
+            ids = [t.id for t in db.get_all_tracks()]
+            for track_id in ids:
+                db.update_track_tags(track_id, environments="focus", instruments="piano")
+            stamps = {t.id: t.tags_generated_at for t in db.get_all_tracks()}
+        state = preview(tagging_state(), artist_filter="Yundi")
+
+        def factory(provider: Any) -> Any:
+            gen = MagicMock()
+            gen.generate_tags_batch.side_effect = lambda tracks, **kw: {
+                t["id"]: dict(reply) for t in tracks
+            }
+            return gen
+
+        with patch("plexmix.services.providers.build_ai_provider", return_value=object()), patch(
+            "plexmix.ai.tag_generator.TagGenerator", factory
+        ):
+            run(state.start_tagging(False))
+        entry = task_store.get("tagging")
+        assert entry is not None and entry.status == "completed"
+        assert entry.extra["tags_generated_count"] == 0
+        with SQLiteManager(str(_isolated / "plexmix.db")) as db:
+            for track in db.get_all_tracks():
+                assert (track.tags, track.environments, track.instruments) == (
+                    "chill,warm",
+                    "focus",
+                    "piano",
+                )
+                assert track.tags_generated_at == stamps[track.id]
+
+    def test_a_reply_without_instruments_leaves_the_instruments(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only a column whose list has content is written; the others stay as they are."""
+        from plexmix.database.sqlite_manager import SQLiteManager
+
+        write_config(_isolated, OPENAI_AI_YAML)
+        monkeypatch.setenv("OPENAI_API_KEY", SENTINEL_OPENAI)
+        make_library(_isolated, {"Yundi": (1, 1)})
+        with SQLiteManager(str(_isolated / "plexmix.db")) as db:
+            track_id = db.get_all_tracks()[0].id
+            db.update_track_tags(track_id, environments="focus", instruments="piano")
+        state = preview(tagging_state(), artist_filter="Yundi")
+
+        def factory(provider: Any) -> Any:
+            gen = MagicMock()
+            gen.generate_tags_batch.side_effect = lambda tracks, **kw: {
+                t["id"]: {"tags": ["bright", " "], "environments": [""], "instruments": [None]}
+                for t in tracks
+            }
+            return gen
+
+        with patch("plexmix.services.providers.build_ai_provider", return_value=object()), patch(
+            "plexmix.ai.tag_generator.TagGenerator", factory
+        ):
+            run(state.start_tagging(False))
+        entry = task_store.get("tagging")
+        assert entry is not None and entry.extra["tags_generated_count"] == 1
+        with SQLiteManager(str(_isolated / "plexmix.db")) as db:
+            track = db.get_all_tracks()[0]
+        assert (track.tags, track.environments, track.instruments) == ("bright", "focus", "piano")
+
 
 # ── Job outcome notices and the re-count ────────────────────────────────
 

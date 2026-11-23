@@ -5,6 +5,8 @@ Covers initialization, incremental sync, progress callbacks, cancellation,
 and regenerate sync using a real temp SQLite database and mocked PlexClient.
 """
 
+import json
+import re
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -490,17 +492,44 @@ class TestCancellation:
 # ---------------------------------------------------------------------------
 
 
-class TestRegenerateSync:
-    """Test regenerate_sync clears tags/embeddings before re-syncing."""
+class _TagEverything:
+    """An AI provider that answers every tagging request with the same new tags."""
 
-    def test_regenerate_clears_tags(self, db_manager):
-        """regenerate_sync NULLs out tags, environments, instruments before syncing."""
-        # Seed DB with tagged tracks
-        artist = Artist(plex_key="a1", name="Artist")
-        artist_id = db_manager.insert_artist(artist)
-        album = Album(plex_key="al1", title="Album", artist_id=artist_id)
-        album_id = db_manager.insert_album(album)
-        db_manager.insert_track(
+    provider_name = "Fake"
+    model = "fake-model"
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.requests = 0
+
+    def complete(self, prompt, temperature=None, max_tokens=4096, timeout=30):
+        self.requests += 1
+        if self.error is not None:
+            raise self.error
+        # The prompt lists the tracks as JSON objects with an "id" each.
+        listed = prompt.split("Assign tags to the following songs:")[1]
+        ids = [int(found) for found in re.findall(r'"id": (\d+)', listed)]
+        return json.dumps(
+            {
+                str(track_id): {
+                    "tags": ["new", "tags"],
+                    "environments": ["focus"],
+                    "instruments": ["piano"],
+                }
+                for track_id in ids
+            }
+        )
+
+
+class TestRegenerateSync:
+    """regenerate_sync replaces tags and embeddings in place and clears nothing first."""
+
+    def _seed_tagged_track(self, db_manager):
+        artist_id = db_manager.insert_artist(Artist(plex_key="a1", name="Artist"))
+        album_id = db_manager.insert_album(
+            Album(plex_key="al1", title="Album", artist_id=artist_id)
+        )
+        return db_manager.insert_track(
             Track(
                 plex_key="t1",
                 title="Tagged Track",
@@ -512,53 +541,66 @@ class TestRegenerateSync:
             )
         )
 
-        # Plex returns the same track (no content change)
-        plex_artist = _make_artist("a1", "Artist")
-        plex_album = _make_album("al1", "Album", artist_key="a1")
-        plex_track = _make_track(
-            "t1",
-            "Tagged Track",
-            artist_key="a1",
-            album_key="al1",
-            genre=None,
+    def _plex_with_the_same_track(self):
+        return _mock_plex_client(
+            artists=[_make_artist("a1", "Artist")],
+            albums=[_make_album("al1", "Album", artist_key="a1")],
+            tracks=[
+                _make_track("t1", "Tagged Track", artist_key="a1", album_key="al1", genre=None)
+            ],
         )
 
-        mock_plex = _mock_plex_client(
-            artists=[plex_artist],
-            albums=[plex_album],
-            tracks=[plex_track],
+    def test_regenerate_replaces_tags_in_place(self, db_manager):
+        """The track gets the provider's new tags. They were never cleared in between."""
+        self._seed_tagged_track(db_manager)
+        ai = _TagEverything()
+        engine = SyncEngine(
+            plex_client=self._plex_with_the_same_track(), db_manager=db_manager, ai_provider=ai
         )
 
-        engine = SyncEngine(plex_client=mock_plex, db_manager=db_manager)
         result = engine.regenerate_sync(generate_embeddings=False)
 
         assert isinstance(result, SyncHistory)
         assert result.status == "success"
-
-        # Tags should have been cleared by regenerate_sync
         track = db_manager.get_track_by_plex_key("t1")
         assert track is not None
-        assert track.tags is None
-        assert track.environments is None
-        assert track.instruments is None
+        assert (track.tags, track.environments, track.instruments) == (
+            "new,tags",
+            "focus",
+            "piano",
+        )
+        assert ai.requests == 1
+        assert engine.regenerate_result.tags_written == 1
+        assert engine.regenerate_result.tracks_kept == 0
 
-    def test_regenerate_clears_embeddings(self, db_manager):
-        """regenerate_sync deletes rows from the embeddings table."""
-        # Seed DB
-        artist = Artist(plex_key="a1", name="Artist")
-        artist_id = db_manager.insert_artist(artist)
-        album = Album(plex_key="al1", title="Album", artist_id=artist_id)
-        album_id = db_manager.insert_album(album)
-        track_id = db_manager.insert_track(
-            Track(
-                plex_key="t1",
-                title="Track",
-                artist_id=artist_id,
-                album_id=album_id,
-            )
+    def test_regenerate_keeps_tags_when_the_provider_fails(self, db_manager):
+        """regenerate_sync used to NULL the tags first. Now a failed run keeps them."""
+        self._seed_tagged_track(db_manager)
+        ai = _TagEverything(error=RuntimeError("401 Unauthorized"))
+        engine = SyncEngine(
+            plex_client=self._plex_with_the_same_track(), db_manager=db_manager, ai_provider=ai
         )
 
-        # Insert a fake embedding
+        result = engine.regenerate_sync(generate_embeddings=False)
+
+        track = db_manager.get_track_by_plex_key("t1")
+        assert track is not None
+        assert (track.tags, track.environments, track.instruments) == (
+            "rock,indie",
+            "party",
+            "guitar,drums",
+        )
+        # The run is not recorded as a success, and the result says why.
+        assert result.status == "partial"
+        assert "AI tagging stopped" in (result.error_message or "")
+        assert engine.regenerate_result.provider_failed is True
+        assert engine.regenerate_result.tags_written == 0
+        assert engine.regenerate_result.tracks_kept == 1
+
+    def test_regenerate_keeps_embeddings(self, db_manager):
+        """regenerate_sync used to delete every embedding row. Now it deletes none."""
+        track_id = self._seed_tagged_track(db_manager)
+
         from plexmix.database.models import Embedding
 
         db_manager.insert_embedding(
@@ -570,29 +612,39 @@ class TestRegenerateSync:
             )
         )
 
-        # Confirm embedding exists
-        assert db_manager.get_embedding_by_track_id(track_id) is not None
-
-        plex_artist = _make_artist("a1", "Artist")
-        plex_album = _make_album("al1", "Album", artist_key="a1")
-        plex_track = _make_track("t1", "Track", artist_key="a1", album_key="al1", genre=None)
-
-        mock_plex = _mock_plex_client(
-            artists=[plex_artist],
-            albums=[plex_album],
-            tracks=[plex_track],
+        engine = SyncEngine(
+            plex_client=self._plex_with_the_same_track(),
+            db_manager=db_manager,
+            ai_provider=_TagEverything(),
         )
-
-        engine = SyncEngine(plex_client=mock_plex, db_manager=db_manager)
         engine.regenerate_sync(generate_embeddings=False)
 
-        # Embeddings should be gone
-        assert db_manager.get_embedding_by_track_id(track_id) is None
+        # A run of tags alone leaves the embedding as it was.
+        kept = db_manager.get_embedding_by_track_id(track_id)
+        assert kept is not None
+        assert kept.vector == [0.1, 0.2, 0.3]
+
+    def test_regenerate_without_an_ai_provider_is_refused(self, db_manager):
+        """Without an AI provider the run is refused before Plex is asked."""
+        from plexmix.services.regenerate_service import RegenerateRefused
+
+        self._seed_tagged_track(db_manager)
+        mock_plex = self._plex_with_the_same_track()
+        engine = SyncEngine(plex_client=mock_plex, db_manager=db_manager)
+
+        with pytest.raises(RegenerateRefused, match="The AI provider is not ready"):
+            engine.regenerate_sync(generate_embeddings=False)
+
+        mock_plex.validate_token.assert_not_called()
+        track = db_manager.get_track_by_plex_key("t1")
+        assert track is not None and track.tags == "rock,indie"
 
     def test_regenerate_delegates_to_incremental_sync(self, db_manager):
-        """regenerate_sync calls incremental_sync after clearing data."""
+        """regenerate_sync runs incremental_sync for the library part of its work."""
         mock_plex = _mock_plex_client()
-        engine = SyncEngine(plex_client=mock_plex, db_manager=db_manager)
+        engine = SyncEngine(
+            plex_client=mock_plex, db_manager=db_manager, ai_provider=_TagEverything()
+        )
 
         with patch.object(engine, "incremental_sync", wraps=engine.incremental_sync) as wrapped:
             engine.regenerate_sync(generate_embeddings=False)

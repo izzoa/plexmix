@@ -16,18 +16,52 @@ from ..plex.sync import (
     REMOVAL_LISTED_AGAIN,
     REMOVAL_MORE_MISSING,
     REMOVAL_REMOVED,
+    RegeneratePlan,
+    RegenerateResult,
     RemovalResult,
     SyncEngine,
     SyncOutcome,
+    plan_regenerate,
     too_many_failed_reads,
 )
 from ..services.providers import (
     build_ai_provider as _build_ai_provider,
     build_embedding_generator as _build_embedding_generator,
 )
+from ..services.regenerate_service import (
+    SCOPE_EMBEDDINGS,
+    SCOPE_TAGS,
+    CheckedProviders,
+    RegenerateRefused,
+    RunProvider,
+    check_providers,
+    provider_secrets,
+    run_provider,
+)
 from ..services.sync_service import PlexConnectionError, connect_plex, build_vector_index
 from ..utils.redaction import mask_urls_in_text
-from .console_helpers import can_prompt, format_size
+from .console_helpers import (
+    NO_INDEX_SAVED_TEXT,
+    REBUILD_INDEX_COMMAND,
+    RegenerateReport,
+    can_prompt,
+    confirm_regenerate,
+    format_size,
+    index_was_saved,
+    print_index_left_as_it_is,
+    print_interrupted_before_any_change,
+    print_regenerate_counts,
+    print_regenerate_failed,
+    print_regenerate_interrupted,
+    print_regenerate_refused,
+    print_regenerate_saved,
+    print_unreadable_index,
+    regenerate_question,
+    regenerate_report,
+    require_terminal_or_yes,
+    say,
+    tracks_text,
+)
 
 sync_app = typer.Typer(
     name="sync",
@@ -43,26 +77,59 @@ _ALLOW_REMOVALS_HELP = (
     "the library. A backup is made first."
 )
 
+# The command that continues an unfinished regenerate sync: the same one.
+_REGENERATE_COMMAND = "plexmix sync regenerate"
 
-def _connect_and_build(settings: Settings, generate_embeddings: bool = True) -> Tuple:
+
+def _regenerate_command(embeddings: bool) -> str:
+    """The regenerate command as this run was started, for the tip that continues it.
+
+    A run of tags alone names ``--no-embeddings``: without it the same command would
+    also replace every embedding, which the user had left out.
+    """
+    return _REGENERATE_COMMAND if embeddings else f"{_REGENERATE_COMMAND} --no-embeddings"
+
+
+_YES_HELP = (
+    "Regenerate without asking for confirmation. This does not allow a large removal of "
+    "tracks: that is --allow-removals."
+)
+
+
+def _connect_and_build(
+    settings: Settings,
+    generate_embeddings: bool = True,
+    checked: Optional[CheckedProviders] = None,
+) -> Tuple:
     """Returns (plex_client, ai_provider, embedding_generator, vector_index).
+
+    ``checked`` are the providers of ``sync regenerate``, which ``check_providers``
+    has built and asked already. That command never goes on without its AI provider,
+    so nothing is built here for it. Every other sync command builds its providers
+    here, and goes on without AI tags when the AI provider cannot be built.
 
     Raises :class:`PlexConnectionError` if Plex connection fails.
     """
     plex_client = connect_plex(settings)
 
-    ai_provider = _build_ai_provider(settings, silent=True)
-    if not ai_provider and settings.ai.default_provider:
-        console.print(
-            f"[yellow]AI provider '{settings.ai.default_provider}' unavailable. Continuing without AI assistance.[/yellow]"
-        )
-
     embedding_generator = None
+    if checked is not None:
+        ai_provider = checked.ai_provider
+        if generate_embeddings:
+            embedding_generator = checked.embedding_generator
+    else:
+        ai_provider = _build_ai_provider(settings, silent=True)
+        if not ai_provider and settings.ai.default_provider:
+            console.print(
+                f"[yellow]AI provider '{settings.ai.default_provider}' unavailable. Continuing without AI assistance.[/yellow]"
+            )
+        if generate_embeddings:
+            embedding_generator = _build_embedding_generator(settings)
+
     vector_index = None
-    if generate_embeddings:
-        embedding_generator = _build_embedding_generator(settings)
-        if embedding_generator:
-            vector_index = build_vector_index(settings, embedding_generator)
+    if embedding_generator:
+        vector_index = build_vector_index(settings, embedding_generator)
+        print_unreadable_index(console, vector_index)
 
     return plex_client, ai_provider, embedding_generator, vector_index
 
@@ -97,12 +164,12 @@ def _say(text: str, style: Optional[str] = None, soft_wrap: bool = False) -> Non
     No console markup and no emoji code is read from the text, so a folder name or an
     error text with square brackets or colons is shown unchanged.
     """
-    console.print(text, style=style, markup=False, emoji=False, soft_wrap=soft_wrap)
+    say(console, text, style=style, soft_wrap=soft_wrap)
 
 
 def _tracks(count: int) -> str:
     """``1 track`` or ``5,443 tracks``."""
-    return f"{count:,} track{'' if count == 1 else 's'}"
+    return tracks_text(count)
 
 
 def _print_sync_stopped(error: Exception) -> None:
@@ -184,17 +251,50 @@ def _print_interrupted_removal(sync_engine: Any) -> None:
     _print_backup(state.backup_folder, state.backup_size_bytes)
 
 
-def _print_cleared_note(sync_engine: Any) -> None:
-    """Say that ``sync regenerate`` had already cleared the tags and embeddings.
+def _regenerate_plan(
+    settings: Settings, tags_run: RunProvider, embeddings_run: Optional[RunProvider]
+) -> Optional[RegeneratePlan]:
+    """What a regenerate sync would do with the library as it is now. Nothing is written.
 
-    ``regenerate_sync`` still clears them before it reads Plex, so a run that stops
-    after that did change something. Remove this when the engine stops clearing first.
+    None when there is no database yet: looking at the library must not create one.
     """
-    if getattr(sync_engine, "cleared_before_sync", False) is True:
-        console.print(
-            "[yellow]The existing tags and embeddings had already been cleared. "
-            "Run 'plexmix sync' to rebuild them.[/yellow]"
-        )
+    db_path = settings.database.get_db_path()
+    if not db_path.exists():
+        return None
+    with SQLiteManager(str(db_path)) as db:
+        return plan_regenerate(db, tags_run, embeddings_run)
+
+
+def _print_regenerated_so_far(sync_engine: Any, command: str = _REGENERATE_COMMAND) -> None:
+    """After a regenerate sync that an error ended: what it had regenerated, and the tip.
+
+    Nothing is printed for a run that never got a result of its own. When every pass
+    had reached its end there is nothing left to continue, so no tip to continue is
+    printed: the same command would then start over with every track. A run of tags
+    and embeddings is then told to rebuild the search index, which may be behind
+    (``print_regenerate_saved``). ``command`` is the command that continues the run.
+    """
+    result = getattr(sync_engine, "regenerate_result", None)
+    if not (isinstance(result, RegenerateResult) and result.requested):
+        return
+    report = regenerate_report(result)
+    if print_regenerate_saved(console, result, report):
+        return
+    if result.finished:
+        print_regenerate_counts(console, report)
+    else:
+        print_regenerate_interrupted(console, report, command)
+
+
+def _print_index_opened_for_removal(sync_engine: Any) -> None:
+    """Say so when the saved search index that a removal opened could not be loaded.
+
+    A sync without embeddings has no index object. The engine then opens the saved
+    index itself to drop the removed tracks from it, after the backup of a large
+    removal. Files that cannot be loaded are moved aside by that, never deleted, and
+    the user is told here as after every other load.
+    """
+    print_unreadable_index(console, getattr(sync_engine, "opened_saved_index", None))
 
 
 def _print_backup(folder: Optional[Path], size_bytes: int) -> None:
@@ -269,6 +369,7 @@ def _settle_held_removal(sync_engine: SyncEngine, outcome: SyncOutcome) -> None:
         console.print("[yellow]Run 'plexmix sync' again to compare the library with Plex.[/yellow]")
         raise typer.Exit(130)
 
+    _print_index_opened_for_removal(sync_engine)
     if result.status == REMOVAL_REMOVED:
         _print_backup(result.backup_folder, result.backup_size_bytes)
         _say(result.message or f"Removed {_tracks(result.removed)}.", style="green")
@@ -286,20 +387,56 @@ def _settle_held_removal(sync_engine: SyncEngine, outcome: SyncOutcome) -> None:
     raise typer.Exit(1)
 
 
-def _report_sync(sync_engine: SyncEngine, sync_result: SyncHistory, name: str) -> bool:
+def _report_sync(
+    sync_engine: SyncEngine,
+    sync_result: SyncHistory,
+    name: str,
+    regenerated: Optional[RegenerateReport] = None,
+    regenerate_command: str = _REGENERATE_COMMAND,
+) -> bool:
     """Print what a finished sync did, from ``sync_engine.outcome``.
 
     Returns True only when the green success line was printed: every listed item was
-    read and no removal was held or skipped. Returns False when the run ended well
-    but kept something back: a few items could not be read, or a held removal was
-    answered. Ends the command with status 1 when removals were skipped (too many
-    failed reads, an empty listing, a failed backup, an unknown listing), when a held
-    removal could not be asked about, or when a confirmed removal could not be applied.
+    read, no removal was held or skipped, and the search index was updated. Returns
+    False when the run ended well but kept something back: a few items could not be
+    read, a held removal was answered, or the search index was left as it is. Ends
+    the command with status 1 when removals were skipped (too many failed reads, an
+    empty listing, a failed backup, an unknown listing), when a held removal could
+    not be asked about, or when a confirmed removal could not be applied.
+
+    The search index is left as it is when tracks hold an embedding that was made
+    with other embedding settings (``plexmix.database.index_rebuild``): the engine
+    then built and saved nothing. The sync itself did its work, so the command ends
+    with status 0, with "finished with warnings" and the sentence that names the
+    count and the command that replaces those embeddings.
+
+    ``regenerated`` is the report of a regenerate sync, and its lines follow the
+    counts of the library sync. A regenerate run that failed (an error stopped a
+    pass part-way, or nothing was regenerated) gets no success line, and the command
+    ends with status 1 once a held removal has been asked about. A run that left
+    some tracks with their previous data is not a clean run either, and neither is
+    one that could not save its search index (``index_was_saved``) or whose last
+    rebuild of the index was refused (``RegenerateReport.index_left_out``).
+    ``regenerate_command`` is the command that continues a regenerate sync.
     """
     outcome = sync_engine.outcome
-    clean = not outcome.is_partial
+    failed = regenerated is not None and regenerated.failed
+    index_saved = index_was_saved(getattr(sync_engine, "vector_index", None))
+    # A plain sync records a refused rebuild on its outcome, a regenerate run on its
+    # result. Never both, so the sentence is printed once.
+    index_left_out = outcome.index_left_out
+    if regenerated is not None and not index_left_out:
+        index_left_out = regenerated.index_left_out
+    clean = (
+        not outcome.is_partial
+        and (regenerated is None or regenerated.clean)
+        and index_saved
+        and not index_left_out
+    )
 
-    if clean:
+    if failed:
+        console.print(f"\n[red]{name} did not finish its work.[/red]")
+    elif clean:
         console.print(f"\n[green]{name} completed successfully![/green]")
     else:
         console.print(f"\n[yellow]{name} finished with warnings.[/yellow]")
@@ -307,23 +444,34 @@ def _report_sync(sync_engine: SyncEngine, sync_result: SyncHistory, name: str) -
     console.print(f"  Tracks updated: {sync_result.tracks_updated}")
     console.print(f"  Tracks removed: {sync_result.tracks_removed}")
     _print_backup(outcome.backup_folder, outcome.backup_size_bytes)
+    _print_index_opened_for_removal(sync_engine)
+    if regenerated is not None and failed:
+        print_regenerate_failed(console, regenerated, regenerate_command)
+    elif regenerated is not None:
+        print_regenerate_counts(console, regenerated)
+    if not index_saved:
+        _say(
+            f"{NO_INDEX_SAVED_TEXT} Move it away, then run '{REBUILD_INDEX_COMMAND}'.",
+            style="yellow",
+        )
+    print_index_left_as_it_is(console, index_left_out)
     if clean:
         return True
 
     for line in _unread_lines(outcome):
         _say(line, style="yellow")
 
-    if not outcome.reason:
-        # Only unread items: they were kept, and nothing else was held back.
-        return False
-
     if outcome.reason == REASON_THRESHOLD and outcome.held > 0:
         _settle_held_removal(sync_engine, outcome)
-        return False
+    elif outcome.reason:
+        # Removals were skipped. The engine's message says why, and that nothing was removed.
+        _say(outcome.message or "Nothing was removed.", style="red")
+        raise typer.Exit(1)
+    # Without a reason only unread items were kept, and nothing else was held back.
 
-    # Removals were skipped. The engine's message says why, and that nothing was removed.
-    _say(outcome.message or "Nothing was removed.", style="red")
-    raise typer.Exit(1)
+    if failed:
+        raise typer.Exit(1)
+    return False
 
 
 @sync_app.callback()
@@ -411,6 +559,7 @@ def run_incremental_sync(
             ai_provider,
             musicbrainz_settings=mb_settings,
             audio_settings=audio_settings,
+            known_secrets=provider_secrets(settings),
             **_saved_index(settings),
         )
 
@@ -455,26 +604,46 @@ def sync_regenerate(
     ctx: typer.Context,
     embeddings: bool = typer.Option(True, help="Generate embeddings during sync"),
     allow_removals: bool = typer.Option(False, "--allow-removals", help=_ALLOW_REMOVALS_HELP),
+    yes: bool = typer.Option(False, "--yes", help=_YES_HELP),
 ) -> None:
-    console.print(
-        "[bold red]⚠️  WARNING: This will delete ALL existing tags and embeddings![/bold red]"
-    )
-    console.print("This operation will:")
-    console.print("  - Clear all AI-generated tags")
-    console.print("  - Delete all embeddings")
-    console.print("  - Regenerate everything from scratch")
+    """Sync the library, then replace the AI tags and embeddings of every track.
 
-    if not typer.confirm("\nAre you sure you want to continue?", default=False):
-        console.print("[yellow]Operation cancelled.[/yellow]")
+    Nothing is cleared first: each track keeps what it has until its replacement is
+    saved. Run the command again to continue a run that was interrupted.
+    """
+    # The order is fixed: the terminal check, the question, the provider check, the
+    # run. Nothing is loaded before the terminal check, and nothing is written and no
+    # provider is asked before the answer.
+    command = _regenerate_command(bool(embeddings))
+    require_terminal_or_yes(console, yes, command)
+
+    settings = Settings.load_from_file()
+    # The provider and model of each pass, from the settings. The question, the run
+    # marker and the engine all take them from here, so that they compare the same.
+    tags_run = run_provider(settings, SCOPE_TAGS)
+    embeddings_run = run_provider(settings, SCOPE_EMBEDDINGS) if embeddings else None
+    plan = _regenerate_plan(settings, tags_run, embeddings_run)
+    if not confirm_regenerate(console, regenerate_question(plan, tags_run, embeddings_run), yes):
         raise typer.Exit(0)
+
+    # One small request to each provider the run needs, before anything is changed.
+    # A provider that is not ready ends the command: it never goes on without AI tags.
+    asked = "the AI provider and the embedding provider" if embeddings else "the AI provider"
+    console.print(f"\nChecking {asked}...")
+    try:
+        checked = check_providers(settings, need_ai=True, need_embeddings=bool(embeddings))
+    except RegenerateRefused as e:
+        print_regenerate_refused(console, e)
+        raise typer.Exit(1)
+    except KeyboardInterrupt:
+        print_interrupted_before_any_change(console)
+        raise typer.Exit(130)
 
     console.print("\n[bold]Starting regenerate sync...[/bold]")
 
-    settings = Settings.load_from_file()
-
     try:
         plex_client, ai_provider, embedding_generator, vector_index = _connect_and_build(
-            settings, generate_embeddings=embeddings
+            settings, generate_embeddings=embeddings, checked=checked
         )
     except PlexConnectionError as e:
         console.print(f"[red]{e}[/red]")
@@ -489,41 +658,64 @@ def sync_regenerate(
             embedding_generator,
             vector_index,
             ai_provider,
+            # The keys from the settings, so that no error text of a provider can
+            # carry one into the output, the log or the history row.
+            known_secrets=provider_secrets(settings),
             **_saved_index(settings),
         )
 
         try:
             sync_result = sync_engine.regenerate_sync(
                 generate_embeddings=embeddings,
-                # Only a real True allows it: a placeholder object does not.
+                # Only a real True allows it: a placeholder object does not, and
+                # ``--yes`` does not either.
                 allow_large_removals=(allow_removals or _allowed_by_group(ctx)) is True,
+                tags_provider=tags_run,
+                embeddings_provider=embeddings_run,
             )
+        except RegenerateRefused as e:
+            # The engine's own guard: it was given no provider. Nothing was read or written.
+            print_regenerate_refused(console, e)
+            raise typer.Exit(1)
         except PlexFetchError as e:
+            # Plex stopped answering before anything was written, tags included.
             _print_sync_stopped(e)
-            # The sentence above is about the library sync: say what was cleared.
-            _print_cleared_note(sync_engine)
             raise typer.Exit(1)
         except KeyboardInterrupt:
             console.print("\n[yellow]Sync interrupted by user.[/yellow]")
-            console.print("[green]Progress has been saved to database.[/green]")
             _print_changes_so_far(sync_engine)
-            console.print("[yellow]Tip: Run 'plexmix sync regenerate' again to continue.[/yellow]")
+            # The tags and embeddings saved so far stay, and every other track keeps
+            # what it had. The same command continues: it clears nothing. When both
+            # passes had reached their end (the interrupt came while the search index
+            # was being rebuilt), nothing is left to continue: the rows are saved and
+            # only the index is behind, and the tip says so.
+            result = sync_engine.regenerate_result
+            report = regenerate_report(result)
+            if not print_regenerate_saved(console, result, report):
+                print_regenerate_interrupted(console, report, command)
             raise typer.Exit(130)
         except Exception as e:
             if _stopped_before_any_change(sync_engine, e):
-                # The engine's connection check failed, before anything was cleared.
+                # The engine's connection check failed, before anything was changed.
                 _print_sync_stopped(e)
-                _print_cleared_note(sync_engine)
                 raise typer.Exit(1)
             if isinstance(e, ConnectionError):
                 _print_later_stage_stopped(e)
             _print_changes_so_far(sync_engine)
-            _print_cleared_note(sync_engine)
+            _print_regenerated_so_far(sync_engine, command)
             if isinstance(e, ConnectionError):
                 raise typer.Exit(1)
             raise
 
-        _report_sync(sync_engine, sync_result, "Regenerate sync")
+        # An error of a provider that stopped a pass is not raised: the engine ends
+        # the run and its result says so. The report decides the exit status.
+        _report_sync(
+            sync_engine,
+            sync_result,
+            "Regenerate sync",
+            regenerate_report(sync_engine.regenerate_result),
+            regenerate_command=command,
+        )
 
 
 @sync_app.command("full")

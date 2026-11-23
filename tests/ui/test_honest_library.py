@@ -1,6 +1,7 @@
 """webui-honest-status-and-first-run, group 9.2/9.3: Library selection honesty, bulk
 tags (add by default, replace explicit), loading versus empty, sync failures and
-the sync AI-tagging note (spec ``webui-library-selection``).
+the sync AI-tagging note (spec ``webui-library-selection``). Also the "Regenerate" sync:
+its confirmation, the provider check and the in-place run (spec ``regeneration-safety``).
 
 Reflex is mocked (tests/ui/conftest.py). Every test runs on a scratch
 ``PLEXMIX_DATA_DIR`` with its own config.yaml and a real SQLite library; the
@@ -11,12 +12,14 @@ and task stores are cleared around each test. Nothing touches the network.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import pickle
 import re
 import sqlite3
 import threading
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Iterable, Iterator, NamedTuple, Optional
@@ -1263,40 +1266,6 @@ class TestSyncOutcome:
         assert "dummy-ui-password-0000" not in entry.message
         assert "dummy-ui-password-0000" not in caplog.text
 
-    def test_regenerate_sync_that_plex_stops_says_what_was_cleared(self, data_dir: Path) -> None:
-        """A stopped "Regenerate" sync must not let "nothing was changed" stand alone.
-
-        That mode clears the tags and embeddings before it reads Plex. The sentence
-        and the database have to agree: when the engine stops clearing first, the
-        added sentence has to go.
-        """
-        from plexmix.plex.client import PlexReadInterrupted
-        from plexmix.ui.states import library_state as ls
-
-        write_config(data_dir, PLEX_CONFIG)
-        ids = make_library(data_dir, 6, tags={0: ("chill", None, None)}, embedded=6)
-        state = library()
-        state.sync_mode = "regenerate"
-        plex = FakePlex(range(6), read_error=PlexReadInterrupted("tracks", 3, 6))
-        entry = run_sync(state, plex)
-
-        sentence = "Plex stopped answering after 3 of 6 tracks were read, so nothing was changed."
-        assert entry.status == "failed" and entry.message.startswith(sentence)
-        cleared = stored_tags(data_dir, ids[0])["tags"] is None
-        embeddings_left = query(data_dir, "SELECT COUNT(*) FROM embeddings")[0][0]
-        assert cleared == (embeddings_left == 0)
-        assert (ls.REGENERATE_CLEARED_MESSAGE in entry.message) == cleared
-        assert "plexmix " not in entry.message  # no terminal command in the UI
-        # The toast and the inline failure carry the same text.
-        assert poll(state) == ("error", f"Sync failed: {entry.message}")
-        assert state.sync_error_body == entry.message
-        # And so does the history row.
-        status, text = query(
-            data_dir, "SELECT status, error_message FROM sync_history ORDER BY id DESC LIMIT 1"
-        )[0]
-        assert status == "failed" and text.startswith(sentence)
-        assert ("had already been cleared" in text) == cleared
-
     def test_notice_and_removal_outlive_the_task_entry(self, data_dir: Path) -> None:
         """Spec "Notice survives a reload": with no new sync and no restart it stays.
 
@@ -1410,6 +1379,25 @@ class TestSyncOutcome:
             ls.sync_outcome_extra(SyncOutcome(reason="threshold", held=3))[ls.SYNC_PARTIAL_KEY]
             is True
         )
+
+    def test_a_sync_that_left_the_search_index_as_it_is_is_a_warning(self) -> None:
+        """The engine records tracks in the way of the index on its outcome (a plain sync
+        that makes embeddings); the web UI's own sync makes none, so this is the guard."""
+        from plexmix.plex.sync import SyncOutcome
+        from plexmix.ui.states import library_state as ls
+
+        outcome = SyncOutcome(index_left_out=4)
+        extra = ls.sync_outcome_extra(outcome)
+
+        assert extra[ls.INDEX_LEFT_OUT_KEY] == 4 and extra[ls.SYNC_PARTIAL_KEY] is True
+        assert ls.sync_result_tone(extra) == "warning"
+        message = ls.sync_result_message(outcome)
+        assert message.startswith("Sync completed. The search index was not updated. 4 tracks hold")
+        assert "Regenerate sync on the Library page" in message
+        # A clean outcome is a success, and says nothing about the index.
+        clean = ls.sync_outcome_extra(SyncOutcome())
+        assert clean[ls.INDEX_LEFT_OUT_KEY] == 0 and ls.sync_result_tone(clean) == "success"
+        assert ls.sync_result_message(SyncOutcome()) == ""
 
     @pytest.mark.parametrize(
         "outcome_kwargs,tagging_skipped,expected",
@@ -2199,7 +2187,2008 @@ class TestConfirmRemoval:
         assert track_count(data_dir) == 50
 
 
+# ── "Regenerate" sync: confirmation, provider check and in-place run ─────
+#
+# Spec ``regeneration-safety`` ("Web UI regenerate actions never clear first") and
+# ``webui-library-selection`` ("Regenerate sync confirmation states its scope").
+# The real SyncEngine runs against the fake Plex client, a fake AI provider and a
+# fake embedding generator: no request is made and no model is loaded.
+
+DUMMY_KEY = "dummy-api-key-0000"
+OPENAI_AI = "ai:\n  default_provider: openai\n  model: gpt-5-mini\n"
+OPENAI_EMBEDDINGS = "embedding:\n  default_provider: openai\n  model: text-embedding-3-small\n"
+LOCAL_EMBEDDINGS = "embedding:\n  default_provider: local\n  model: all-MiniLM-L6-v2\n"
+REGENERATE_CONFIG = PLEX_CONFIG + OPENAI_AI + OPENAI_EMBEDDINGS
+OLD_VECTOR = [0.1, 0.2]
+NEW_VECTOR = [0.9, 0.8]
+LOCAL_ONLY = "Runs on this machine. Nothing is sent to a cloud provider."
+TAGS_SENT_TO = "Track titles, artists, albums and genres are sent to {}."
+EMBEDDING_TEXT_SENT_TO = "Track titles, artists, albums, genres and tags are sent to {}."
+
+
+def _ids_in_prompt(prompt: str) -> list[int]:
+    """The ids of the tracks a tagging request lists."""
+    listed = prompt.split("Assign tags to the following songs:")[1]
+    listed = listed.split("Return a JSON object")[0]
+    return [int(entry["id"]) for entry in json.loads(listed)]
+
+
+class FakeTagger:
+    """Stands in for the AI provider: new tags for every track a request lists.
+
+    Tracks in ``omit`` are left out of the reply. Request number ``fail_on`` (1 is the
+    first) raises ``error``. ``before`` is called with the number of each request
+    before it is answered.
+    """
+
+    provider_name = "OpenAI"
+    model = "gpt-5-mini"
+
+    def __init__(
+        self,
+        *,
+        omit: Iterable[int] = (),
+        fail_on: int = 0,
+        error: Optional[BaseException] = None,
+        before: Any = None,
+    ) -> None:
+        self.omit = set(omit)
+        self.fail_on = fail_on
+        self.error = error or RuntimeError("401 Unauthorized")
+        self.before = before
+        self.requests: list[list[int]] = []
+
+    def complete(
+        self,
+        prompt: str,
+        temperature: Optional[float] = None,
+        max_tokens: int = 4096,
+        timeout: int = 30,
+    ) -> str:
+        ids = _ids_in_prompt(prompt)
+        self.requests.append(ids)
+        if self.before is not None:
+            self.before(len(self.requests))
+        if self.fail_on == len(self.requests):
+            raise self.error
+        reply = {
+            str(track_id): {
+                "tags": [f"new-{track_id}"],
+                "environments": ["focus"],
+                "instruments": ["piano"],
+            }
+            for track_id in ids
+            if track_id not in self.omit
+        }
+        return json.dumps(reply)
+
+    @property
+    def sent(self) -> list[int]:
+        """Every track that was sent to the provider, by id."""
+        return sorted({track_id for request in self.requests for track_id in request})
+
+
+class FakeEmbedder:
+    """Stands in for the embedding generator of the "openai" provider (2 dimensions).
+
+    Request number ``fail_on`` (1 is the first) raises ``error``. ``before`` is called
+    with the number of each request before it is answered.
+    """
+
+    provider_name = "openai"
+
+    def __init__(
+        self, *, fail_on: int = 0, error: Optional[BaseException] = None, before: Any = None
+    ) -> None:
+        self.fail_on = fail_on
+        self.error = error or ConnectionError("Connection refused")
+        self.before = before
+        self.requests: list[list[str]] = []
+
+    def generate_batch_embeddings(
+        self, texts: list[str], batch_size: int = 100
+    ) -> list[list[float]]:
+        self.requests.append(list(texts))
+        if self.before is not None:
+            self.before(len(self.requests))
+        if self.fail_on == len(self.requests):
+            raise self.error
+        return [list(NEW_VECTOR) for _ in texts]
+
+    def generate_embedding(self, text: str) -> list[float]:
+        return list(NEW_VECTOR)
+
+    def get_dimension(self) -> int:
+        return 2
+
+    @property
+    def embedded(self) -> int:
+        """How many texts the generator was sent."""
+        return sum(len(request) for request in self.requests)
+
+
+@pytest.fixture
+def small_batches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two tracks per request, so that six tracks make three batches of each kind."""
+    from plexmix.plex import sync as engine
+
+    monkeypatch.setattr(engine, "_TAG_BATCH_SIZE", 2)
+    monkeypatch.setattr(engine, "_EMBEDDING_BATCH_SIZE", 2)
+
+
+def make_old_library(data: Path, tracks: int) -> list[int]:
+    """A library whose tags and embeddings were written long ago, with its search index.
+
+    Track ``n`` has the tags ``old-<n>`` and the "openai" embedding ``OLD_VECTOR``.
+    Nothing carries a time of today, so a regenerate run never waits for the clock
+    (``regenerate_service._new_start``).
+    """
+    from plexmix.database.models import Album, Artist, Embedding, Track
+    from plexmix.database.sqlite_manager import SQLiteManager
+    from plexmix.database.vector_index import VectorIndex
+
+    with SQLiteManager(str(data / "plexmix.db")) as db:
+        artist = db.insert_artist(Artist(plex_key="a1", name="Artist"))
+        album = db.insert_album(Album(plex_key="al1", title="Album", artist_id=artist))
+        ids = [
+            db.insert_track(
+                Track(
+                    plex_key=f"t{i}",
+                    title=f"Song {i:03d}",
+                    artist_id=artist,
+                    album_id=album,
+                    tags=f"old-{i}",
+                    environments="old-room",
+                    instruments="old-horn",
+                )
+            )
+            for i in range(tracks)
+        ]
+        for track_id in ids:
+            db.insert_embedding(
+                Embedding(
+                    track_id=track_id,
+                    embedding_model="openai",
+                    embedding_dim=2,
+                    vector=list(OLD_VECTOR),
+                    updated_at=datetime(2020, 1, 1, 9, 0, 0),
+                )
+            )
+    index = VectorIndex(dimension=2, index_path=str(data / "embeddings.index"))
+    index.build_index([list(OLD_VECTOR) for _ in ids], ids)
+    index.save_index(str(data / "embeddings.index"))
+    return ids
+
+
+def tags_of(data: Path) -> dict[int, str]:
+    return dict(query(data, "SELECT id, tags FROM tracks ORDER BY id"))
+
+
+def vectors_of(data: Path) -> dict[int, list[float]]:
+    """The "openai" embedding of every track that has one, rounded for comparison."""
+    from plexmix.database.sqlite_manager import SQLiteManager
+
+    with SQLiteManager(str(data / "plexmix.db")) as db:
+        rows = db.get_all_embeddings("openai")
+    return {track_id: [round(value, 4) for value in vector] for track_id, vector in rows}
+
+
+def index_ids(data: Path) -> list[int]:
+    """The tracks the saved search index holds."""
+    from plexmix.database.vector_index import VectorIndex
+
+    return sorted(VectorIndex(dimension=2, index_path=str(data / "embeddings.index")).track_ids)
+
+
+def stored_state(data: Path) -> dict[str, Any]:
+    """Everything a regenerate run may replace: tag columns, embedding rows, index files."""
+    return {
+        "tags": query(
+            data,
+            "SELECT id, tags, environments, instruments, tags_generated_at FROM tracks ORDER BY id",
+        ),
+        "embeddings": query(
+            data,
+            "SELECT track_id, embedding_model, vector, updated_at FROM embeddings "
+            "ORDER BY track_id, embedding_model",
+        ),
+        "files": {
+            item.name: item.read_bytes()
+            for item in sorted(data.iterdir())
+            if item.name.startswith("embeddings.")
+        },
+    }
+
+
+def marker_file(data: Path) -> Path:
+    from plexmix.services.regenerate_service import marker_path
+
+    return marker_path(data / "plexmix.db")
+
+
+def run_regenerate(state: Any, plex: Any, tagger: Any, embedder: Any) -> Any:
+    """Run ``start_sync`` in "regenerate" mode with providers that pass the check."""
+    from plexmix.services.regenerate_service import CheckedProviders
+
+    def passed(settings: Any, need_ai: bool, need_embeddings: bool) -> Any:
+        assert need_ai and need_embeddings
+        return CheckedProviders(tagger, embedder)
+
+    state.sync_mode = "regenerate"
+    with patch("plexmix.services.sync_service.connect_plex", lambda settings: plex), patch(
+        "plexmix.services.regenerate_service.check_providers", passed
+    ):
+        run(state.start_sync())
+    entry = task_store.get("sync")
+    assert entry is not None
+    return entry
+
+
+def run_refused(state: Any, plex: Any) -> Any:
+    """Run ``start_sync`` in "regenerate" mode through the real provider check."""
+    state.sync_mode = "regenerate"
+    with patch("plexmix.services.sync_service.connect_plex", lambda settings: plex):
+        run(state.start_sync())
+    entry = task_store.get("sync")
+    assert entry is not None
+    return entry
+
+
+def run_spying(gen: Any) -> list[Any]:
+    """Drain a handler; return the functions it handed to ``run_in_executor``."""
+    seen: list[Any] = []
+
+    async def go() -> None:
+        loop = asyncio.get_running_loop()
+        original = loop.run_in_executor
+
+        def spy(executor: Any, func: Any, *args: Any) -> Any:
+            seen.append(func)
+            return original(executor, func, *args)
+
+        loop.run_in_executor = spy  # type: ignore[method-assign]
+        await _drain(gen)
+
+    asyncio.run(go())
+    return seen
+
+
+def readiness_of(component: str) -> tuple[Any, Any]:
+    """``(level, cause)`` that readiness holds for ``component`` (``(None, None)`` for none)."""
+    record = readiness_store.get(component)
+    return (record.level, record.cause) if record is not None else (None, None)
+
+
+def scope_for(data: Path, config: str, count: int) -> dict[str, str]:
+    from plexmix.config.settings import Settings
+    from plexmix.ui.states.library_state import regenerate_scope
+
+    write_config(data, config)
+    return regenerate_scope(Settings.load_from_file(), count)
+
+
+class TestRegenerateConfirm:
+    """The confirmation states the count, both providers and where track details go."""
+
+    def test_scope_names_count_providers_and_destination(self, data_dir: Path) -> None:
+        """Spec "Cloud AI provider and local embeddings"."""
+        from plexmix.ui.states import library_state as ls
+
+        scope = scope_for(data_dir, OPENAI_AI + LOCAL_EMBEDDINGS, 5943)
+
+        assert set(scope) == set(ls.REGENERATE_SCOPE_KEYS)
+        assert scope["tags_line"] == "5,943 tracks will be tagged."
+        assert scope["embeddings_line"] == "The embeddings for 5,943 tracks will be replaced."
+        assert (scope["ai_label"], scope["ai_model"]) == ("OpenAI", "gpt-5-mini")
+        assert (scope["embedding_label"], scope["embedding_model"]) == ("Local", "all-MiniLM-L6-v2")
+        assert scope["privacy_line"] == TAGS_SENT_TO.format("OpenAI")
+        assert scope["count"] == "5,943" and scope["checking_line"] == ""
+        assert ls.regenerate_scope_stated(scope)
+
+    @pytest.mark.parametrize(
+        "config,expected",
+        [
+            # Spec "Everything local".
+            ("ai:\n  default_provider: local\n" + LOCAL_EMBEDDINGS, LOCAL_ONLY),
+            # One provider for both: named once, with everything it receives.
+            (OPENAI_AI + OPENAI_EMBEDDINGS, EMBEDDING_TEXT_SENT_TO.format("OpenAI")),
+            (
+                "ai:\n  default_provider: claude\nembedding:\n  default_provider: cohere\n",
+                f"{TAGS_SENT_TO.format('Claude')} {EMBEDDING_TEXT_SENT_TO.format('Cohere')}",
+            ),
+            (
+                "ai:\n  default_provider: local\n" + OPENAI_EMBEDDINGS,
+                EMBEDDING_TEXT_SENT_TO.format("OpenAI"),
+            ),
+            # A Custom endpoint on another machine is named by its host, never its key.
+            (
+                "ai:\n  default_provider: custom\n  custom_model: m\n"
+                f"  custom_endpoint: http://192.168.1.20:8080/v1\n  custom_api_key: {DUMMY_KEY}\n"
+                + LOCAL_EMBEDDINGS,
+                TAGS_SENT_TO.format("192.168.1.20"),
+            ),
+            (
+                "ai:\n  default_provider: custom\n  custom_model: m\n"
+                "  custom_endpoint: http://127.0.0.1:8080/v1\n" + LOCAL_EMBEDDINGS,
+                LOCAL_ONLY,
+            ),
+        ],
+    )
+    def test_privacy_line_names_every_destination_once(
+        self, data_dir: Path, config: str, expected: str
+    ) -> None:
+        scope = scope_for(data_dir, config, 12)
+        assert scope["privacy_line"] == expected
+        assert DUMMY_KEY not in " ".join(scope.values())
+
+    def test_empty_library_does_not_claim_zero_tracks(self, data_dir: Path) -> None:
+        from plexmix.ui.states import library_state as ls
+
+        scope = scope_for(data_dir, OPENAI_AI + LOCAL_EMBEDDINGS, 0)
+        assert scope["tags_line"] == ls.REGENERATE_EMPTY_TAGS_LINE
+        assert scope["embeddings_line"] == ls.REGENERATE_EMPTY_EMBEDDINGS_LINE
+        assert "0 tracks" not in " ".join(scope.values())
+        assert ls.regenerate_scope_stated(scope)
+
+    def test_fixed_sentence_says_nothing_is_cleared_first(self) -> None:
+        from plexmix.ui.states import library_state as ls
+
+        assert ls.REGENERATE_IN_PLACE_LINE == (
+            "Tags and embeddings are replaced as new ones arrive, and nothing is cleared first."
+        )
+
+    def test_dialog_opens_at_once_and_then_states_its_scope(self, data_dir: Path) -> None:
+        from plexmix.ui.states import library_state as ls
+
+        write_config(data_dir, PLEX_CONFIG + OPENAI_AI + LOCAL_EMBEDDINGS)
+        make_library(data_dir, 5)
+        state = library()
+        state.sync_mode = "regenerate"
+
+        assert state.start_sync_or_confirm() is None
+        assert state.show_regenerate_confirm is True
+        assert state.regenerate_scope["checking_line"] == ls.REGENERATE_SCOPE_CHECKING_LINE
+        assert not ls.regenerate_scope_stated(state.regenerate_scope)
+        assert state.regenerate_confirm_blocked is True  # "Regenerate" is disabled
+
+        # The count and the settings are read off the event loop.
+        assert run_spying(state.load_regenerate_scope()) == [ls.regenerate_preflight]
+        scope = state.regenerate_scope
+        assert scope["tags_line"] == "5 tracks will be tagged."
+        assert scope["embeddings_line"] == "The embeddings for 5 tracks will be replaced."
+        assert (scope["ai_label"], scope["embedding_label"]) == ("OpenAI", "Local")
+        assert scope["privacy_line"] == TAGS_SENT_TO.format("OpenAI")
+        assert scope["checking_line"] == ""
+        assert state.regenerate_confirm_blocked is False
+
+    def test_scope_follows_the_settings_of_now(self, data_dir: Path) -> None:
+        """The dialog is a consent to send track details: it reads the settings when it opens."""
+        write_config(data_dir, "ai:\n  default_provider: local\n" + LOCAL_EMBEDDINGS)
+        make_library(data_dir, 3)
+        state = library()
+        state.sync_mode = "regenerate"
+        state.start_sync_or_confirm()
+        run(state.load_regenerate_scope())
+        assert state.regenerate_scope["privacy_line"] == LOCAL_ONLY
+        state.set_regenerate_confirm_open(False)
+
+        write_config(data_dir, OPENAI_AI + LOCAL_EMBEDDINGS)  # changed in another tab
+        state.start_sync_or_confirm()
+        assert state.regenerate_scope["privacy_line"] == ""  # never the earlier answer
+        run(state.load_regenerate_scope())
+        assert state.regenerate_scope["privacy_line"] == TAGS_SENT_TO.format("OpenAI")
+
+    def test_a_click_before_the_scope_is_stated_starts_nothing(self, data_dir: Path) -> None:
+        write_config(data_dir, REGENERATE_CONFIG)
+        make_library(data_dir, 3)
+        state = library()
+        state.sync_mode = "regenerate"
+        state.start_sync_or_confirm()
+
+        with patch("plexmix.services.sync_service.connect_plex") as connect:
+            run(state.start_sync())
+
+        assert task_store.get("sync") is None and connect.call_count == 0
+        assert state.is_syncing is False
+        assert state.show_regenerate_confirm is True  # still open, to be stated
+
+    def test_scope_that_cannot_be_read_says_so_and_cannot_be_confirmed(
+        self, data_dir: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        from plexmix.ui.states import library_state as ls
+
+        state = library()
+        state.sync_mode = "regenerate"
+        state.start_sync_or_confirm()
+        with patch.object(ls, "regenerate_preflight", side_effect=OSError("disk gone")):
+            run(state.load_regenerate_scope())
+
+        assert state.regenerate_scope["checking_line"] == ls.REGENERATE_SCOPE_ERROR_LINE
+        assert state.regenerate_confirm_blocked is True
+        run(state.start_sync())
+        assert task_store.get("sync") is None
+        assert "Could not read the scope of a regenerate sync" in caplog.text
+
+    def test_scope_is_read_only_for_an_open_confirmation(self, data_dir: Path) -> None:
+        """The Sync buttons dispatch the loader in every mode: it acts only for this dialog."""
+        from plexmix.ui.states.library_state import LibraryState
+
+        state = library()
+        assert state.start_sync_or_confirm() is LibraryState.start_sync  # incremental
+        assert run_spying(state.load_regenerate_scope()) == []
+        assert state.regenerate_scope == {}
+
+        stranger = library()
+        stranger.sync_mode = "regenerate"
+        stranger.start_sync_or_confirm()
+        stranger.access_allowed = lambda: False  # not signed in
+        assert run_spying(stranger.load_regenerate_scope()) == []
+        assert stranger.regenerate_scope["tags_line"] == ""
+
+    def test_scope_that_arrives_after_the_dialog_closed_is_dropped(self, data_dir: Path) -> None:
+        from plexmix.ui.states import library_state as ls
+
+        make_library(data_dir, 2)
+        state = library()
+        state.sync_mode = "regenerate"
+        state.start_sync_or_confirm()
+
+        def closed_meanwhile() -> dict[str, str]:
+            state.show_regenerate_confirm = False  # Escape, while the count was read
+            return ls.regenerate_scope_notice("late")
+
+        with patch.object(ls, "regenerate_preflight", closed_meanwhile):
+            run(state.load_regenerate_scope())
+        assert state.regenerate_scope["checking_line"] == ls.REGENERATE_SCOPE_CHECKING_LINE
+
+
+def _pass(to_do: int, written: int, *, started: bool = True, finished: bool = True) -> Any:
+    from plexmix.plex.sync import RegeneratePass
+
+    return RegeneratePass(
+        requested=True,
+        started=started,
+        finished=finished,
+        to_do_ids=set(range(to_do)),
+        written_ids=set(range(written)),
+    )
+
+
+class TestRegenerateResult:
+    """How a "Regenerate" sync ends, from what the engine says it wrote."""
+
+    @pytest.mark.parametrize(
+        "tags,embeddings,stopped,status,message",
+        [
+            (
+                (6, 6),
+                (6, 6),
+                "",
+                "completed",
+                "Regenerated the tags of 6 tracks and the embeddings of 6 tracks.",
+            ),
+            (
+                (5943, 5900),
+                (5943, 5943),
+                "",
+                "completed",
+                "Regenerated the tags of 5,900 tracks and the embeddings of 5,943 tracks. "
+                "43 tracks keep their previous tags.",
+            ),
+            # Every tagging request came back empty, without an error that stops the run.
+            (
+                (6, 0),
+                (6, 6),
+                "",
+                "completed",
+                "Regenerated the embeddings of 6 tracks. 6 tracks keep their previous tags.",
+            ),
+            (
+                (1, 1),
+                (1, 1),
+                "",
+                "completed",
+                "Regenerated the tags of 1 track and the embeddings of 1 track.",
+            ),
+            # Tracks to regenerate and nothing written: never a success.
+            (
+                (3, 0),
+                (3, 0),
+                "",
+                "failed",
+                "No tags or embeddings were regenerated. 3 tracks keep their previous tags "
+                "and embeddings.",
+            ),
+            (
+                (6, 2),
+                None,
+                "tags",
+                "failed",
+                "AI tagging stopped. Regenerated the tags of 2 tracks. 4 tracks keep their "
+                "previous tags, and 6 tracks keep their previous embeddings.",
+            ),
+            (
+                (6, 0),
+                None,
+                "tags",
+                "failed",
+                "AI tagging stopped. No tags or embeddings were regenerated. 6 tracks keep "
+                "their previous tags and embeddings.",
+            ),
+            (
+                (1, 0),
+                None,
+                "tags",
+                "failed",
+                "AI tagging stopped. No tags or embeddings were regenerated. 1 track keeps "
+                "its previous tags and embedding.",
+            ),
+            (
+                (6, 6),
+                (6, 5),
+                "embeddings",
+                "failed",
+                "Embedding generation stopped. Regenerated the tags of 6 tracks and the "
+                "embeddings of 5 tracks. 1 track keeps its previous embedding.",
+            ),
+        ],
+    )
+    def test_status_and_message(
+        self,
+        tags: tuple[int, int],
+        embeddings: Optional[tuple[int, int]],
+        stopped: str,
+        status: str,
+        message: str,
+    ) -> None:
+        from plexmix.plex.sync import RegenerateResult, SyncOutcome
+        from plexmix.ui.states.library_state import regenerate_sync_result
+
+        tags_pass = _pass(*tags, finished=stopped != "tags")
+        if embeddings is None:  # the embeddings pass waits for the tags: it never started
+            embeddings_pass = _pass(tags[0], 0, started=False, finished=False)
+        else:
+            embeddings_pass = _pass(*embeddings, finished=stopped != "embeddings")
+        result = RegenerateResult(
+            tags=tags_pass,
+            embeddings=embeddings_pass,
+            stopped_scope=stopped,
+            error=RuntimeError("boom") if stopped else None,
+        )
+        assert regenerate_sync_result(SyncOutcome(), result) == (status, message)
+
+    def test_what_the_sync_kept_back_is_part_of_the_message(self) -> None:
+        from plexmix.plex.sync import RegenerateResult, SyncOutcome
+        from plexmix.ui.states.library_state import regenerate_sync_result
+
+        done = RegenerateResult(tags=_pass(27, 27), embeddings=_pass(27, 27))
+        unread = SyncOutcome(unread={"artists": 0, "albums": 0, "tracks": 3})
+        assert regenerate_sync_result(unread, done) == (
+            "completed",
+            "Sync completed. 3 tracks could not be read and were kept. "
+            "Regenerated the tags of 27 tracks and the embeddings of 27 tracks.",
+        )
+        # A failed task never reads "Sync failed: Sync completed."
+        nothing = RegenerateResult(tags=_pass(2, 0), embeddings=_pass(2, 0))
+        assert regenerate_sync_result(unread, nothing) == (
+            "failed",
+            "No tags or embeddings were regenerated. 2 tracks keep their previous tags and "
+            "embeddings. 3 tracks could not be read and were kept.",
+        )
+        held = SyncOutcome(reason="threshold", held=100, library_total=120)
+        assert regenerate_sync_result(held, nothing) == (
+            "failed",
+            "No tags or embeddings were regenerated. 2 tracks keep their previous tags and "
+            "embeddings. Plex no longer lists 100 of 120 tracks. They were kept.",
+        )
+
+    def test_a_library_without_tracks_has_nothing_to_regenerate_and_nothing_failed(self) -> None:
+        """Every pass reached its end with no track to do: not a failure, and not a success claim."""
+        from plexmix.plex.sync import RegenerateResult, SyncOutcome
+        from plexmix.ui.states import library_state as ls
+
+        empty = RegenerateResult(tags=_pass(0, 0), embeddings=_pass(0, 0))
+        assert ls.regenerate_sync_result(SyncOutcome(), empty) == (
+            "completed",
+            ls.REGENERATE_NO_TRACKS_MESSAGE,
+        )
+        # The tags pass alone is the same.
+        assert ls.regenerate_sync_result(SyncOutcome(), RegenerateResult(tags=_pass(0, 0))) == (
+            "completed",
+            ls.REGENERATE_NO_TRACKS_MESSAGE,
+        )
+        # A pass that was stopped before it ended is no run with nothing to do.
+        unfinished = RegenerateResult(tags=_pass(0, 0, finished=False), embeddings=_pass(0, 0))
+        assert ls.regenerate_sync_result(SyncOutcome(), unfinished)[0] == "failed"
+
+    @pytest.mark.parametrize("left_out,one", [(1, True), (5943, False)])
+    def test_a_run_whose_final_rebuild_was_refused_is_not_a_clean_success(
+        self, left_out: int, one: bool
+    ) -> None:
+        """Every pass reached its end, and the saved index was left as it is.
+
+        Tags and embeddings were written, and the message says how many. But the
+        search index was not updated, so the task is failed and says why first.
+        """
+        from plexmix.plex.sync import RegenerateResult, SyncOutcome
+        from plexmix.ui.states import library_state as ls
+
+        done = RegenerateResult(tags=_pass(6, 6), embeddings=_pass(6, 5), index_left_out=left_out)
+        assert done.finished and not done.provider_failed and not done.wrote_nothing
+
+        status, message = ls.regenerate_sync_result(SyncOutcome(), done)
+
+        assert status == "failed"
+        holds = "1 track holds" if one else "5,943 tracks hold"
+        assert message.startswith(
+            f"{ls.INDEX_NOT_UPDATED_TITLE}. {holds} an embedding that was made with other "
+            "embedding settings, so a new index would leave "
+        )
+        assert message.endswith(
+            "Regenerated the tags of 6 tracks and the embeddings of 5 tracks. "
+            "1 track keeps its previous embedding."
+        )
+        # The settings tell which way out is real: with a saved index of another size
+        # the words are the readiness copy for the mismatch.
+        assert "Regenerate sync on the Library page" in message
+
+    def test_a_stand_in_engine_claims_nothing(self) -> None:
+        from plexmix.plex.sync import RegenerateResult, SyncOutcome
+        from plexmix.ui.states.library_state import regenerate_sync_result
+
+        nothing = ("failed", "No tags or embeddings were regenerated.")
+        assert regenerate_sync_result(SyncOutcome(), MagicMock()) == nothing
+        assert regenerate_sync_result(SyncOutcome(), None) == nothing
+        assert regenerate_sync_result(SyncOutcome(), RegenerateResult()) == nothing  # no run
+
+    def test_a_run_that_did_not_reach_its_end_is_not_a_success(self) -> None:
+        from plexmix.plex.sync import RegenerateResult, SyncOutcome
+        from plexmix.ui.states import library_state as ls
+
+        result = RegenerateResult(tags=_pass(6, 6), embeddings=_pass(6, 2, finished=False))
+        status, message = ls.regenerate_sync_result(SyncOutcome(), result)
+        assert status == "failed" and message.startswith(ls.REGENERATE_UNFINISHED_MESSAGE)
+        assert message.endswith("4 tracks keep their previous embeddings.")
+
+    def test_sync_secrets_cover_the_embedding_key(self, data_dir: Path) -> None:
+        from plexmix.config.settings import Settings
+        from plexmix.ui.states.library_state import _sync_secrets
+
+        write_config(
+            data_dir,
+            "embedding:\n  default_provider: custom\n  custom_model: m\n"
+            f"  custom_endpoint: http://127.0.0.1:9/v1\n  custom_api_key: {DUMMY_KEY}\n",
+        )
+        assert DUMMY_KEY in _sync_secrets(Settings.load_from_file())
+
+
+class _Answers:
+    """An AI provider that answers the provider check."""
+
+    def complete(self, prompt: str, **options: Any) -> str:
+        return "OK"
+
+
+class _Raises:
+    """A provider whose every request raises ``error``."""
+
+    provider_name = "openai"
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def complete(self, prompt: str, **options: Any) -> str:
+        raise self.error
+
+    def generate_embedding(self, text: str) -> list[float]:
+        raise self.error
+
+
+AUDIO_ON_SYNC = "audio:\n  enabled: true\n  analyze_on_sync: true\n  workers: 1\n"
+CUSTOM_EMBEDDINGS = (
+    "embedding:\n  default_provider: custom\n  custom_endpoint: http://127.0.0.1:9/v1\n"
+    "  custom_model: standin\n  custom_dimension: 2\n"
+)
+EARLIER_VECTOR = [0.1, 0.2, 0.3]
+
+
+class CustomEmbedder(FakeEmbedder):
+    """The fake generator as the "custom" provider (2 dimensions)."""
+
+    provider_name = "custom"
+
+
+class KeylessEmbedder(FakeEmbedder):
+    """A generator that keeps its key where the engine cannot find it (as Gemini and Cohere do)."""
+
+    api_key = None
+    provider = None
+
+
+def make_earlier_library(data: Path, tracks: int, model: str) -> list[int]:
+    """A library embedded before the provider was changed, with the index of that time.
+
+    Every track has a row of ``model`` with 3 numbers, and the saved index holds
+    those vectors. The settings name a provider that makes 2 numbers now.
+    """
+    from plexmix.database.models import Album, Artist, Embedding, Track
+    from plexmix.database.sqlite_manager import SQLiteManager
+    from plexmix.database.vector_index import VectorIndex
+
+    with SQLiteManager(str(data / "plexmix.db")) as db:
+        artist = db.insert_artist(Artist(plex_key="a1", name="Artist"))
+        album = db.insert_album(Album(plex_key="al1", title="Album", artist_id=artist))
+        ids = [
+            db.insert_track(
+                Track(
+                    plex_key=f"t{i}",
+                    title=f"Song {i:03d}",
+                    artist_id=artist,
+                    album_id=album,
+                    tags=f"old-{i}",
+                )
+            )
+            for i in range(tracks)
+        ]
+        for track_id in ids:
+            db.insert_embedding(
+                Embedding(
+                    track_id=track_id,
+                    embedding_model=model,
+                    embedding_dim=3,
+                    vector=list(EARLIER_VECTOR),
+                    updated_at=datetime(2020, 1, 1, 9, 0, 0),
+                )
+            )
+    index = VectorIndex(dimension=3, index_path=str(data / "embeddings.index"))
+    index.build_index([list(EARLIER_VECTOR) for _ in ids], ids)
+    index.save_index(str(data / "embeddings.index"))
+    return ids
+
+
+class PlexWithFiles(FakePlex):
+    """The same tracks, each with a file path: audio analysis needs one."""
+
+    def get_all_tracks(self, batch_size: int = 100) -> Iterator[list[Any]]:
+        for batch in super().get_all_tracks(batch_size):
+            for track in batch:
+                track.file_path = f"/music/{track.plex_key}.flac"
+            yield batch
+
+
+class _AudioFeatures:
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "tempo": 120.0,
+            "key": "C",
+            "scale": "major",
+            "energy_level": "high",
+            "danceability": 0.8,
+        }
+
+
+class FakeAnalyzer:
+    """Stands in for the Essentia analyzer: the same features for every file."""
+
+    def analyze(self, path: str, duration_limit: int = 60) -> _AudioFeatures:
+        return _AudioFeatures()
+
+
+def spy_poll(state: Any) -> tuple[Any, list[str]]:
+    """One poll; returns its toast and which of the three refreshes it ran."""
+    from plexmix.ui.states import library_state as ls
+
+    called: list[str] = []
+    with patch.object(ls.rx, "toast", toasts()), patch.object(
+        state, "check_configuration_status", lambda: called.append("status")
+    ), patch.object(state, "load_library_stats", lambda: called.append("stats")), patch.object(
+        state, "load_tracks", lambda: called.append("tracks")
+    ):
+        return state.poll_task_progress(), called
+
+
+class TestRegenerateSync:
+    """The Library "Regenerate" sync: checked first, in place, and honest about its end."""
+
+    def test_regenerate_sync_is_refused_without_an_ai_provider(self, data_dir: Path) -> None:
+        """Spec "Library regenerate without an AI provider": nothing changes, shown as failed."""
+        write_config(data_dir, REGENERATE_CONFIG)  # OpenAI, and no key is stored
+        make_old_library(data_dir, 6)
+        before = stored_state(data_dir)
+        state = library()
+        entry = run_refused(state, FakePlex(range(6)))
+
+        assert entry.status == "failed"
+        assert entry.message == (
+            "The AI provider OpenAI is not ready: no API key is stored. Nothing was changed."
+        )
+        assert TAGGING_SKIPPED not in entry.message  # never "completed without tagging"
+        assert stored_state(data_dir) == before
+        # The engine never ran: no history row and no run marker.
+        assert query(data_dir, "SELECT COUNT(*) FROM sync_history")[0][0] == 0
+        assert not marker_file(data_dir).exists()
+        # Shown as a failure, in the toast and inline.
+        assert poll(state) == ("error", f"Sync failed: {entry.message}")
+        assert (state.sync_error, state.sync_error_body) == ("Sync failed", entry.message)
+        assert state.is_syncing is False
+
+    @pytest.mark.parametrize(
+        "case,component,cause,message",
+        [
+            (
+                "no ai key",
+                "ai",
+                "missing_api_key",
+                "The AI provider OpenAI is not ready: no API key is stored.",
+            ),
+            (
+                "ai key rejected",
+                "ai",
+                "invalid_credentials",
+                "The AI provider OpenAI is not ready: it did not answer the test request. "
+                "OpenAI rejected the API key.",
+            ),
+            (
+                "embedding provider unreachable",
+                "embeddings",
+                "unreachable",
+                "The embedding provider OpenAI is not ready: it did not answer the test "
+                "request. Can't reach OpenAI.",
+            ),
+            (
+                "embedding provider cannot start",
+                "embeddings",
+                "missing_dependency",
+                "The embedding provider OpenAI is not ready: it could not be started. "
+                "OpenAI needs a package that isn't installed.",
+            ),
+        ],
+    )
+    def test_regenerate_refusal_records_the_provider_as_failing(
+        self,
+        data_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        case: str,
+        component: str,
+        cause: str,
+        message: str,
+    ) -> None:
+        from plexmix.config.settings import Settings
+        from plexmix.services import readiness as rd
+        from plexmix.services import regenerate_service as rs
+        from plexmix.services.providers import ProviderFailure
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        make_old_library(data_dir, 4)
+        before = stored_state(data_dir)
+        if case != "no ai key":
+            monkeypatch.setenv("OPENAI_API_KEY", DUMMY_KEY)
+            ai: Any = _Answers()
+            built: tuple[Any, Any] = (FakeEmbedder(), None)
+            if case == "ai key rejected":
+                ai = _Raises(RuntimeError(f"Error code: 401 - Incorrect API key: {DUMMY_KEY}"))
+            elif case == "embedding provider unreachable":
+                built = (_Raises(ConnectionError(f"Connection refused ({DUMMY_KEY})")), None)
+            else:
+                failure = ProviderFailure(
+                    rd.Cause.MISSING_DEPENDENCY,
+                    "openai",
+                    package="openai",
+                    detail="openai not installed. Run: pip install openai",
+                )
+                built = (None, failure)
+            monkeypatch.setattr(rs, "build_ai_provider", lambda *args, **kwargs: ai)
+            monkeypatch.setattr(rs, "build_embedding_generator_with_reason", lambda s: built)
+        caplog.set_level(logging.DEBUG)
+        state = library()
+        entry = run_refused(state, FakePlex(range(4)))
+
+        assert entry.status == "failed"
+        assert entry.message == f"{message} Nothing was changed."
+        assert stored_state(data_dir) == before
+        # The refused provider is failing with the cause, for this configuration.
+        record = readiness_store.get(component)
+        assert record is not None
+        assert (record.level, record.cause) == (rd.Level.FAILING, rd.Cause(cause))
+        assert record.fingerprint == rd.current_fingerprint(component, Settings.load_from_file())
+        # The other provider was not proved either way.
+        assert readiness_store.get("embeddings" if component == "ai" else "ai") is None
+        # No key and no terminal command, on screen or in the log.
+        for text in (entry.message, record.message, caplog.text):
+            assert DUMMY_KEY not in text
+        assert "pip install" not in entry.message and "Run:" not in entry.message
+
+    def test_provider_check_runs_off_the_event_loop_and_says_so(self, data_dir: Path) -> None:
+        """The check sends requests and can load a model: an executor does it, after Plex."""
+        from plexmix.ui.states import library_state as ls
+
+        write_config(data_dir, REGENERATE_CONFIG)  # no key: the real check refuses at once
+        make_old_library(data_dir, 2)
+        real_check = ls.check_regenerate_providers
+        shown: list[str] = []
+
+        def checking(settings: Any) -> Any:
+            entry = task_store.get("sync")
+            shown.append(entry.message if entry is not None else "")
+            return real_check(settings)
+
+        state = library()
+        state.sync_mode = "regenerate"
+        with patch.object(ls, "check_regenerate_providers", checking), patch(
+            "plexmix.services.sync_service.connect_plex", lambda settings: FakePlex(range(2))
+        ):
+            handed_over = run_spying(state.start_sync())
+
+        assert handed_over == [ls._connect_plex_for_sync, checking]  # and no engine run
+        assert shown == [ls.REGENERATE_CHECKING_MESSAGE]
+        entry = task_store.get("sync")
+        assert entry is not None and entry.status == "failed"
+
+    def test_regenerate_sync_passes_the_embedding_generator(
+        self, data_dir: Path, small_batches: None
+    ) -> None:
+        """The embeddings are replaced in the same job, by the generator that passed the check."""
+        from plexmix.database.vector_index import VectorIndex
+        from plexmix.plex.sync import SyncEngine
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        ids = make_old_library(data_dir, 6)
+        tagger, embedder = FakeTagger(), FakeEmbedder()
+        built: list[dict[str, Any]] = []
+        runs: list[dict[str, Any]] = []
+        real_init, real_run = SyncEngine.__init__, SyncEngine.regenerate_sync
+
+        def spy_init(self: Any, *args: Any, **kwargs: Any) -> None:
+            built.append(kwargs)
+            real_init(self, *args, **kwargs)
+
+        def spy_run(self: Any, **kwargs: Any) -> Any:
+            runs.append(kwargs)
+            return real_run(self, **kwargs)
+
+        state = library()
+        with patch.object(SyncEngine, "__init__", spy_init), patch.object(
+            SyncEngine, "regenerate_sync", spy_run
+        ):
+            entry = run_regenerate(state, FakePlex(range(6)), tagger, embedder)
+
+        assert built[0]["ai_provider"] is tagger
+        assert built[0]["embedding_generator"] is embedder
+        index = built[0]["vector_index"]
+        assert isinstance(index, VectorIndex) and index.dimension == 2
+        assert runs[0]["generate_embeddings"] is True
+
+        assert entry.status == "completed"
+        assert entry.message == "Regenerated the tags of 6 tracks and the embeddings of 6 tracks."
+        assert tags_of(data_dir) == {track_id: f"new-{track_id}" for track_id in ids}
+        assert vectors_of(data_dir) == {track_id: NEW_VECTOR for track_id in ids}
+        assert embedder.embedded == 6
+        # Each embedding text was made after the track's new tags were saved.
+        texts = [text for request in embedder.requests for text in request]
+        assert all("new-" in text and "old-" not in text for text in texts)
+        assert index_ids(data_dir) == ids
+        assert poll(state) == ("success", entry.message)
+        assert state.sync_error == ""
+
+    def test_regenerate_sync_always_starts_a_new_run(
+        self, data_dir: Path, small_batches: None
+    ) -> None:
+        """Spec "Web UI action after an interrupted run": every track, never only the rest."""
+        from plexmix.config.settings import Settings
+        from plexmix.database.sqlite_manager import SQLiteManager
+        from plexmix.plex.sync import SyncEngine
+        from plexmix.services import regenerate_service as rs
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        ids = make_old_library(data_dir, 6)
+        # An earlier run that stopped after three tracks: its marker, and their newer tags.
+        marker_file(data_dir).write_text(
+            json.dumps(
+                {
+                    "tags": {
+                        "started_at": "2024-01-01T00:00:00Z",
+                        "provider": "openai",
+                        "model": "gpt-5-mini",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        connection = sqlite3.connect(str(data_dir / "plexmix.db"))
+        connection.executemany(
+            "UPDATE tracks SET tags_generated_at = '2025-01-01 00:00:00' WHERE id = ?",
+            [(track_id,) for track_id in ids[:3]],
+        )
+        connection.commit()
+        connection.close()
+        settings = Settings.load_from_file()
+        with SQLiteManager(str(data_dir / "plexmix.db")) as db:
+            earlier = rs.preview_run(db, rs.SCOPE_TAGS, rs.run_provider(settings, rs.SCOPE_TAGS))
+        # A run that continues would send only the three tracks that are left.
+        assert earlier.continued is True and list(earlier.track_ids) == ids[3:]
+
+        runs: list[dict[str, Any]] = []
+        real_run = SyncEngine.regenerate_sync
+
+        def spy_run(self: Any, **kwargs: Any) -> Any:
+            runs.append(kwargs)
+            return real_run(self, **kwargs)
+
+        tagger, embedder = FakeTagger(), FakeEmbedder()
+        with patch.object(SyncEngine, "regenerate_sync", spy_run):
+            entry = run_regenerate(library(), FakePlex(range(6)), tagger, embedder)
+
+        assert runs[0]["continue_run"] is False
+        assert tagger.sent == ids and embedder.embedded == 6
+        assert entry.status == "completed"
+        # The run is named as the settings name it, so the marker of a run that is
+        # cancelled is one the next regenerate recognises.
+        assert runs[0]["tags_provider"] == rs.run_provider(settings, rs.SCOPE_TAGS)
+        assert runs[0]["embeddings_provider"] == rs.run_provider(settings, rs.SCOPE_EMBEDDINGS)
+        assert not marker_file(data_dir).exists()  # a finished run leaves none
+
+    def test_regenerate_sync_records_embedding_readiness(
+        self, data_dir: Path, small_batches: None
+    ) -> None:
+        """A run that wrote rows proves both providers, for the configuration it ran with."""
+        from plexmix.config.settings import Settings
+        from plexmix.services import readiness as rd
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        make_old_library(data_dir, 4)
+        entry = run_regenerate(library(), FakePlex(range(4)), FakeTagger(), FakeEmbedder())
+
+        assert entry.status == "completed"
+        settings = Settings.load_from_file()
+        for component in ("ai", "embeddings"):
+            record = readiness_store.get(component)
+            assert record is not None and record.level == rd.Level.READY, component
+            assert record.fingerprint == rd.current_fingerprint(component, settings)
+
+    def test_embedding_provider_failure_part_way_fails_and_keeps_every_embedding(
+        self, data_dir: Path, small_batches: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Spec "Provider fails part-way": each track has its new or its previous embedding."""
+        from plexmix.services import readiness as rd
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        monkeypatch.setenv("OPENAI_API_KEY", DUMMY_KEY)
+        ids = make_old_library(data_dir, 6)
+        embedder = FakeEmbedder(
+            fail_on=2, error=ConnectionError(f"Connection refused ({DUMMY_KEY})")
+        )
+        state = library()
+        entry = run_regenerate(state, FakePlex(range(6)), FakeTagger(), embedder)
+
+        assert entry.status == "failed"
+        assert entry.message == (
+            "Embedding generation stopped: Can't reach OpenAI. Regenerated the tags of "
+            "6 tracks and the embeddings of 2 tracks. 4 tracks keep their previous embeddings."
+        )
+        vectors = vectors_of(data_dir)
+        assert sorted(vectors) == ids  # no track is left without an embedding
+        assert sorted(vectors.values()) == [OLD_VECTOR] * 4 + [NEW_VECTOR] * 2
+        assert index_ids(data_dir) == ids  # the index follows the rows, new and previous
+        assert readiness_of("embeddings") == (rd.Level.FAILING, rd.Cause.UNREACHABLE)
+        assert readiness_of("ai") == (rd.Level.READY, None)  # the tags were written
+        assert poll(state) == ("error", f"Sync failed: {entry.message}")
+        assert state.sync_error_body == entry.message
+
+    def test_ai_provider_failure_part_way_fails_and_leaves_the_embeddings(
+        self, data_dir: Path, small_batches: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The embeddings wait for the tags: after a stopped tags pass none is replaced."""
+        from plexmix.services import readiness as rd
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        monkeypatch.setenv("OPENAI_API_KEY", DUMMY_KEY)
+        ids = make_old_library(data_dir, 6)
+        tagger = FakeTagger(
+            fail_on=2, error=RuntimeError(f"Error code: 401 - Incorrect API key: {DUMMY_KEY}")
+        )
+        embedder = FakeEmbedder()
+        entry = run_regenerate(library(), FakePlex(range(6)), tagger, embedder)
+
+        assert entry.status == "failed"
+        assert entry.message == (
+            "AI tagging stopped: OpenAI rejected the API key. Regenerated the tags of "
+            "2 tracks. 4 tracks keep their previous tags, and 6 tracks keep their "
+            "previous embeddings."
+        )
+        tags = tags_of(data_dir)
+        assert sum(tag.startswith("new-") for tag in tags.values()) == 2
+        assert sum(tag.startswith("old-") for tag in tags.values()) == 4
+        assert embedder.requests == []
+        assert vectors_of(data_dir) == {track_id: OLD_VECTOR for track_id in ids}
+        assert readiness_of("ai") == (rd.Level.FAILING, rd.Cause.INVALID_CREDENTIALS)
+        assert readiness_of("embeddings") == (None, None)
+
+    def test_regenerate_sync_states_how_many_tracks_keep_their_previous_tags(
+        self, data_dir: Path, small_batches: None
+    ) -> None:
+        """Spec "Provider returns nothing usable for a track": it keeps what it had."""
+        write_config(data_dir, REGENERATE_CONFIG)
+        ids = make_old_library(data_dir, 6)
+        state = library()
+        entry = run_regenerate(state, FakePlex(range(6)), FakeTagger(omit=[ids[4]]), FakeEmbedder())
+
+        assert entry.status == "completed"
+        assert entry.message == (
+            "Regenerated the tags of 5 tracks and the embeddings of 6 tracks. "
+            "1 track keeps its previous tags."
+        )
+        assert stored_tags(data_dir, ids[4]) == {
+            "tags": "old-4",
+            "environments": "old-room",
+            "instruments": "old-horn",
+        }
+        assert poll(state) == ("success", entry.message)
+
+    @pytest.mark.parametrize("during", ["tags", "embeddings"])
+    def test_cancelled_regenerate_sync_keeps_old_and_new(
+        self, data_dir: Path, small_batches: None, during: str
+    ) -> None:
+        """Spec "Cancelled part-way": every track has its new or its previous tags and embedding."""
+        from plexmix.services import readiness as rd
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        ids = make_old_library(data_dir, 6)
+
+        def cancel(request: int) -> None:
+            if request == 1:  # Cancel arrives while the first batch is being answered
+                task_store.cancel("sync")
+
+        tagger = FakeTagger(before=cancel if during == "tags" else None)
+        embedder = FakeEmbedder(before=cancel if during == "embeddings" else None)
+        state = library()
+        entry = run_regenerate(state, FakePlex(range(6)), tagger, embedder)
+
+        assert entry.status == "cancelled"
+        tags, vectors = tags_of(data_dir), vectors_of(data_dir)
+        # No track lost its tags or its embedding.
+        assert sorted(tags) == ids and all(tags.values())
+        assert sorted(vectors) == ids
+        new_tags = sum(tag.startswith("new-") for tag in tags.values())
+        new_vectors = sum(vector == NEW_VECTOR for vector in vectors.values())
+        if during == "tags":
+            # The batch that was under way was saved, and the embeddings were not started.
+            assert (new_tags, new_vectors) == (2, 0)
+            assert embedder.requests == []
+        else:
+            assert (new_tags, new_vectors) == (6, 2)
+            assert readiness_of("embeddings") == (rd.Level.READY, None)
+        assert all(vector in (OLD_VECTOR, NEW_VECTOR) for vector in vectors.values())
+        assert index_ids(data_dir) == ids
+        assert readiness_of("ai") == (rd.Level.READY, None)
+        # The toast says what the run had replaced by then, and what was kept.
+        if during == "tags":
+            said = (
+                "Sync cancelled. Regenerated the tags of 2 tracks. 4 tracks keep their "
+                "previous tags, and 6 tracks keep their previous embeddings."
+            )
+        else:
+            said = (
+                "Sync cancelled. Regenerated the tags of 6 tracks and the embeddings of "
+                "2 tracks. 4 tracks keep their previous embeddings."
+            )
+        assert poll(state) == ("warning", said)
+
+    @pytest.mark.parametrize("earlier", ["another provider", "another vector size"])
+    @pytest.mark.parametrize("stop", ["provider error", "cancel"])
+    def test_stopped_regenerate_sync_after_a_provider_change_keeps_the_saved_index(
+        self, data_dir: Path, small_batches: None, earlier: str, stop: str
+    ) -> None:
+        """Spec: no regenerate action clears the search index before its replacement exists.
+
+        The saved index was made before the embedding provider (or its vector size)
+        was changed, and it covers every track. The run is stopped after one batch.
+        An index of those two tracks must not take the place of the saved one: with
+        it would go the dimension mismatch that makes every status surface say that
+        the embeddings must be regenerated.
+        """
+        from plexmix.database.vector_index import VectorIndex
+
+        write_config(data_dir, PLEX_CONFIG + OPENAI_AI + CUSTOM_EMBEDDINGS)
+        # Rows of another provider, or rows of this one with the size it made before.
+        ids = make_earlier_library(
+            data_dir, 6, "cohere" if earlier == "another provider" else "custom"
+        )
+        before = stored_state(data_dir)
+
+        def cancel(request: int) -> None:
+            if request == 1:
+                task_store.cancel("sync")
+
+        embedder = CustomEmbedder(before=cancel) if stop == "cancel" else CustomEmbedder(fail_on=2)
+        state = library()
+        entry = run_regenerate(state, FakePlex(range(6)), FakeTagger(), embedder)
+
+        assert entry.status == ("cancelled" if stop == "cancel" else "failed")
+        after = stored_state(data_dir)
+        # The index files are the ones from before the run, byte for byte.
+        assert after["files"] == before["files"]
+        assert sorted(after["files"]) == ["embeddings.index", "embeddings.metadata"]
+        opened = VectorIndex(dimension=2, index_path=str(data_dir / "embeddings.index"))
+        assert sorted(opened.track_ids) == ids and opened.dimension_mismatch is True
+        # Every track still has an embedding, and two have a new one.
+        rows = query(
+            data_dir,
+            "SELECT track_id, embedding_model, embedding_dim FROM embeddings "
+            "ORDER BY track_id, embedding_model",
+        )
+        assert sorted({row[0] for row in rows}) == ids
+        assert [row for row in rows if row[1:] == ("custom", 2)] == [
+            (ids[0], "custom", 2),
+            (ids[1], "custom", 2),
+        ]
+        assert len(rows) == (8 if earlier == "another provider" else 6)
+
+    def test_finished_regenerate_sync_after_a_provider_change_replaces_the_index(
+        self, data_dir: Path, small_batches: None
+    ) -> None:
+        """The run that reaches its end writes the replacement, and only then."""
+        from plexmix.database.vector_index import VectorIndex
+
+        write_config(data_dir, PLEX_CONFIG + OPENAI_AI + CUSTOM_EMBEDDINGS)
+        ids = make_earlier_library(data_dir, 6, "cohere")
+
+        entry = run_regenerate(library(), FakePlex(range(6)), FakeTagger(), CustomEmbedder())
+
+        assert entry.status == "completed"
+        opened = VectorIndex(dimension=2, index_path=str(data_dir / "embeddings.index"))
+        assert sorted(opened.track_ids) == ids and opened.dimension_mismatch is False
+        assert query(data_dir, "SELECT COUNT(*) FROM embeddings WHERE embedding_model = 'cohere'")[
+            0
+        ] == (0,)
+
+    def test_regenerate_sync_without_any_new_tag_makes_no_embedding(
+        self, data_dir: Path, small_batches: None
+    ) -> None:
+        """The AI provider answers and gives nothing usable for any track.
+
+        The embeddings are left alone: each would be made again from the text it
+        was made from. The task fails and says which of the two it was.
+        """
+        write_config(data_dir, REGENERATE_CONFIG)
+        ids = make_old_library(data_dir, 4)
+        before = stored_state(data_dir)
+        tagger, embedder = FakeTagger(omit=ids), FakeEmbedder()
+
+        entry = run_regenerate(library(), FakePlex(range(4)), tagger, embedder)
+
+        assert entry.status == "failed"
+        assert tagger.sent == ids and embedder.requests == []
+        assert stored_state(data_dir) == before
+        assert entry.message == (
+            "The AI provider returned no tags, so the embeddings were left as they are. "
+            "No tags or embeddings were regenerated. "
+            "4 tracks keep their previous tags and embeddings."
+        )
+
+    def test_provider_that_stops_answering_fails_the_sync_and_leaves_the_embeddings(
+        self, data_dir: Path, small_batches: None
+    ) -> None:
+        """Every tagging request after the first is refused, which is not fatal by itself.
+
+        After three in a row the run stops: it does not call its tags finished and
+        go on to make every embedding from tags that were not replaced.
+        """
+        from plexmix.services import readiness as rd
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        ids = make_old_library(data_dir, 12)
+        vectors_before = vectors_of(data_dir)
+        refused = ConnectionError("Connection refused")
+
+        class Tagger(FakeTagger):
+            def complete(self, prompt: str, **options: Any) -> str:
+                if len(self.requests) >= 1:
+                    self.requests.append(_ids_in_prompt(prompt))
+                    raise refused
+                return super().complete(prompt, **options)
+
+        tagger, embedder = Tagger(), FakeEmbedder()
+        entry = run_regenerate(library(), FakePlex(range(12)), tagger, embedder)
+
+        assert entry.status == "failed"
+        assert entry.message.startswith("AI tagging stopped: ")
+        assert "Regenerated the tags of 2 tracks." in entry.message
+        # One answered request and three refused ones. The last two were never sent.
+        assert tagger.sent == ids[:8]
+        assert embedder.requests == [] and vectors_of(data_dir) == vectors_before
+        level, cause = readiness_of("ai")
+        assert level == rd.Level.FAILING and cause == rd.Cause.UNREACHABLE
+
+    def test_regenerate_sync_analyses_audio_before_it_embeds(
+        self, data_dir: Path, small_batches: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With "analyze on sync" on, the new embeddings hold the audio features.
+
+        The order is tags, audio, embeddings. This mode makes its embeddings inside
+        the engine run, so the audio analysis has to happen there too: the handler's
+        own audio pass runs after the engine and would be too late for them.
+        """
+        import sys
+        import types
+
+        write_config(data_dir, REGENERATE_CONFIG + AUDIO_ON_SYNC)
+        make_old_library(data_dir, 4)
+        fake = types.ModuleType("plexmix.audio.analyzer")
+        fake.EssentiaAnalyzer = FakeAnalyzer  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "plexmix.audio.analyzer", fake)
+        embedder = FakeEmbedder()
+
+        entry = run_regenerate(library(), PlexWithFiles(range(4)), FakeTagger(), embedder)
+
+        assert entry.status == "completed", entry.message
+        assert query(data_dir, "SELECT COUNT(*) FROM audio_features")[0] == (4,)
+        texts = [text for request in embedder.requests for text in request]
+        assert len(texts) == 4
+        assert all("| audio:" in text for text in texts), texts[0]
+
+    def test_other_sync_modes_keep_their_own_audio_pass(
+        self, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A plain sync makes no embeddings, and analyses the audio after the engine."""
+        import sys
+        import types
+
+        from plexmix.plex.sync import SyncEngine
+
+        write_config(data_dir, REGENERATE_CONFIG + AUDIO_ON_SYNC)
+        make_old_library(data_dir, 4)
+        fake = types.ModuleType("plexmix.audio.analyzer")
+        fake.EssentiaAnalyzer = FakeAnalyzer  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "plexmix.audio.analyzer", fake)
+        built: list[Any] = []
+        real_init = SyncEngine.__init__
+
+        def spy(self: Any, *args: Any, **kwargs: Any) -> None:
+            built.append(kwargs.get("audio_settings"))
+            real_init(self, *args, **kwargs)
+
+        monkeypatch.setattr(SyncEngine, "__init__", spy)
+
+        entry = run_sync(library(), PlexWithFiles(range(4)))
+
+        assert entry.status == "completed", entry.message
+        assert built == [None]
+        assert query(data_dir, "SELECT COUNT(*) FROM audio_features")[0] == (4,)
+
+    @pytest.mark.parametrize("end", ["failed", "cancelled"])
+    def test_tab_is_refreshed_after_a_regenerate_sync_that_did_not_finish(
+        self, data_dir: Path, small_batches: None, end: str
+    ) -> None:
+        """Such a run has usually replaced tags and embeddings already.
+
+        The table, the status and the counts must follow, as after a completed sync.
+        """
+        write_config(data_dir, REGENERATE_CONFIG)
+        make_old_library(data_dir, 6)
+
+        def cancel(request: int) -> None:
+            if request == 1:
+                task_store.cancel("sync")
+
+        embedder = FakeEmbedder(before=cancel) if end == "cancelled" else FakeEmbedder(fail_on=2)
+        state = library()
+        entry = run_regenerate(state, FakePlex(range(6)), FakeTagger(), embedder)
+        assert entry.status == end
+        assert all(tag.startswith("new-") for tag in tags_of(data_dir).values())
+
+        toast, refreshed = spy_poll(state)
+
+        assert refreshed == ["tracks", "status", "stats"]
+        assert toast[0] == ("warning" if end == "cancelled" else "error")
+        assert "Regenerated the tags of 6 tracks and the embeddings of 2 tracks." in toast[1]
+
+    def test_sync_that_failed_before_it_read_plex_refreshes_nothing(self, data_dir: Path) -> None:
+        """A connection failure wrote nothing, so there is nothing to reload."""
+        state = library()
+        state.is_syncing = True
+        task_store.start("sync", message="Starting sync...")
+        task_store.update("sync", extra={"plex_error_code": "unreachable"})
+        task_store.complete("sync", status="failed", message="Can't reach Plex")
+
+        toast, refreshed = spy_poll(state)
+
+        assert refreshed == [] and toast[0] == "error"
+
+    def test_plain_cancelled_sync_keeps_its_short_toast(self, data_dir: Path) -> None:
+        state = library()
+        state.is_syncing = True
+        task_store.start("sync", message="Starting sync...")
+        task_store.complete("sync", status="cancelled")
+
+        toast, refreshed = spy_poll(state)
+
+        assert toast == ("warning", "Sync cancelled")
+        assert refreshed == ["tracks", "status", "stats"]
+
+    def test_provider_error_text_with_the_key_reaches_neither_the_log_nor_the_history(
+        self,
+        data_dir: Path,
+        small_batches: None,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """The engine is handed the keys from the settings.
+
+        Not every provider object keeps its key where the engine can find it, and a
+        provider can repeat the key in its error text. That text goes into the log
+        and into the sync history row.
+        """
+        write_config(data_dir, REGENERATE_CONFIG)
+        monkeypatch.setenv("OPENAI_API_KEY", DUMMY_KEY)
+        make_old_library(data_dir, 6)
+        echo = f"Error code: 418 - upstream refused the credential {DUMMY_KEY} for this project"
+        embedder = KeylessEmbedder(fail_on=2, error=RuntimeError(echo))
+        state = library()
+
+        with caplog.at_level(logging.DEBUG):
+            entry = run_regenerate(state, FakePlex(range(6)), FakeTagger(), embedder)
+        toast = poll(state)
+
+        assert entry.status == "failed"
+        history = query(data_dir, "SELECT status, error_message FROM sync_history ORDER BY id")
+        assert history[-1][0] == "partial" and "[redacted]" in history[-1][1]
+        leaks = [record.name for record in caplog.records if DUMMY_KEY in record.getMessage()]
+        assert leaks == []
+        for text in (entry.message, str(toast), state.sync_error_body, str(history)):
+            assert DUMMY_KEY not in text
+
+    def test_regenerate_sync_does_not_start_beside_another_embedding_writer(
+        self, data_dir: Path, small_batches: None
+    ) -> None:
+        """The "embedding" task and Doctor's fixes write embeddings and save the index too."""
+        from plexmix.ui.states import library_state as ls
+        from plexmix.ui.states.doctor_state import FIX_JOB
+
+        assert ls.DOCTOR_FIX_JOB == FIX_JOB
+        write_config(data_dir, REGENERATE_CONFIG)
+        make_old_library(data_dir, 4)
+        before = stored_state(data_dir)
+
+        for job in ("embedding", FIX_JOB):
+            task_store.clear("sync")
+            assert task_store.start(job, message="Working...") is not None
+            try:
+                state = library()
+                tagger, embedder = FakeTagger(), FakeEmbedder()
+                state.sync_mode = "regenerate"
+                with patch(
+                    "plexmix.services.sync_service.connect_plex",
+                    lambda settings: FakePlex(range(4)),
+                ):
+                    run(state.start_sync())
+            finally:
+                task_store.clear(job)
+
+            # No sync task was started, nothing was asked and nothing was changed.
+            assert task_store.get("sync") is None and state.is_syncing is False
+            assert tagger.requests == [] and embedder.requests == []
+            assert stored_state(data_dir) == before
+            assert state.sync_error == ls.REGENERATE_BUSY_TITLE
+            assert state.sync_error_body.endswith("Nothing was changed.")
+            assert state.show_regenerate_confirm is False
+
+    def test_embedding_job_does_not_start_beside_a_regenerate_sync(self, data_dir: Path) -> None:
+        from plexmix.ui.states import library_state as ls
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        make_old_library(data_dir, 4)
+        before = stored_state(data_dir)
+        assert ls.regenerate_sync_running() is False
+        task_store.start("sync", message="Starting sync...")
+        # A sync of another mode is no reason to wait.
+        assert ls.regenerate_sync_running() is False
+        task_store.update("sync", extra={ls.REGENERATE_RUN_KEY: True})
+        assert ls.regenerate_sync_running() is True
+        try:
+            with patch.object(ls, "run_embedding_job") as job:
+                run(library()._run_embedding_job(None))
+        finally:
+            task_store.clear("sync")
+
+        job.assert_not_called()
+        entry = task_store.get("embedding")
+        assert entry is not None and entry.status == "failed"
+        assert entry.message.startswith("A Regenerate sync is running.")
+        assert stored_state(data_dir) == before
+
+    def test_regenerate_sync_marks_its_task_while_it_runs(
+        self, data_dir: Path, small_batches: None
+    ) -> None:
+        from plexmix.ui.states import library_state as ls
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        make_old_library(data_dir, 4)
+        seen: list[bool] = []
+        tagger = FakeTagger(before=lambda request: seen.append(ls.regenerate_sync_running()))
+
+        entry = run_regenerate(library(), FakePlex(range(4)), tagger, FakeEmbedder())
+
+        assert entry.status == "completed" and seen == [True, True]
+        # Not once it has ended.
+        assert ls.regenerate_sync_running() is False
+
+    def test_regenerate_sync_that_plex_stops_changes_nothing(self, data_dir: Path) -> None:
+        """Nothing is cleared first, so "nothing was changed" is true without an addition.
+
+        Until the engine regenerated in place, this mode had cleared the tags and
+        embeddings before it read Plex, and the failure said so in a second sentence.
+        """
+        from plexmix.plex.client import PlexReadInterrupted
+        from plexmix.ui.states import library_state as ls
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        make_old_library(data_dir, 6)
+        before = stored_state(data_dir)
+        tagger, embedder = FakeTagger(), FakeEmbedder()
+        plex = FakePlex(range(6), read_error=PlexReadInterrupted("tracks", 3, 6))
+        state = library()
+        entry = run_regenerate(state, plex, tagger, embedder)
+
+        sentence = "Plex stopped answering after 3 of 6 tracks were read, so nothing was changed."
+        assert entry.status == "failed" and entry.message == sentence
+        assert stored_state(data_dir) == before
+        assert tagger.requests == [] and embedder.requests == []
+        assert not hasattr(ls, "REGENERATE_CLEARED_MESSAGE")
+        # The toast and the inline failure carry the same text.
+        assert poll(state) == ("error", f"Sync failed: {sentence}")
+        assert state.sync_error_body == sentence
+        # And so does the history row.
+        assert query(
+            data_dir, "SELECT status, error_message FROM sync_history ORDER BY id DESC LIMIT 1"
+        ) == [("failed", sentence)]
+
+    def test_other_sync_modes_build_no_embedding_provider(self, data_dir: Path) -> None:
+        """Only "Regenerate" checks the providers and embeds: the other modes are as before."""
+        write_config(data_dir, REGENERATE_CONFIG)
+        make_old_library(data_dir, 3)
+        before = stored_state(data_dir)
+        state = library()
+        with patch("plexmix.services.regenerate_service.check_providers") as check:
+            entry = run_sync(state, FakePlex(range(3)))  # incremental, no AI provider
+
+        assert check.call_count == 0
+        assert entry.status == "completed" and entry.message == TAGGING_SKIPPED
+        assert stored_state(data_dir) == before
+        assert readiness_of("embeddings") == (None, None)
+
+    def test_run_whose_final_rebuild_is_refused_is_not_shown_as_a_clean_success(
+        self, data_dir: Path, small_batches: None
+    ) -> None:
+        """Every pass reaches its end, and one track keeps the embedding of the earlier provider.
+
+        The provider answers one request with a vector too few. An index of the other
+        five would take the place of the library's index, so none is saved: the files
+        stay as they are, byte for byte, and the sync is not a success.
+        """
+        from plexmix.ui.states import library_state as ls
+
+        class OneShort(CustomEmbedder):
+            def generate_batch_embeddings(
+                self, texts: list[str], batch_size: int = 100
+            ) -> list[list[float]]:
+                made = super().generate_batch_embeddings(texts, batch_size)
+                return made[:-1] if len(self.requests) == 2 else made
+
+        write_config(data_dir, PLEX_CONFIG + OPENAI_AI + CUSTOM_EMBEDDINGS)
+        ids = make_earlier_library(data_dir, 6, "cohere")
+        before = stored_state(data_dir)["files"]
+        state = library()
+
+        entry = run_regenerate(state, FakePlex(range(6)), FakeTagger(), OneShort())
+
+        assert entry.status == "failed"
+        assert entry.message.startswith(f"{ls.INDEX_NOT_UPDATED_TITLE}. 1 track holds an embedding")
+        assert "Rebuild the embeddings" in entry.message  # the mismatch's own words
+        assert entry.message.endswith(
+            "Regenerated the tags of 6 tracks and the embeddings of 5 tracks. "
+            "1 track keeps its previous embedding."
+        )
+        assert not entry.message.startswith("Sync completed")
+        assert stored_state(data_dir)["files"] == before
+        assert_saved_index_still_mismatched(data_dir, ids)
+        # Five tracks hold their new embedding, and the sixth the one it had.
+        assert embedding_sizes(data_dir) == {
+            **dict.fromkeys(ids, 3),
+            **dict.fromkeys([i for i in ids if i != ids[3]], 2),
+        }
+        assert all(tag.startswith("new-") for tag in tags_of(data_dir).values())
+        # The run is over, and the history row says it ended with a warning.
+        status, error = query(data_dir, "SELECT status, error_message FROM sync_history")[0]
+        assert status == "partial" and "The search index was left as it is" in error
+        # The track the provider left out is still to do, so the embeddings entry of
+        # the marker stays: the CLI's regenerate command continues with that track
+        # only. (This action itself never continues an earlier run.)
+        assert set(json.loads(marker_file(data_dir).read_text())) == {"embeddings"}
+
+        toast, _refreshed = spy_poll(state)
+        assert toast == ("error", f"Sync failed: {entry.message}")
+
+    def test_regenerate_that_the_provider_check_refuses_keeps_a_waiting_removal(
+        self, data_dir: Path
+    ) -> None:
+        """Nothing was compared with Plex, so the removal that waits still waits.
+
+        The notice, the keys of the held tracks and the library they belong to are
+        what the last sync left. "Review removal" removes them as it did before.
+        """
+        from plexmix.ui.states import library_state as ls
+
+        write_config(data_dir, REGENERATE_CONFIG)  # OpenAI, and no key is stored
+        make_library(data_dir, 120, embedded=120)
+        plex = FakePlex(range(20), relisted=range(20))
+        state = library()
+        run_sync(state, plex)  # holds 100 of 120
+        assert poll(state) == ("warning", HELD_MESSAGE)
+        assert (state.removal_notice_count, state.removal_notice_total) == (100, 120)
+        keys = ls.waiting_removal_keys(100, 120)
+        scope = ls.waiting_removal_scope(100, 120)
+        assert keys == frozenset(f"t{i}" for i in range(20, 120)) and scope != ""
+
+        entry = run_refused(state, FakePlex(range(20), relisted=range(20)))
+
+        assert entry.status == "failed"
+        assert entry.message.startswith("The AI provider OpenAI is not ready")
+        assert poll(state) == ("error", f"Sync failed: {entry.message}")
+        # The notice, its keys and its library are what they were.
+        assert (state.removal_notice_count, state.removal_notice_total) == (100, 120)
+        assert ls.held_removal(entry) == (100, 120)
+        assert ls.waiting_removal_keys(100, 120) == keys
+        assert ls.waiting_removal_scope(100, 120) == scope
+        # The task store drops a finished entry after an hour: the hold is remembered.
+        forget_finished_sync()
+        reopened = library()
+        assert poll(reopened) is None
+        assert (reopened.removal_notice_count, reopened.removal_notice_total) == (100, 120)
+
+        reopened.open_removal_confirm()
+        done = confirm(reopened, plex)
+        tone, message = done.events[0]
+        assert tone == "success" and message.startswith("Removed 100 tracks")
+        assert track_count(data_dir) == 20
+        assert (reopened.removal_notice_count, reopened.removal_notice_total) == (0, 0)
+
+    @pytest.mark.parametrize("end", ["failed", "cancelled"])
+    def test_a_caller_without_access_reloads_nothing_after_a_failed_or_cancelled_sync(
+        self, data_dir: Path, end: str
+    ) -> None:
+        """The tracks, the status and the counts are not for a caller that is not signed in."""
+        task_store.start("sync", message="Starting sync...")
+        task_store.complete("sync", status=end, message="Stopped" if end == "failed" else "")
+        stranger = library()
+        stranger.is_syncing = True
+        stranger.access_allowed = lambda: False  # type: ignore[method-assign]
+
+        toast, refreshed = spy_poll(stranger)
+
+        assert refreshed == []
+        assert toast[0] == ("error" if end == "failed" else "warning")
+        assert stranger.is_syncing is False  # the tab still learns that the sync ended
+
+        # A caller that is signed in gets the reloads, so the check is the only difference.
+        member = library()
+        member.is_syncing = True
+        _toast, reloaded = spy_poll(member)
+        assert reloaded == ["tracks", "status", "stats"]
+
+
 # ── Whole-library embedding from Library (spec scenario) ─────────────────
+
+
+def embedding_sizes(data: Path) -> dict[int, int]:
+    """The size of the vector of every track that has an embedding, by track id."""
+    return {
+        track_id: embedding_dim
+        for track_id, embedding_dim in query(
+            data, "SELECT track_id, embedding_dim FROM embeddings ORDER BY track_id"
+        )
+    }
+
+
+def index_readiness() -> Any:
+    """The readiness of the search index, read from the files and settings as they are now."""
+    from plexmix.config.settings import Settings
+    from plexmix.services import readiness as rd
+
+    settings = Settings.load_from_file()
+    return rd.evaluate(settings, rd.collect_facts(settings))["index"]
+
+
+def assert_saved_index_still_mismatched(data: Path, ids: list[int]) -> None:
+    """A fresh open of the saved index (3 numbers) still covers ``ids`` and reports the mismatch."""
+    from plexmix.database.vector_index import VectorIndex
+
+    opened = VectorIndex(dimension=2, index_path=str(data / "embeddings.index"))
+    assert sorted(opened.track_ids) == sorted(ids)
+    assert opened.dimension_mismatch is True
+
+
+def use_embedder(embedder: Any) -> Any:
+    """Hand ``embedder`` to the embedding job in place of a real provider."""
+    return patch(
+        "plexmix.services.providers.build_embedding_generator_with_reason",
+        return_value=(embedder, None),
+    )
+
+
+class TestIndexLeftAsItIs:
+    """Rows of two vector sizes under one model name: no job replaces the saved index.
+
+    The provider ("custom") makes 2 numbers now, and every stored row and the saved
+    index hold 3. A job that embeds a few tracks writes their rows, and an index of
+    only those would take the place of the library's. So the saved files stay as
+    they are, byte for byte, the job ends as failed, and it says that the search
+    index was not updated, and what replaces the embeddings in the way.
+    """
+
+    def _earlier_library(self, data: Path, tracks: int = 6) -> list[int]:
+        write_config(data, CUSTOM_EMBEDDINGS)
+        return make_earlier_library(data, tracks, "custom")
+
+    def test_embedding_job_for_one_track_leaves_the_saved_index(self, data_dir: Path) -> None:
+        from plexmix.ui.states import library_state as ls
+
+        ids = self._earlier_library(data_dir)
+        before = stored_state(data_dir)
+        state = library()
+        state.selected_tracks = [str(ids[0])]
+
+        with use_embedder(CustomEmbedder()):
+            run(state.generate_embeddings())
+
+        entry = task_store.get("embedding")
+        assert entry is not None and entry.status == "failed"
+        # The new row is saved and the others keep theirs: no track lost its embedding.
+        assert embedding_sizes(data_dir) == {ids[0]: 2, **dict.fromkeys(ids[1:], 3)}
+        after = stored_state(data_dir)
+        assert after["files"] == before["files"]  # byte for byte
+        assert sorted(after["files"]) == ["embeddings.index", "embeddings.metadata"]
+        assert_saved_index_still_mismatched(data_dir, ids)
+
+        notice = entry.extra[ls.INDEX_NOTICE_KEY]
+        assert entry.message == (
+            "Generated embeddings for 1 track, but the search index was not updated. "
+            f"{notice['body']}"
+        )
+        assert "5 tracks hold an embedding that was made with other embedding settings" in (
+            notice["body"]
+        )
+        # The words of the mismatch every status surface uses, and its way out: Doctor.
+        assert "Rebuild the embeddings" in notice["body"]
+        assert (notice["title"], notice["action_label"], notice["action_href"]) == (
+            ls.INDEX_NOT_UPDATED_TITLE,
+            "Rebuild embeddings",
+            "/doctor",
+        )
+        assert (notice["secondary_label"], notice["secondary_href"]) == (
+            "Switch back",
+            "/settings?section=embedding",
+        )
+        assert set(notice) == set(ls.INDEX_NOTICE_KEYS)
+
+    def test_embedding_job_with_a_short_provider_reply_fails_like_the_doctor_fixes(
+        self, data_dir: Path
+    ) -> None:
+        """The provider answers with one vector too few, in a library of two vector sizes.
+
+        Doctor's "Rebuild embeddings" ends the same way in the same case (failed, "The
+        search index was not updated", an error toast, the saved index untouched): the
+        three web UI jobs that write embeddings end alike.
+        """
+        from plexmix.ui.states import library_state as ls
+
+        class OneShort(CustomEmbedder):
+            def generate_batch_embeddings(
+                self, texts: list[str], batch_size: int = 100
+            ) -> list[list[float]]:
+                return super().generate_batch_embeddings(texts, batch_size)[:-1]
+
+        ids = self._earlier_library(data_dir)
+        before = stored_state(data_dir)
+        state = library()
+        state.selected_tracks = [str(track_id) for track_id in ids[:3]]
+
+        with use_embedder(OneShort()):
+            run(state.generate_embeddings())
+
+        entry = task_store.get("embedding")
+        assert entry is not None and entry.status == "failed"
+        assert entry.message.startswith(
+            "Generated embeddings for 2 tracks, but the search index was not updated. "
+        )
+        assert embedding_sizes(data_dir) == {
+            **dict.fromkeys(ids[:2], 2),
+            **dict.fromkeys(ids[2:], 3),
+        }
+        assert stored_state(data_dir)["files"] == before["files"]
+        assert_saved_index_still_mismatched(data_dir, ids)
+        toast, _refreshed = spy_poll(state)
+        assert toast == ("error", entry.message)
+        assert entry.extra[ls.INDEX_NOTICE_KEY]["title"] == ls.INDEX_NOT_UPDATED_TITLE
+
+    def test_the_page_shows_no_success_and_keeps_the_way_out(self, data_dir: Path) -> None:
+        from plexmix.ui.states import library_state as ls
+
+        ids = self._earlier_library(data_dir)
+        state = library()
+        state.selected_tracks = [str(ids[0])]
+        with use_embedder(CustomEmbedder()):
+            run(state.generate_embeddings())
+        entry = task_store.get("embedding")
+        assert entry is not None
+        assert state.is_embedding is True  # the poller reports the outcome
+
+        toast, refreshed = spy_poll(state)
+
+        # An error toast with the job's words: never "Embeddings generated successfully!".
+        assert toast == ("error", entry.message)
+        assert ls.ALL_EMBEDDED_MESSAGE not in toast[1]
+        assert state.is_embedding is False
+        # The notice stays on the page, in the warning tone, with the link to Doctor.
+        assert state.embed_all_notice == entry.message
+        assert state.embed_all_notice_tone == "warning"
+        assert (state.embed_all_notice_action_label, state.embed_all_notice_action_href) == (
+            "Rebuild embeddings",
+            "/doctor",
+        )
+        assert (state.embed_all_notice_secondary_label, state.embed_all_notice_secondary_href) == (
+            "Switch back",
+            "/settings?section=embedding",
+        )
+        # The table and the counts follow the new row.
+        assert refreshed == ["tracks", "stats"]
+
+    def test_a_caller_without_access_gets_the_toast_and_no_notice_and_no_reload(
+        self, data_dir: Path
+    ) -> None:
+        ids = self._earlier_library(data_dir)
+        state = library()
+        state.selected_tracks = [str(ids[0])]
+        with use_embedder(CustomEmbedder()):
+            run(state.generate_embeddings())
+        entry = task_store.get("embedding")
+        assert entry is not None
+        stranger = library()
+        stranger.is_embedding = True
+        stranger.access_allowed = lambda: False  # type: ignore[method-assign]
+
+        toast, refreshed = spy_poll(stranger)
+
+        assert toast == ("error", entry.message)
+        assert refreshed == [] and stranger.embed_all_notice == ""
+
+    def test_the_library_still_reports_the_mismatch_afterwards(self, data_dir: Path) -> None:
+        """No "All tracks already have embeddings.": the readiness row still fails."""
+        from plexmix.services import readiness as rd
+        from plexmix.ui.states import library_state as ls
+
+        ids = self._earlier_library(data_dir)
+        state = library()
+        state.selected_tracks = [str(ids[0])]
+        with use_embedder(CustomEmbedder()):
+            run(state.generate_embeddings())
+
+        index = index_readiness()
+        assert (index.level, index.cause) == (rd.Level.FAILING, rd.Cause.DIMENSION_MISMATCH)
+        preflight = ls.embed_all_preflight()
+        assert preflight.state == "mismatch" and preflight.notice != ls.ALL_EMBEDDED_MESSAGE
+        assert (preflight.action_label, preflight.action_href) == (
+            "Rebuild embeddings",
+            "/doctor",
+        )
+        # The embeddings were written, so the provider proved itself.
+        assert readiness_of("embeddings")[0] == rd.Level.READY
+
+    def test_whole_library_job_leaves_the_saved_index(self, data_dir: Path) -> None:
+        """One track has no row at all: it is embedded, and the others stand in the way."""
+        from plexmix.ui.states import library_state as ls
+
+        ids = self._earlier_library(data_dir)
+        with sqlite3.connect(str(data_dir / "plexmix.db")) as conn:
+            conn.execute("DELETE FROM embeddings WHERE track_id = ?", (ids[0],))
+        before = stored_state(data_dir)["files"]
+        state = library()
+
+        with use_embedder(CustomEmbedder()):
+            run(state.embed_all_missing())
+
+        entry = task_store.get("embedding")
+        assert entry is not None and entry.status == "failed"
+        assert entry.message.startswith(
+            "Generated embeddings for 1 track, but the search index was not updated. "
+            "5 tracks hold an embedding that was made with other embedding settings"
+        )
+        assert stored_state(data_dir)["files"] == before
+        assert_saved_index_still_mismatched(data_dir, ids)
+        assert entry.extra[ls.INDEX_NOTICE_KEY]["action_href"] == "/doctor"
+
+    def test_job_with_nothing_to_embed_does_not_say_all_tracks_have_embeddings(
+        self, data_dir: Path
+    ) -> None:
+        """Run directly (the page opens no confirmation here): it still builds nothing."""
+        from plexmix.ui.states import library_state as ls
+
+        ids = self._earlier_library(data_dir)
+        before = stored_state(data_dir)["files"]
+        embedder = CustomEmbedder()
+
+        with use_embedder(embedder):
+            status, message = ls.run_embedding_job(None, threading.Event())
+
+        assert status == "failed" and embedder.requests == []
+        assert message.startswith(f"{ls.INDEX_NOT_UPDATED_TITLE}. 6 tracks hold an embedding")
+        assert ls.ALL_EMBEDDED_MESSAGE not in message
+        assert "Rebuilt the search index" not in message
+        assert stored_state(data_dir)["files"] == before
+        assert_saved_index_still_mismatched(data_dir, ids)
+
+    def test_a_cancelled_job_says_cancelled_and_builds_no_index(self, data_dir: Path) -> None:
+        ids = self._earlier_library(data_dir)
+        before = stored_state(data_dir)["files"]
+        state = library()
+        state.selected_tracks = [str(ids[0])]
+
+        with use_embedder(CustomEmbedder(before=lambda request: task_store.cancel("embedding"))):
+            run(state.generate_embeddings())
+
+        entry = task_store.get("embedding")
+        assert entry is not None and entry.status == "cancelled"
+        assert stored_state(data_dir)["files"] == before
+        toast, _refreshed = spy_poll(state)
+        assert toast == ("warning", "Embedding generation cancelled")
+
+    def test_a_stand_in_index_is_never_believed(self, data_dir: Path) -> None:
+        """A stand-in index answers every attribute: only the rebuild's own result counts."""
+        from plexmix.ui.states import library_state as ls
+
+        assert ls.refused_rebuild(MagicMock()) == 0
+        assert ls.refused_rebuild(SimpleNamespace(last_rebuild=None)) == 0
+        assert ls.refused_rebuild(SimpleNamespace(last_rebuild=SimpleNamespace(left_out=4))) == 0
+
+    def test_embedding_job_with_one_vector_size_ends_with_its_success_message(
+        self, data_dir: Path
+    ) -> None:
+        """The healthy path: the index holds every embedded track, and nothing is warned."""
+        from plexmix.database.vector_index import VectorIndex
+
+        write_config(data_dir, REGENERATE_CONFIG)
+        ids = make_old_library(data_dir, 4)  # "openai" rows of 2 numbers and their index
+        state = library()
+        state.selected_tracks = [str(ids[1])]
+
+        with use_embedder(FakeEmbedder()):
+            run(state.generate_embeddings())
+
+        entry = task_store.get("embedding")
+        assert entry is not None and entry.status == "completed"
+        toast, refreshed = spy_poll(state)
+        assert toast == ("success", "Embeddings generated successfully!")
+        assert state.embed_all_notice == "" and "tracks" in refreshed
+        opened = VectorIndex(dimension=2, index_path=str(data_dir / "embeddings.index"))
+        assert sorted(opened.track_ids) == ids and opened.dimension_mismatch is False
+        assert vectors_of(data_dir)[ids[1]] == [round(v, 4) for v in NEW_VECTOR]
+
+    def test_whole_library_job_with_one_vector_size_rebuilds_a_missing_index(
+        self, data_dir: Path
+    ) -> None:
+        write_config(data_dir, REGENERATE_CONFIG)
+        ids = make_old_library(data_dir, 4)
+        (data_dir / "embeddings.index").unlink()
+        (data_dir / "embeddings.metadata").unlink()
+        state = library()
+
+        with use_embedder(FakeEmbedder()):
+            run(state.embed_all_missing())
+
+        entry = task_store.get("embedding")
+        assert entry is not None and entry.status == "completed"
+        assert entry.message == "Rebuilt the search index from 4 stored embeddings."
+        assert index_ids(data_dir) == ids
 
 
 class TestEmbedAllFromLibrary:

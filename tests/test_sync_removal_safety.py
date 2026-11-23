@@ -537,7 +537,8 @@ def test_listing_failure_writes_nothing_and_records_failed(
 def test_outcome_is_new_in_every_run_even_when_it_raises(db: SQLiteManager) -> None:
     _seed(db, _keys(3))
     plex = _FakePlex(_keys(2))
-    engine = _engine(plex, db)
+    # With an AI provider: a regenerate run is refused without one, before it starts.
+    engine = _engine(plex, db, ai_provider=MagicMock())
     engine.incremental_sync(generate_embeddings=False)
     first = engine.outcome
     assert first.removed == 1
@@ -695,6 +696,28 @@ def test_one_unread_track_reads_as_singular() -> None:
     )
     assert SyncOutcome().is_partial is False
     assert SyncOutcome().describe() == ""
+
+
+def test_index_that_could_not_be_rebuilt_makes_the_outcome_partial() -> None:
+    """The sync did its work, and the saved search index was left as it is."""
+    assert SyncOutcome().index_left_out == 0 and SyncOutcome().index_sentence == ""
+    outcome = SyncOutcome(index_left_out=380)
+
+    assert outcome.is_partial is True and outcome.reason == ""
+    assert outcome.index_sentence == (
+        "The search index was left as it is: 380 tracks hold an embedding that was made "
+        "with other embedding settings. Run 'plexmix embeddings generate --regenerate' to "
+        "replace them."
+    )
+    assert outcome.describe() == outcome.index_sentence
+    # After what the run has to say about its reads.
+    both = SyncOutcome(unread={"artists": 0, "albums": 0, "tracks": 3}, index_left_out=1)
+    assert both.describe() == (
+        "3 tracks could not be read and were kept. The search index was left as it is: "
+        "1 track holds an embedding that was made with other embedding settings. Run "
+        "'plexmix embeddings generate --regenerate' to replace it."
+    )
+    assert SyncOutcome(index_left_out=2) != SyncOutcome()
 
 
 # ===========================================================================
@@ -1367,7 +1390,8 @@ def test_allow_large_removals_backs_up_then_removes(db: SQLiteManager) -> None:
 
 
 def test_full_and_regenerate_sync_pass_the_flag_on(db: SQLiteManager) -> None:
-    engine = _engine(_FakePlex([]), db)
+    # With an AI provider: a regenerate run is refused without one, before it starts.
+    engine = _engine(_FakePlex([]), db, ai_provider=MagicMock())
 
     for run in (engine.full_sync, engine.regenerate_sync):
         with patch.object(engine, "incremental_sync") as incremental:
@@ -2080,7 +2104,7 @@ def test_unreadable_saved_index_is_not_replaced_by_an_empty_one(db: SQLiteManage
 
 
 # ===========================================================================
-# 10. A stopped regenerate says what it had already cleared
+# 10. A stopped regenerate has changed nothing
 # ===========================================================================
 
 
@@ -2092,29 +2116,45 @@ class _StoppedPlex(_FakePlex):
         yield []  # pragma: no cover  (makes this a generator, like the real method)
 
 
-def test_stopped_regenerate_history_row_says_what_was_cleared(db: SQLiteManager) -> None:
-    """ "Nothing was changed" is about the library sync. The row must agree with the database.
+def _regenerate_marker(db: SQLiteManager) -> Path:
+    """The file a regenerate run writes when it starts to replace tags or embeddings."""
+    return db.db_path.with_name(db.db_path.name + ".regenerate.json")
 
-    ``regenerate_sync`` clears the tags and embeddings before it reads Plex. When it
-    stops doing that, the added sentence has to go.
+
+def test_stopped_regenerate_changes_nothing_and_its_history_row_says_so(
+    db: SQLiteManager,
+) -> None:
+    """ "Nothing was changed" is the whole truth: a regenerate clears nothing first.
+
+    ``regenerate_sync`` used to clear the tags and embeddings before it read Plex,
+    and a sentence about that was added to the row. Both are gone.
     """
     ids = _seed(db, _keys(6))
     _add_embeddings_and_playlist(db, ids)
-    engine = _engine(_StoppedPlex(_keys(6)), db)
+    before = _snapshot(db)
+    ai_provider = MagicMock()
+    engine = _engine(_StoppedPlex(_keys(6)), db, ai_provider=ai_provider)
     sentence = "Plex stopped answering after 3 of 6 tracks were read, so nothing was changed."
-    assert engine.cleared_before_sync is False
 
     with pytest.raises(PlexReadInterrupted):
         engine.regenerate_sync(generate_embeddings=False)
 
-    cleared = all(track.tags is None for track in db.get_all_tracks())
-    assert cleared == (len(_rows(db, "embeddings")) == 0)
-    assert engine.cleared_before_sync is cleared
+    # Every tag and every embedding row is still there, and no provider was asked.
+    assert _snapshot(db) == before
+    assert all(track.tags for track in db.get_all_tracks())
+    assert len(_rows(db, "embeddings")) == 6
+    ai_provider.complete.assert_not_called()
+    assert not _regenerate_marker(db).exists()
     row = _history(db)[-1]
-    assert row["status"] == "failed" and row["error_message"].startswith(sentence)
-    assert ("had already been cleared" in row["error_message"]) == cleared
+    assert row["status"] == "failed" and row["error_message"] == sentence
+    # The run's own result agrees: nothing written, every track kept.
+    result = engine.regenerate_result
+    assert result.requested is True and result.wrote_nothing is True
+    assert result.tags.started is False and result.tracks_kept == 6
+    for gone in ("cleared_before_sync", "_failure_note"):
+        assert not hasattr(engine, gone)
 
-    # A plain sync on the same engine does not carry the sentence.
+    # A plain sync on the same engine writes the same sentence.
     with pytest.raises(PlexReadInterrupted):
         engine.incremental_sync(generate_embeddings=False)
     assert _history(db)[-1]["error_message"] == sentence
@@ -2126,32 +2166,38 @@ def test_regenerate_that_cannot_reach_plex_clears_nothing(db: SQLiteManager) -> 
     before = _snapshot(db)
     plex = _FakePlex(_keys(6))
     plex.validate_token = lambda: (False, "Cannot reach Plex server")  # type: ignore[method-assign]
-    engine = _engine(plex, db)
+    engine = _engine(plex, db, ai_provider=MagicMock())
 
     with pytest.raises(ConnectionError):
         engine.regenerate_sync(generate_embeddings=False)
 
-    assert engine.cleared_before_sync is False
     assert _snapshot(db) == before
+    assert not _regenerate_marker(db).exists()
+    assert engine.regenerate_result.wrote_nothing is True
+    assert engine.regenerate_result.tracks_kept == 6
 
 
-def test_a_plain_sync_does_not_keep_the_cleared_flag_of_an_earlier_regenerate(
+def test_a_plain_sync_does_not_keep_the_result_of_an_earlier_regenerate(
     db: SQLiteManager,
 ) -> None:
     ids = _seed(db, _keys(6))
     _add_embeddings_and_playlist(db, ids)
-    engine = _engine(_StoppedPlex(_keys(6)), db)
+    engine = _engine(_StoppedPlex(_keys(6)), db, ai_provider=MagicMock())
     with pytest.raises(PlexReadInterrupted):
         engine.regenerate_sync(generate_embeddings=False)
-    assert engine.cleared_before_sync is True
+    stopped = engine.regenerate_result
+    assert stopped.requested is True and stopped.tracks_kept == 6
 
-    # The next run on the same engine clears nothing, so the flag must not say it did.
+    # The next run on the same engine regenerates nothing, so the result must not
+    # say that a regenerate run kept tracks.
     with pytest.raises(PlexReadInterrupted):
         engine.incremental_sync(generate_embeddings=False)
-    assert engine.cleared_before_sync is False
+    assert engine.regenerate_result is not stopped
+    assert engine.regenerate_result.requested is False
+    assert engine.regenerate_result.tracks_kept == 0
     with pytest.raises(PlexReadInterrupted):
         engine.full_sync(generate_embeddings=False)
-    assert engine.cleared_before_sync is False
+    assert engine.regenerate_result.requested is False
 
 
 @pytest.mark.parametrize(
@@ -2178,7 +2224,9 @@ def test_failed_connection_check_says_that_nothing_was_changed(
     before = _snapshot(db)
     plex = _FakePlex(_keys(3))
     plex.validate_token = lambda: (False, reason)  # type: ignore[method-assign]
-    engine = _engine(plex, db)
+    # With an AI provider: a regenerate run is refused without one, before it starts.
+    ai_provider = MagicMock()
+    engine = _engine(plex, db, ai_provider=ai_provider)
 
     with pytest.raises(ConnectionError) as stopped:
         if regenerate:
@@ -2187,28 +2235,53 @@ def test_failed_connection_check_says_that_nothing_was_changed(
             engine.incremental_sync(generate_embeddings=False)
 
     assert str(stopped.value) == sentence
-    # And that is true: the check comes before any read, write or clearing.
+    # And that is true: the check comes before any read or write, and a regenerate
+    # run clears nothing and has not started to replace anything.
     assert _snapshot(db) == before
     assert engine.outcome.compared is False
     assert plex.full_reads == 0
+    ai_provider.complete.assert_not_called()
+    assert not _regenerate_marker(db).exists()
 
 
-def test_connection_check_that_fails_after_a_regenerate_cleared_does_not_say_nothing_changed(
+def test_regenerate_checks_the_connection_once_and_before_any_change(
     db: SQLiteManager,
 ) -> None:
-    """A regenerate checks Plex, clears, and then the sync it starts checks again."""
+    """A regenerate used to check Plex, clear, and check again in the sync it started.
+
+    The second check could fail after the tags and embeddings were gone, and its
+    text then ended with "The library was not synced." Now there is one check, it
+    comes before any change, and its text says so.
+    """
     ids = _seed(db, _keys(6))
     _add_embeddings_and_playlist(db, ids)
+    before = _snapshot(db)
     plex = _FakePlex(_keys(6))
-    answers = [(True, "Connected"), (False, "Cannot reach Plex server: no answer")]
+    # One answer only: a second check would find the list empty and fail the test.
+    answers = [(False, "Cannot reach Plex server: no answer")]
     plex.validate_token = lambda: answers.pop(0)  # type: ignore[method-assign]
-    engine = _engine(plex, db)
+    ai_provider = MagicMock()
+    ai_provider.complete.return_value = "{}"  # a reply that tags no track
+    engine = _engine(plex, db, ai_provider=ai_provider)
 
     with pytest.raises(ConnectionError) as stopped:
         engine.regenerate_sync(generate_embeddings=False)
 
-    # The tags and embeddings were cleared between the two checks.
-    assert engine.cleared_before_sync is True
-    assert len(_rows(db, "embeddings")) == 0
-    assert str(stopped.value) == "Cannot reach Plex server: no answer. The library was not synced."
+    assert answers == []
+    assert str(stopped.value) == "Cannot reach Plex server: no answer. Nothing was changed."
+    assert _snapshot(db) == before
+    assert len(_rows(db, "embeddings")) == 6
     assert plex.full_reads == 0
+
+    ai_provider.complete.assert_not_called()
+
+    # A run that passes the check asks Plex once as well.
+    answers.append((True, "Connected"))
+    engine.regenerate_sync(generate_embeddings=False)
+    assert answers == []
+    ai_provider.complete.assert_called_once()
+    # The reply held no tags, so every track still has the tags it had.
+    assert sorted(track.tags or "" for track in db.get_all_tracks()) == sorted(
+        f"tag-{key}" for key in _keys(6)
+    )
+    assert _snapshot(db)["embeddings"] == before["embeddings"]

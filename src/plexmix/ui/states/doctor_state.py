@@ -16,6 +16,12 @@ webui-honest-status-and-first-run, design D8:
   time.
 - A failed fix stays in ``fix_errors[target]`` (rendered on its row, with the
   action that fixes the cause) until the next scan or fix.
+
+fix-cli-secrets-and-data-loss, design D19: "Rebuild embeddings" replaces every
+embedding in place (:func:`check_embedding_rebuild`, :func:`rebuild_embeddings`).
+The provider answers one test request before anything changes, no embedding row
+and no index file is cleared first, and a refused, failed or cancelled run leaves
+every track with its new or its previous embedding.
 """
 
 import asyncio
@@ -23,9 +29,11 @@ import importlib.util
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 from threading import Event as ThreadingEvent
 from typing import (
+    TYPE_CHECKING,
     Any,
     Awaitable,
     Callable,
@@ -40,6 +48,7 @@ from typing import (
 import reflex as rx
 
 from plexmix.ai.errors import FatalProviderError
+from plexmix.config.constants import EMBEDDING_BATCH_SIZE
 from plexmix.ui.job_manager import task_store
 from plexmix.ui.states.app_state import (
     AppState,
@@ -49,6 +58,10 @@ from plexmix.ui.states.app_state import (
 )
 from plexmix.ui.utils.errors import friendly_error
 from plexmix.ui.utils.helpers import format_count, pluralize, safe_error_text
+
+if TYPE_CHECKING:
+    from plexmix.services.providers import ProviderFailure
+    from plexmix.services.regenerate_service import RegenerateRefused
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +104,9 @@ ANOTHER_FIX_RUNNING = "Another fix is running"
 NOTHING_TO_FIX = "Nothing to fix there any more. Re-scan to refresh the counts."
 SCAN_ERROR_MESSAGE = "The health check couldn't read your library. Details are in the server log."
 FIX_FAILED_MESSAGE = "The fix failed. Details are in the server log."
+FIX_CANCELLED_MESSAGE = "Fix cancelled"
+# "Rebuild embeddings" replaces in place, so a run that could not start changed nothing.
+REBUILD_NOTHING_CHANGED = "No embedding was changed."
 
 # A scan stuck in "checking" this long (lost task) no longer blocks a new one.
 SCAN_STALE_S = 120.0
@@ -373,21 +389,25 @@ def prepare_embedding_fix() -> EmbeddingFixPrep:
     if generator is None:
         provider = (settings.embedding.default_provider or "").strip().lower()
         failure = failure or ProviderFailure(rd.Cause.UNKNOWN, provider)
-        detail = failure.detail if failure.cause == rd.Cause.UNKNOWN else ""
-        record_readiness(
-            "embeddings", "failing", failure.cause.value, message=detail, fingerprint=fp
-        )
-        raise FixFailed(
-            copy_of(
-                rd.describe_failure(
-                    "embeddings", failure, {"model": rd.embedding_model_for(settings)}
-                )
-            )
-        )
+        raise FixFailed(embedding_start_failure(settings, fp, failure))
     return EmbeddingFixPrep(settings, generator, fp)
 
 
-def embedding_run_failure(settings: Any, fp: str, error: Exception) -> Dict[str, str]:
+def embedding_start_failure(settings: Any, fp: str, failure: "ProviderFailure") -> Dict[str, str]:
+    """Copy for an embedding provider that can't start; records the outcome.
+
+    ``failure`` says why: a missing key, a missing package, a model that won't load…
+    """
+    from plexmix.services import readiness as rd
+
+    detail = failure.detail if failure.cause == rd.Cause.UNKNOWN else ""
+    record_readiness("embeddings", "failing", failure.cause.value, message=detail, fingerprint=fp)
+    return copy_of(
+        rd.describe_failure("embeddings", failure, {"model": rd.embedding_model_for(settings)})
+    )
+
+
+def embedding_run_failure(settings: Any, fp: str, error: BaseException) -> Dict[str, str]:
     """Copy for an embedding run that failed part-way; records the outcome."""
     from plexmix.services import readiness as rd
     from plexmix.services.registry import embedding_provider_display_name
@@ -416,6 +436,261 @@ def embedding_run_failure(settings: Any, fp: str, error: Exception) -> Dict[str,
     if cause == rd.Cause.UNKNOWN.value:
         described["body"] = ""
     return described
+
+
+def embedding_refusal_copy(settings: Any, fp: str, refusal: "RegenerateRefused") -> Dict[str, str]:
+    """Copy for a rebuild the provider check refused; records the outcome.
+
+    The cause is the one every status surface shows for it: a provider that could
+    not start carries its typed reason, and one that did not answer the test
+    request is classified like any other failed embedding request. The check runs
+    before the rebuild changes anything, and the row says so.
+    """
+    from plexmix.services import readiness as rd
+    from plexmix.services.providers import ProviderFailure
+
+    if refusal.error is not None:
+        described = embedding_run_failure(settings, fp, refusal.error)
+    else:
+        provider = (settings.embedding.default_provider or "").strip().lower()
+        failure = refusal.failure or ProviderFailure(rd.Cause.UNKNOWN, provider)
+        if failure.cause == rd.Cause.UNKNOWN and refusal.detail:
+            # The refusal's own text: keys and address credentials are already out.
+            failure = replace(failure, detail=refusal.detail)
+        described = embedding_start_failure(settings, fp, failure)
+    described["body"] = f"{described['body']} {REBUILD_NOTHING_CHANGED}".strip()
+    return described
+
+
+def check_embedding_rebuild() -> EmbeddingFixPrep:
+    """Settings and an embedding generator that answered one test request.
+
+    Blocking: run in an executor. This is the check every regenerate action runs
+    before it changes anything (``regenerate_service.check_providers``). A provider
+    that is not ready is recorded in readiness as failing with its cause, and
+    :class:`FixFailed` carries the same cause to the Embeddings row.
+    """
+    from plexmix.config.settings import Settings
+    from plexmix.services.regenerate_service import RegenerateRefused, check_providers
+
+    settings = Settings.load_from_file()
+    if not settings.database.get_db_path().exists():
+        raise FixFailed(_not_synced_copy())
+    fp = current_fingerprint_safe("embeddings", settings)
+    try:
+        checked = check_providers(settings, need_ai=False, need_embeddings=True)
+    except RegenerateRefused as refusal:
+        logger.warning("Doctor embedding rebuild refused: %s", refusal.message)
+        # ``from None``: the refusal holds the provider's own error, which is not redacted.
+        raise FixFailed(embedding_refusal_copy(settings, fp, refusal)) from None
+    return EmbeddingFixPrep(settings, checked.embedding_generator, fp)
+
+
+def unreadable_index_copy(files: Sequence[Path]) -> Dict[str, str]:
+    """Copy for a saved search index that can be neither read nor moved aside.
+
+    PlexMix never writes over such a file, so a rebuild could not save its index
+    and would end without one.
+    """
+    names = " and ".join(str(file) for file in files)
+    return {
+        "title": "The search index file couldn't be read or moved aside",
+        "body": (
+            f"PlexMix won't write over a file it couldn't read. Move {names} out of the "
+            f"way, then run this fix again. {REBUILD_NOTHING_CHANGED}"
+        ),
+    }
+
+
+class IndexLeft(NamedTuple):
+    """A fix saved embeddings, and the search index was left as it is.
+
+    ``left_out`` tracks hold an embedding and none of the current provider and
+    vector size, so ``index_rebuild.rebuild_index`` built and saved nothing.
+    ``other_provider`` of them hold embeddings of other providers only.
+    """
+
+    left_out: int
+    other_provider: int = 0
+
+
+def index_left(db: Any, model: str, left_out: int) -> Optional[IndexLeft]:
+    """What kept the index of ``model`` from being rebuilt; None when it was rebuilt.
+
+    ``left_out`` is the refusal of the last rebuild (``library_state.refused_rebuild``).
+    Blocking (one count query): call it where ``db`` is used.
+    """
+    if left_out <= 0:
+        return None
+    other = db.count_tracks_with_only_other_embeddings(model)
+    return IndexLeft(left_out, other if isinstance(other, int) and other > 0 else 0)
+
+
+def index_not_updated_failure(settings: Any, left: IndexLeft, done_note: str) -> Dict[str, str]:
+    """Row copy for a fix that saved embeddings while the search index was left as it is.
+
+    The words are the Library's (``library_state.index_not_updated_copy``): how many
+    tracks are in the way and what replaces their embeddings. ``done_note`` says
+    what the fix did write. "Rebuild embeddings" is a fix of this page, which the
+    Embeddings row offers itself while the index does not match the provider, so
+    the row's link is the other way out: switching back in Settings.
+    """
+    from plexmix.services import readiness as rd
+    from plexmix.ui.states.library_state import index_not_updated_copy
+
+    copy = index_not_updated_copy(settings, left.left_out, left.other_provider)
+    on_this_page = copy["action_href"] == rd.DOCTOR_HREF
+    return {
+        "title": copy["title"],
+        "body": f"{done_note} {copy['body']}".strip(),
+        "action_label": copy["secondary_label"] if on_this_page else copy["action_label"],
+        "action_href": copy["secondary_href"] if on_this_page else copy["action_href"],
+    }
+
+
+def index_left_note(settings: Any, left: Optional[IndexLeft]) -> str:
+    """One more sentence for a rebuild that was stopped part-way; "" when the index followed.
+
+    Says that the search index was not updated, how many tracks are in the way and
+    what replaces their embeddings: "Rebuild embeddings" again while the saved
+    index does not match the provider.
+    """
+    if left is None:
+        return ""
+    from plexmix.ui.states.library_state import index_not_updated_copy
+
+    copy = index_not_updated_copy(settings, left.left_out, left.other_provider)
+    return f"{copy['title']}. {copy['body']}"
+
+
+def rebuild_progress_note(done: int, total: int) -> str:
+    """What a rebuild that did not replace every embedding left behind."""
+    if done <= 0:
+        return REBUILD_NOTHING_CHANGED
+    return (
+        f"{format_count(done)} of {pluralize(total, 'track')} got a new embedding. "
+        "The others keep the embedding they had."
+    )
+
+
+def rebuild_embeddings(prep: EmbeddingFixPrep, cancel_event: ThreadingEvent) -> str:
+    """Replace the embedding of every track in place; returns the result message.
+
+    Blocking: run in an executor, after :func:`check_embedding_rebuild`. Nothing is
+    cleared first. A track keeps its embedding row until the new one is saved over
+    it, so a provider error or a cancel request leaves every track with its new or
+    its previous embedding. The run marker of the CLI regenerate commands is not
+    read: this fix embeds every track, as its confirmation says.
+
+    The search index is written by the sync engine's own code, which goes through
+    ``index_rebuild.rebuild_index``: the index is built and saved only when it is
+    complete. After a pass that reached its end, ``finish_embeddings_pass`` removes
+    the rows of other models (only once every track has a row of this one) and
+    rebuilds the index. After a pass that was stopped part-way,
+    ``follow_rows_after_stopped_pass`` lets the index follow the rows, the new and
+    the previous. While a track still holds only an embedding of another provider
+    or vector size, nothing is built and the saved index stays as it is: an index
+    of the rows that fit would take the place of the library's, and with it would
+    go the dimension mismatch that makes Doctor offer this fix. The result then
+    says that the search index was not updated (:func:`index_left_note`), and a
+    rebuild that reached its end fails with that message instead of a success.
+
+    Raises :class:`FixFailed` when the provider failed part-way. The failure is
+    recorded in readiness, and the row message says how far the rebuild got.
+    """
+    from plexmix.database.sqlite_manager import SQLiteManager
+    from plexmix.plex.sync import finish_embeddings_pass, follow_rows_after_stopped_pass
+    from plexmix.services.sync_service import build_vector_index
+    from plexmix.services.tagging_service import generate_embeddings_for_tracks
+    from plexmix.ui.states.library_state import refused_rebuild
+
+    settings, generator = prep.settings, prep.generator
+    model = generator.provider_name
+    done = 0
+    error: Optional[Exception] = None
+    left: Optional[IndexLeft] = None
+
+    with SQLiteManager(str(settings.database.get_db_path())) as db:
+        tracks = [track for track in db.get_all_tracks() if track.id is not None]
+        total = len(tracks)
+        if not total:
+            return "No tracks available to embed."
+        extra = {"fix_target": "embeddings_full", "fix_total": total}
+        task_store.update(FIX_JOB, extra=extra)
+        # Opened before the first batch, so an index that cannot be replaced stops
+        # the fix before the provider is paid for anything. A saved index that
+        # cannot be read is moved aside by the load, never deleted. One that cannot
+        # be moved either is never written over, so this fix could not save its index.
+        vector_index = build_vector_index(settings, generator)
+        if vector_index.unmoved_paths:
+            raise FixFailed(unreadable_index_copy(vector_index.unmoved_paths))
+
+        def on_progress(generated: int, _total: int) -> None:
+            nonlocal done
+            done = generated
+            task_store.update(
+                FIX_JOB,
+                progress=generated,
+                message=f"Regenerating embeddings... {generated}/{total}",
+                extra=extra,
+            )
+
+        try:
+            done = generate_embeddings_for_tracks(
+                db,
+                generator,
+                tracks,
+                batch_size=EMBEDDING_BATCH_SIZE,
+                progress_callback=on_progress,
+                cancel_event=cancel_event,
+            )
+        except Exception as e:
+            error = e
+
+        stopped = error is not None or (cancel_event.is_set() and done < total)
+        if done and not stopped:
+            finish_embeddings_pass(db, vector_index, model)
+        elif done:
+            # Never raises: the rows are saved either way, and what stopped the
+            # pass is what this fix reports.
+            follow_rows_after_stopped_pass(db, vector_index, model)
+        if done:
+            left = index_left(db, model, refused_rebuild(vector_index))
+
+    if error is not None:
+        described = embedding_run_failure(settings, prep.fingerprint, error)
+        logger.error(
+            "Doctor embedding rebuild stopped after %d of %d tracks: %s",
+            done,
+            total,
+            described["title"],
+        )
+        note = f"{rebuild_progress_note(done, total)} {index_left_note(settings, left)}".strip()
+        described["body"] = f"{described['body']} {note}".strip()
+        raise FixFailed(described)
+
+    if done:
+        record_readiness("embeddings", "ready", fingerprint=prep.fingerprint)
+    if done >= total:
+        if left is not None:
+            # Every track got its new embedding, and the index could still not be
+            # rebuilt. That is no success: the row says what is in the way.
+            got = (
+                f"{'The' if total == 1 else 'All'} {pluralize(total, 'track')} got a new embedding."
+            )
+            raise FixFailed(index_not_updated_failure(settings, left, got))
+        return f"Rebuilt the search index with {pluralize(done, 'track')}."
+    if left is not None and not cancel_event.is_set():
+        # The provider answered with fewer vectors than it was sent, and the index
+        # could not be rebuilt either. Like a rebuild that replaced every track, that
+        # is no success: the row, the toast and the status say what is in the way.
+        raise FixFailed(
+            index_not_updated_failure(settings, left, rebuild_progress_note(done, total))
+        )
+    note = f"{rebuild_progress_note(done, total)} {index_left_note(settings, left)}".strip()
+    if cancel_event.is_set():
+        task_store.update(FIX_JOB, extra={"cancel_msg": f"{FIX_CANCELLED_MESSAGE}. {note}"})
+    return note
 
 
 class TagFixPrep(NamedTuple):
@@ -940,6 +1215,25 @@ class DoctorState(AppState):
         )
 
     async def _embeddings_body(self, cancel_event: ThreadingEvent, *, rebuild: bool) -> str:
+        from plexmix.ui.states.library_state import (
+            REGENERATE_RUNNING_BODY,
+            REGENERATE_RUNNING_TITLE,
+            regenerate_sync_running,
+        )
+
+        if regenerate_sync_running():
+            # The Library's "Regenerate" sync is replacing the embeddings and saves
+            # the search index itself. Two writers would pay the provider twice and
+            # save the same index files over each other.
+            raise FixFailed(
+                {
+                    "title": REGENERATE_RUNNING_TITLE,
+                    "body": f"{REGENERATE_RUNNING_BODY} {REBUILD_NOTHING_CHANGED}",
+                }
+            )
+        if rebuild:
+            return await self._rebuild_embeddings_body(cancel_event)
+
         from plexmix.database.sqlite_manager import SQLiteManager
         from plexmix.database.vector_index import VectorIndex
 
@@ -949,51 +1243,28 @@ class DoctorState(AppState):
         db_path = settings.database.get_db_path()
         index_path = settings.database.get_index_path()
 
-        if rebuild:
-
-            def clear_index() -> None:
-                if index_path.exists():
-                    index_path.unlink()
-                metadata_path = index_path.with_suffix(".metadata")
-                if metadata_path.exists():
-                    metadata_path.unlink()
-
-            await loop.run_in_executor(None, clear_index)
-
         vector_index = await loop.run_in_executor(
             None,
             lambda: VectorIndex(dimension=generator.get_dimension(), index_path=str(index_path)),
         )
 
         with SQLiteManager(str(db_path)) as db:
-            if rebuild:
-
-                def reset_embeddings() -> List[Any]:
-                    cursor = db.get_connection().cursor()
-                    cursor.execute("DELETE FROM embeddings")
-                    db._commit()
-                    return list(db.get_all_tracks())
-
-                tracks_to_embed = await loop.run_in_executor(None, reset_embeddings)
-            else:
-                tracks_to_embed = await loop.run_in_executor(
-                    None,
-                    lambda: [
-                        t
-                        for t in db.get_all_tracks()
-                        if t.id is not None and not db.get_embedding_by_track_id(t.id)
-                    ],
-                )
+            tracks_to_embed = await loop.run_in_executor(
+                None,
+                lambda: [
+                    t
+                    for t in db.get_all_tracks()
+                    if t.id is not None and not db.get_embedding_by_track_id(t.id)
+                ],
+            )
             try:
-                count = await self._generate_embeddings_for_tracks(
+                count, left = await self._generate_embeddings_for_tracks(
                     tracks_to_embed=tracks_to_embed,
                     embedding_generator=generator,
                     vector_index=vector_index,
                     db=db,
                     index_path=index_path,
-                    progress_label=(
-                        "Regenerating embeddings..." if rebuild else "Generating embeddings..."
-                    ),
+                    progress_label="Generating embeddings...",
                     cancel_event=cancel_event,
                 )
             except Exception as e:
@@ -1002,13 +1273,32 @@ class DoctorState(AppState):
 
         if count:
             record_readiness("embeddings", "ready", fingerprint=prep.fingerprint)
-        if rebuild:
-            if count:
-                return f"Rebuilt the search index with {pluralize(count, 'track')}."
-            return "No tracks available to embed."
+        if left is not None:
+            # The new embeddings are saved, and the search index was left as it is:
+            # tracks hold an embedding of another provider or vector size. That is
+            # no success, so the row says what is in the way.
+            wrote = f"Generated embeddings for {pluralize(count, 'track')}." if count else ""
+            if cancel_event.is_set():
+                # The user stopped it: the task ends as cancelled, as a rebuild that is
+                # stopped does, and its message still says that the index was not updated.
+                note = f"{wrote} {index_left_note(settings, left)}".strip()
+                task_store.update(FIX_JOB, extra={"cancel_msg": f"{FIX_CANCELLED_MESSAGE}. {note}"})
+                return note
+            raise FixFailed(index_not_updated_failure(settings, left, wrote))
         if count:
             return f"Generated embeddings for {pluralize(count, 'track')}."
         return "All tracks already have embeddings."
+
+    async def _rebuild_embeddings_body(self, cancel_event: ThreadingEvent) -> str:
+        """The "Rebuild embeddings" fix: check the provider, then replace every embedding.
+
+        Nothing is cleared before its replacement exists (see :func:`rebuild_embeddings`).
+        Both steps block on the provider, the database and the index, so both run in
+        an executor, and neither touches state.
+        """
+        loop = asyncio.get_running_loop()
+        prep = await loop.run_in_executor(None, check_embedding_rebuild)
+        return await loop.run_in_executor(None, rebuild_embeddings, prep, cancel_event)
 
     @rx.event
     def open_retag_confirm(self):
@@ -1041,7 +1331,7 @@ class DoctorState(AppState):
         )
 
     async def _tags_body(self, cancel_event: ThreadingEvent, *, all_tracks: bool) -> str:
-        from plexmix.ai.tag_generator import TagGenerator
+        from plexmix.ai.tag_generator import TagGenerator, clean_tag_list
         from plexmix.database.sqlite_manager import SQLiteManager
         from plexmix.services.tagging_service import build_track_embedding_data
 
@@ -1094,16 +1384,20 @@ class DoctorState(AppState):
 
                 count = 0
                 for track_id, tag_data in results.items():
-                    tags = ",".join(tag_data.get("tags", []))
-                    environments = ",".join(tag_data.get("environments", []))
-                    instruments = ",".join(tag_data.get("instruments", []))
+                    # Only items with content count (``clean_tag_list``): a list of
+                    # blanks is an empty list, and never writes "" or "," over tags.
+                    tags = ",".join(clean_tag_list(tag_data.get("tags")))
+                    environments = ",".join(clean_tag_list(tag_data.get("environments")))
+                    instruments = ",".join(clean_tag_list(tag_data.get("instruments")))
 
                     if tags or environments or instruments:
+                        # None leaves a column as it is: an empty list in the reply
+                        # never blanks what the track already has.
                         db.update_track_tags(
                             track_id,
-                            tags=tags,
-                            environments=environments,
-                            instruments=instruments,
+                            tags=tags or None,
+                            environments=environments or None,
+                            instruments=instruments or None,
                         )
                         count += 1
                 if fatal:
@@ -1275,18 +1569,25 @@ class DoctorState(AppState):
         index_path: Path,
         progress_label: str,
         cancel_event: Optional[ThreadingEvent] = None,
-    ) -> int:
-        """Generate embeddings for tracks. Returns count of embeddings saved."""
+    ) -> tuple[int, Optional[IndexLeft]]:
+        """Generate embeddings for tracks, then rebuild the search index from the rows.
+
+        Returns the count of embeddings saved, and what kept the index from being
+        rebuilt (None when it was rebuilt, and when there was no track to embed).
+        The index goes through ``index_rebuild.rebuild_index``: it is built and
+        saved only when it is complete, and otherwise the saved one stays as it is.
+        """
+        from plexmix.database.index_rebuild import rebuild_index
         from plexmix.database.models import Embedding
         from plexmix.utils.embeddings import create_track_text
 
         if not tracks_to_embed:
-            return 0
+            return 0, None
 
         total = len(tracks_to_embed)
         batch_size = 50
 
-        def run_embedding_generation() -> int:
+        def run_embedding_generation() -> tuple[int, Optional[IndexLeft]]:
             embeddings_saved = 0
 
             for i in range(0, len(tracks_to_embed), batch_size):
@@ -1333,17 +1634,12 @@ class DoctorState(AppState):
                         extra={"fix_total": total},
                     )
 
-            # Scope to the active model so a DB with mixed-model rows (after a
-            # provider switch) doesn't crash the rebuild with ragged dimensions.
-            all_embeddings = db.get_all_embeddings(embedding_generator.provider_name)
-            track_ids = [emb[0] for emb in all_embeddings]
-            vectors = [emb[1] for emb in all_embeddings]
-
-            if track_ids:
-                vector_index.build_index(vectors, track_ids)
-                vector_index.save_index(str(index_path))
-
-            return embeddings_saved
+            # From the rows of the active model, and only when that index is
+            # complete. While a track holds only an embedding of another provider
+            # or vector size, nothing is built and the saved index stays as it is.
+            model = embedding_generator.provider_name
+            rebuilt = rebuild_index(db, vector_index, model, index_path=str(index_path))
+            return embeddings_saved, index_left(db, model, rebuilt.left_out)
 
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, run_embedding_generation)
@@ -1390,7 +1686,9 @@ class DoctorState(AppState):
                 self.fix_errors = errors
             return rx.toast.error(msg)
         if entry.status == "cancelled":
-            return [rx.toast.warning("Fix cancelled"), DoctorState.run_health_check]
+            # A fix that replaces data says what the cancel left behind.
+            msg = str(entry.extra.get("cancel_msg", "") or "") or FIX_CANCELLED_MESSAGE
+            return [rx.toast.warning(msg), DoctorState.run_health_check]
         return None
 
     # ── Labels ───────────────────────────────────────────────────────

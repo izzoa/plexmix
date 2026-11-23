@@ -11,12 +11,14 @@ source order, that ``assets/<name>`` declares for ``selector``: at the top level
 prop, media=None)`` narrows that to one property's values; ``declarations_in`` and
 ``media_block_in`` do the same on a CSS string.
 
-Sections below: one per owner of the change (shell, pages, settings, carryover, sweep).
+Sections below: one per owner of the change (shell, pages, settings, carryover, sweep,
+dialogs; the dialogs owner belongs to webui-dialog-fit).
 """
 
 from __future__ import annotations
 
 import ast
+import base64
 import re
 from collections.abc import Iterator
 from functools import lru_cache
@@ -31,7 +33,7 @@ STYLES = "styles.css"
 
 ZOOM_FIT_START = "/* === Zoom & narrow fit === */"
 ZOOM_FIT_END = "/* === end zoom & narrow fit === */"
-ZOOM_FIT_OWNERS = ("shell", "pages", "settings", "carryover", "sweep")
+ZOOM_FIT_OWNERS = ("shell", "pages", "settings", "carryover", "sweep", "dialogs")
 
 _COMMENT = re.compile(r"/\*.*?\*/", re.S)
 # A rule with no nested braces: "<selectors> { <declarations> }".
@@ -581,7 +583,14 @@ def test_palette_fits_the_viewport() -> None:
 
 def test_palette_sizing_never_touches_unscoped_dialog_classes() -> None:
     """Only the palette's dialog is resized: the palette hooks name ``.cmdk``, and no rule
-    restyles the shared Radix dialog wrappers without a class of our own."""
+    restyles the shared Radix dialog wrappers without a class of our own.
+
+    One exception, recorded in webui-dialog-fit (design D3) and in the rule's own comment: the
+    padding wrapper's ``min-width: 0``, which lets every dialog shrink to the window instead of
+    scrolling the dialog layer sideways. It is allowed only as the exact triple (redesign.css,
+    ``.rt-BaseDialogScrollPadding``, ``min-width: 0;``); a second declaration, a second copy or
+    any other selector without a class of our own still fails.
+    """
     hooks = [
         selector
         for selectors, _body in rules(strip_comments(css_text(REDESIGN)))
@@ -590,11 +599,16 @@ def test_palette_sizing_never_touches_unscoped_dialog_classes() -> None:
     ]
     assert sorted(set(hooks)) == [".rt-DialogContent.cmdk", ".rt-DialogScrollPadding:has(> .cmdk)"]
     for name in (REDESIGN, STYLES):
-        for selectors, _body in rules(strip_comments(css_text(name))):
+        for selectors, body in rules(strip_comments(css_text(name))):
             for selector in selectors:
                 if re.search(r"\.rt-(?:Base)?Dialog(?:Scroll|ScrollPadding|Content)\b", selector):
                     own = re.findall(r"\.(?!rt-)[A-Za-z][\w-]*", selector)
-                    assert own, (name, selector)
+                    if not own:
+                        assert (name, selector, " ".join(body.split())) == (
+                            REDESIGN,
+                            ".rt-BaseDialogScrollPadding",
+                            "min-width: 0;",
+                        ), (name, selector)
 
 
 # --- pages ---
@@ -896,8 +910,27 @@ _LAYOUT_SHEETS = ("styles.css", "colors_and_type.css", "redesign.css")
 _TOKEN_70 = "the_quick_brown_fox_jumps_over_the_lazy_dog_extended_clubmix_final.mp3"
 
 
-def _layout_page(body: str, width: int, height: int, **context: Any) -> Iterator[Any]:
-    """Yield a page showing ``body`` inside the shell's scroll container."""
+# Resolves once the faces the playlist dialog is set in are loaded, and returns their families.
+_FONTS_READY_JS = """async () => {
+  const faces = await Promise.all([
+    document.fonts.load("700 23px 'Space Grotesk'", "Ab"),
+    document.fonts.load("400 14px 'IBM Plex Sans'", "Ab")]);
+  await document.fonts.ready;
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  return faces.flat().filter((face) => face.status === 'loaded')
+    .map((face) => face.family.replace(/['"]/g, '')); }"""
+
+
+def _layout_page(
+    body: str, width: int, height: int, *, fonts: bool = False, **context: Any
+) -> Iterator[Any]:
+    """Yield a page showing ``body`` inside the shell's scroll container.
+
+    The app's web fonts are refused by default: the fallback face keeps the widths other tests
+    measure. A test that looks at glyph ink needs the app's own letter shapes (the overhang of
+    ``Ï`` or ``j`` is a property of the face), so it passes ``fonts=True``: the woff2 files are
+    served from ``assets/fonts`` and the page is yielded once they are loaded. The helper fails
+    when they did not load, so such a test can never pass on the fallback face by accident."""
     sync_api = pytest.importorskip("playwright.sync_api")
     doc = (
         "<!doctype html><html lang='en'><head><meta charset='utf-8'>"
@@ -909,8 +942,14 @@ def _layout_page(body: str, width: int, height: int, **context: Any) -> Iterator
     def serve(route: Any) -> None:
         url = route.request.url
         name = url.rsplit("/", 1)[-1]
-        if not url.startswith(_LAYOUT_ORIGIN) or name.endswith(".woff2"):
+        if not url.startswith(_LAYOUT_ORIGIN):
             route.abort()
+        elif name.endswith(".woff2"):
+            face = ASSETS / "fonts" / name
+            if fonts and face.is_file():
+                route.fulfill(body=face.read_bytes(), content_type="font/woff2")
+            else:
+                route.abort()
         elif name in _LAYOUT_SHEETS:
             route.fulfill(body=css_text(name), content_type="text/css")
         else:
@@ -926,6 +965,9 @@ def _layout_page(body: str, width: int, height: int, **context: Any) -> Iterator
             page = ctx.new_page()
             page.route("**/*", serve)
             page.goto(f"{_LAYOUT_ORIGIN}/fixture")
+            if fonts:
+                loaded = page.evaluate(_FONTS_READY_JS)
+                assert "Space Grotesk" in loaded and "IBM Plex Sans" in loaded, loaded
             yield page
         finally:
             browser.close()
@@ -2219,6 +2261,439 @@ def test_check_reflow_gates_the_scroll_cues() -> None:
     assert "(max-width: 768px)" in zoom_fit_section()
 
 
+# --- gate: dialogs (check 8) ---
+# check_reflow.py opens the playlist detail, its delete confirmation and the changelog. Hard
+# checks (check id "dialog") gate; design floors (check id "dialog-floor", soft, one id each)
+# gate when their id is in DIALOG_GATING_FLOORS (all five, since the live run of task 8.1).
+# These tests need Playwright because the
+# script imports it; the pure ones use no browser, the last two measure real pages.
+
+_PANEL_640x400 = {
+    "left": 16.0,
+    "top": 16.0,
+    "right": 624.0,
+    "bottom": 384.0,
+    "width": 608.0,
+    "height": 368.0,
+}
+
+
+def _dialog_measure(**over: Any) -> dict[str, Any]:
+    """A good measurement of an open dialog at 640x400 (what DIALOG_JS returns)."""
+    measure: dict[str, Any] = {
+        "open": True,
+        "vw": 640,
+        "vh": 400,
+        "role": "dialog",
+        "el": "div.rt-BaseDialogContent.pl-dialog",
+        "stacked": 1,
+        "panel": dict(_PANEL_640x400),
+        "overlayOverflowX": 0,
+        "overlayOverflowY": 0,
+        "panelOverflowX": 0,
+        "innerScrollers": [],
+        "controls": 9,
+        "unreachable": [],
+        "unreachableCount": 0,
+        "closed": True,
+        "settled": True,
+    }
+    measure.update(over)
+    return measure
+
+
+def _track_list(rows: int, visible: float, height: float = 178.0) -> dict[str, Any]:
+    return {"clientHeight": height, "rowHeight": 49.5, "rows": rows, "rowsVisible": visible}
+
+
+def test_check_reflow_dialog_hard_checks_each_gate() -> None:
+    """Check 8's hard checks: a good dictionary gives nothing, and each bad condition gives
+    its own message, under check id "dialog" and never soft."""
+    cr = _check_reflow()
+    assert cr.dialog_failures("Changelog", _dialog_measure()) == []
+    bad = _dialog_measure(
+        overlayOverflowX=332,
+        panel=dict(_PANEL_640x400, left=2.0, right=638.0, width=636.0),
+        panelOverflowX=12,
+        innerScrollers=[{"el": "div.rt-ScrollAreaViewport", "by": 123}],
+        controls=106,
+        unreachableCount=103,
+        unreachable=[
+            {
+                "el": "button.icon-btn [Close]",
+                "rect": {"left": 700.0, "right": 734.0},
+                "neededSideways": True,
+                "onScreen": False,
+                "hit": None,
+            }
+        ],
+        closed=False,
+    )
+    failures = cr.dialog_failures("History detail", bad)
+    details = " | ".join(f["detail"] for f in failures)
+    for needle in (
+        "History detail: the dialog overlay scrolls sideways by 332px",
+        "History detail: the panel spans 2.0..638.0 of 640px (needs a 4px margin on both sides)",
+        "History detail: the panel scrolls sideways by 12px",
+        "History detail: 1 region(s) scroll sideways: div.rt-ScrollAreaViewport by 123px",
+        "History detail: 103 of 106 control(s) off screen or covered: "
+        "button.icon-btn [Close] (700.0..734.0, needs a sideways scroll)",
+        "History detail: the dialog did not close on Escape",
+    ):
+        assert needle in details, needle
+    assert len(failures) == 6
+    assert {f["check"] for f in failures} == {"dialog"}
+    assert not any(f.get("soft") for f in failures)
+    # A control covered by another box says what covers it.
+    covered = _dialog_measure(
+        controls=3,
+        unreachableCount=1,
+        unreachable=[
+            {
+                "el": "button.btn [Save]",
+                "rect": {"left": 10.0, "right": 90.0},
+                "neededSideways": False,
+                "onScreen": True,
+                "hit": "div.sticky",
+            }
+        ],
+    )
+    assert "covered by div.sticky" in cr.dialog_failures("Changelog", covered)[0]["detail"]
+    # A dialog that never opened is one hard failure and nothing else is measured.
+    never = cr.dialog_failures("Changelog", {"open": False})
+    assert [(f["check"], f["detail"]) for f in never] == [
+        ("dialog", "Changelog: the dialog did not open")
+    ]
+    assert not never[0].get("soft")
+
+
+def test_check_reflow_history_card_that_counts_tracks_must_render_rows() -> None:
+    """A playlist whose card says it has tracks but whose detail shows no row is one hard
+    failure; one that counts none is fine."""
+    cr = _check_reflow()
+    result = {"status": "ok", "trackCount": 50, "rowsMissing": True, "detail": _dialog_measure()}
+    failures = cr.history_dialogs_failures(result)
+    assert [(f["check"], f["detail"]) for f in failures] == [
+        (
+            "dialog",
+            "History detail: the playlist counts 50 track(s) but the detail shows no track row",
+        )
+    ]
+    empty = {"status": "ok", "trackCount": 0, "rowsMissing": False, "detail": _dialog_measure()}
+    assert cr.history_dialogs_failures(empty) == []
+    skipped = {"status": "skipped: no saved playlists"}
+    assert cr.history_dialogs_failures(skipped) == []
+    # The delete confirmation is measured with the hard checks only.
+    confirm = _dialog_measure(overlayOverflowX=40)
+    with_confirm = dict(empty, confirm=confirm)
+    got = cr.history_dialogs_failures(with_confirm)
+    assert [f["check"] for f in got] == ["dialog"]
+    assert got[0]["detail"].startswith("Delete confirmation: the dialog overlay scrolls")
+
+
+def test_check_reflow_dialog_floors_are_soft_and_named() -> None:
+    """Check 8's design floors: check id "dialog-floor", soft, one floor id each, and each of
+    them gates (DIALOG_GATING_FLOORS holds all five, measured live in task 8.1)."""
+    cr = _check_reflow()
+    assert cr.DIALOG_GATING_FLOORS == frozenset(
+        {"rows", "layer-y", "header-lines", "title-width", "row-parts"}
+    )
+    assert cr.DIALOG_GATING_FLOORS == frozenset(cr.DIALOG_FLOORS)
+    # The numbers of the floors are the spec's: two rows and a 120px title column.
+    assert cr.HISTORY_MIN_VISIBLE_ROWS == 2.0
+    assert cr.HISTORY_TITLE_MIN_WIDTH == 120.0
+    assert cr.CLAMP_MAX_LINES == 2
+    assert cr.DIALOG_FLOORS == ("rows", "layer-y", "header-lines", "title-width", "row-parts")
+    bad = _dialog_measure(
+        overlayOverflowY=12,
+        trackList=_track_list(rows=50, visible=1.0),
+        fixtureHeader={"titleLines": 4, "promptLines": 11},
+        fixtureRows=[
+            {"titleColumnWidth": 62.0, "duration": True, "moveButtons": True},
+            {"titleColumnWidth": 204.0, "duration": False, "moveButtons": False},
+        ],
+    )
+    failures = cr.dialog_failures("History detail", bad, history=True, fixture=True)
+    assert {f["check"] for f in failures} == {"dialog-floor"}
+    assert all(f["soft"] is True for f in failures)
+    assert [f["floor"] for f in failures] == [
+        "rows",
+        "layer-y",
+        "header-lines",
+        "header-lines",
+        "title-width",
+        "row-parts",
+    ]
+    assert set(f["floor"] for f in failures) == set(cr.DIALOG_FLOORS)
+    details = " | ".join(f["detail"] for f in failures)
+    for needle in (
+        "the track list shows 1.0 rows (178.0px of a 368.0px panel; at least 2 needed)",
+        "the dialog overlay scrolls by 12px (only the track list should scroll)",
+        "the playlist name shows 4 lines (max 2)",
+        "the prompt shows 11 lines (max 2)",
+        "track row 1: title column 62.0px wide (at least 120px)",
+        "track row 2: duration, moveButtons not inside the track list",
+    ):
+        assert needle in details, needle
+    # Without the fixture only rows and layer-y exist; without history, neither.
+    plain = cr.dialog_failures("History detail", bad, history=True)
+    assert [f["floor"] for f in plain] == ["rows", "layer-y"]
+    assert cr.dialog_failures("Changelog", bad) == []
+    # layer-y and rows are asked for at 400px of height or more (320x256 cannot hold a list).
+    short = dict(bad, vh=384)
+    assert cr.dialog_failures("History detail", short, history=True) == []
+
+
+def test_check_reflow_row_floor_counts_a_short_playlist_by_its_own_rows() -> None:
+    """The row floor is the smaller of HISTORY_MIN_VISIBLE_ROWS and the playlist's rows: a
+    two-track playlist that shows both rows passes, one that hides a row does not."""
+    cr = _check_reflow()
+    assert cr.HISTORY_MIN_VISIBLE_ROWS == 2.0
+    # 2.84 and 2.75 are the live values at 320x640 and 640x400 with the long-string fixture.
+    for rows, visible in (
+        (2, 2.0),
+        (1, 1.0),
+        (2, 2.5),
+        (50, 3.06),
+        (50, 3.0),
+        (50, 2.84),
+        (50, 2.75),
+        (50, 2.0),
+    ):
+        measure = _dialog_measure(trackList=_track_list(rows=rows, visible=visible))
+        assert cr.dialog_failures("History detail", measure, history=True) == [], (rows, visible)
+    for rows, visible in ((2, 1.0), (1, 0.4), (50, 1.9)):
+        measure = _dialog_measure(trackList=_track_list(rows=rows, visible=visible))
+        floors = [f["floor"] for f in cr.dialog_failures("History detail", measure, history=True)]
+        assert floors == ["rows"], (rows, visible)
+
+
+def test_check_reflow_failure_gates_switches_each_floor_on_by_its_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hard failure gates when its viewport gates; a soft one only when its floor id is in
+    the set (DIALOG_GATING_FLOORS holds every floor id since task 8.1)."""
+    cr = _check_reflow()
+    hard = cr._failure("dialog", "x")
+    older = cr._failure("overflow", "x")
+    soft = {"check": "dialog-floor", "floor": "rows", "soft": True, "detail": "x"}
+    for failure in (hard, older):
+        assert cr.failure_gates(failure, True) is True
+        assert cr.failure_gates(failure, False) is False
+    # By default every floor of check 8 gates on a gate viewport, and none on another one.
+    for floor in cr.DIALOG_FLOORS:
+        assert cr.failure_gates(dict(soft, floor=floor), True) is True, floor
+        assert cr.failure_gates(dict(soft, floor=floor), False) is False, floor
+    assert cr.failure_gates(dict(soft, floor="not-a-floor"), True) is False
+    # With an empty set (a floor that could not be measured live) a soft failure only reports.
+    assert cr.failure_gates(soft, True, frozenset()) is False
+    assert cr.failure_gates(soft, False) is False
+    assert cr.failure_gates(soft, True, frozenset({"rows"})) is True
+    assert cr.failure_gates(soft, False, frozenset({"rows"})) is False
+    assert cr.failure_gates(soft, True, frozenset({"layer-y", "title-width"})) is False
+    monkeypatch.setattr(cr, "DIALOG_GATING_FLOORS", frozenset({"rows"}))
+    assert cr.failure_gates(soft, True) is True
+    assert cr.failure_gates(dict(soft, floor="layer-y"), True) is False
+
+
+def test_check_reflow_exit_status_fails_a_skipped_fixture_only_with_require_fixtures() -> None:
+    cr = _check_reflow()
+    gate = {"width": 320, "height": 640, "gate": True}
+    informational = {"width": 390, "height": 844, "gate": False}
+    reports = [
+        {
+            "viewport": gate,
+            "theme": "light",
+            "routes": {
+                "/history": {"notes": ["dialog fixture skipped: no saved playlists", "busy"]},
+                "/library": {"notes": ["fixture skipped: no Library rows"]},
+                "/doctor": {"notes": []},
+            },
+        },
+        {
+            "viewport": informational,
+            "theme": "dark",
+            "routes": {"/history": {"notes": ["dialog fixture skipped: no saved playlists"]}},
+        },
+    ]
+    skipped = cr.skipped_fixtures(reports)
+    assert [(s["route"], s["viewport"], s["theme"]) for s in skipped] == [
+        ("/history", "320x640", "light"),
+        ("/library", "320x640", "light"),
+    ]  # none from the informational size
+    assert cr.exit_status([], skipped, False) == 0
+    assert cr.exit_status([], skipped, True) == 1
+    assert cr.exit_status([], [], True) == 0
+    assert cr.exit_status([{"check": "dialog"}], [], False) == 1
+    assert cr.exit_status([{"check": "dialog"}], skipped, True) == 1
+
+
+def test_check_reflow_confirm_dialogs_is_opt_in() -> None:
+    cr = _check_reflow()
+    args = cr.build_parser().parse_args([])
+    assert args.confirm_dialogs is False
+    assert args.skip_dialogs is False
+    assert args.require_fixtures is False
+    assert cr.build_parser().parse_args(["--confirm-dialogs"]).confirm_dialogs is True
+    # The note of a skipped confirmation step names "fixture skipped", so --require-fixtures
+    # counts it; the check's id is not "skipped" when the flag is absent (no note at all).
+    assert cr.CONFIRM_BUTTON_NOTE == "skipped: no single Delete button that opens a dialog"
+    assert "fixture skipped" in f"dialog fixture {cr.CONFIRM_BUTTON_NOTE}"
+    assert cr.ConfirmGuard().enabled is False
+    assert cr.ConfirmGuard().tripped is False
+
+
+class _FakeKeyboard:
+    def __init__(self) -> None:
+        self.pressed: list[str] = []
+
+    def press(self, key: str) -> None:
+        self.pressed.append(key)
+
+
+class _FakeDetailPage:
+    """Just enough of a Playwright page for the delete-confirmation step: the detail has
+    ``buttons`` (their names) matching the opener selector, and a click on the opener shows an
+    alert dialog only when ``alert`` is True. Records every click and key press."""
+
+    def __init__(self, cr: Any, buttons: list[str], alert: bool) -> None:
+        self.cr = cr
+        self.buttons = buttons
+        self.alert = alert
+        self.clicks: list[str] = []
+        self.keyboard = _FakeKeyboard()
+        self.dialogs = 1
+
+    def evaluate(self, js: str, arg: Any = None) -> Any:
+        cr = self.cr
+        if js == cr.CONFIRM_OPENER_JS:
+            name = self.buttons[0] if len(self.buttons) == 1 else None
+            return {"count": len(self.buttons), "name": name}
+        if "el.click()" in js:
+            self.clicks.append(arg)
+            if self.alert:
+                self.dialogs = 2
+            return True
+        if js.startswith("(sel) => [...document.querySelectorAll(sel)].filter"):
+            return self.dialogs
+        if js == cr.DIALOG_JS:
+            return {"open": True, "stacked": self.dialogs}
+        return None
+
+    def wait_for_selector(self, selector: str, **kwargs: Any) -> None:
+        if not self.alert:
+            raise self.cr.PlaywrightTimeoutError("no alert dialog")
+
+    def wait_for_function(self, expression: str, **kwargs: Any) -> None:
+        return None
+
+
+def test_check_reflow_confirmation_click_is_guarded() -> None:
+    """The delete confirmation is opened only from exactly one button named "Delete"; a button
+    that opens nothing trips the guard and is never clicked again; only Escape is pressed."""
+    cr = _check_reflow()
+    opener = cr.HISTORY_CONFIRM_OPENER
+    # Two matches, or one with another name: nothing is clicked, the step is a skipped fixture.
+    for buttons in (["Delete", "Delete"], ["Remove"], []):
+        page = _FakeDetailPage(cr, buttons, alert=True)
+        result: dict[str, Any] = {}
+        cr._confirm_dialog_step(page, cr.ConfirmGuard(enabled=True), result)
+        assert page.clicks == [], buttons
+        assert result == {"confirmStatus": cr.CONFIRM_BUTTON_NOTE}, buttons
+        assert page.keyboard.pressed == []
+    # One "Delete" that opens an alert dialog: one click on the opener, then Escape only.
+    page = _FakeDetailPage(cr, ["Delete"], alert=True)
+    guard = cr.ConfirmGuard(enabled=True)
+    result = {}
+    cr._confirm_dialog_step(page, guard, result)
+    assert page.clicks == [opener]
+    assert page.keyboard.pressed == ["Escape"]
+    assert result["confirm"]["open"] is True and result["confirm"]["closed"] is True
+    assert guard.tripped is False
+    # One "Delete" that opens nothing: one hard failure, the guard trips, no second click.
+    page = _FakeDetailPage(cr, ["Delete"], alert=False)
+    guard = cr.ConfirmGuard(enabled=True)
+    result = {}
+    cr._confirm_dialog_step(page, guard, result)
+    assert page.clicks == [opener]
+    assert result == {"confirm": {"open": False}}
+    assert guard.tripped is True
+    failures = cr.history_dialogs_failures({"status": "ok", "detail": _dialog_measure(), **result})
+    assert [f["detail"] for f in failures] == ["Delete confirmation: the dialog did not open"]
+    assert not failures[0].get("soft")
+    again: dict[str, Any] = {}
+    cr._confirm_dialog_step(page, guard, again)
+    assert page.clicks == [opener]  # not clicked again, in any later viewport or theme
+    assert again["confirmStatus"].startswith("skipped: the delete confirmation did not open")
+    assert page.keyboard.pressed == []
+
+
+_DIALOG_PAGE = """
+<div class='rt-BaseDialogScroll' style='position:fixed;inset:0;overflow:auto'>
+  <div role='dialog' style='width:{w}px;height:100px;background:#eee'>{inner}</div>
+</div>
+"""
+
+
+def test_check_reflow_dialog_wait_is_for_a_steady_size_not_a_fitting_one() -> None:
+    """DIALOG_STABLE_JS: ready when the expected number of dialogs is open and the overlay kept
+    one size across animation frames, even when its scroll size exceeds its client size (the
+    unfixed app: 652 in 320); not ready while it still changes or the count is off."""
+    cr = _check_reflow()
+    sync_api = pytest.importorskip("playwright.sync_api")
+    steady = _DIALOG_PAGE.format(w=652, inner="<button>Close</button>")
+    for page in _fix_page(steady, 320, 640):
+        wide = page.evaluate(
+            "() => { const l = document.querySelector('.rt-BaseDialogScroll');"
+            " return l.scrollWidth - l.clientWidth; }"
+        )
+        assert wide > 0  # overflowing sideways, yet steady
+        arg = [cr.DIALOG_SELECTOR, 1, cr.DIALOG_STABLE_FRAMES]
+        page.wait_for_function(cr.DIALOG_STABLE_JS, arg=arg, timeout=5000, polling="raf")
+        # Two dialogs expected, one open: never ready.
+        with pytest.raises(sync_api.TimeoutError):
+            page.wait_for_function(
+                cr.DIALOG_STABLE_JS,
+                arg=[cr.DIALOG_SELECTOR, 2, cr.DIALOG_STABLE_FRAMES],
+                timeout=600,
+                polling="raf",
+            )
+        # A panel that keeps growing is never ready.
+        page.evaluate(
+            "() => { const d = document.querySelector('[role=dialog]'); let w = 300;"
+            " const tick = () => { d.style.width = (w += 1) + 'px'; requestAnimationFrame(tick); };"
+            " tick(); }"
+        )
+        with pytest.raises(sync_api.TimeoutError):
+            page.wait_for_function(cr.DIALOG_STABLE_JS, arg=arg, timeout=600, polling="raf")
+
+
+def test_check_reflow_dialog_reach_needs_the_control_itself_under_its_centre() -> None:
+    """DIALOG_JS: a control counts as reached when it, or something inside it, is under its
+    centre. A control whose centre hits an ancestor (here a button that takes no pointer
+    events, as one clipped or covered by its scroller would) is not reached; an inline link
+    that wraps over several lines may hit its parent, and is."""
+    cr = _check_reflow()
+    inner = (
+        "<button id='plain' type='button'>Plain</button>"
+        "<div id='holder'><button id='dead' type='button' style='pointer-events:none'>Dead"
+        "</button></div>"
+        "<p id='para'><a id='wrapped' href='#'>AAAAAAAAAAAAAAAAAAAA<br>B<br>"
+        "AAAAAAAAAAAAAAAAAAAA</a></p>"
+    )
+    page_body = _DIALOG_PAGE.format(w=300, inner=inner).replace("height:100px", "height:260px")
+    for page in _fix_page(page_body, 640, 400):
+        info = page.evaluate(
+            cr.DIALOG_JS, {"allow": list(cr.INNER_SCROLLERS), "badge": cr.REFLEX_BADGE}
+        )
+        assert info["open"] is True
+        assert info["controls"] == 3
+        names = [u["el"] for u in info["unreachable"]]
+        assert len(names) == 1 and names[0].startswith("button#dead"), names
+        assert info["unreachableCount"] == 1
+        assert info["unreachable"][0]["hit"].startswith("div#holder")
+
+
 # --- live-a ---
 # Live verification (task 13.3, fresh-install profile): at 320 CSS px with a classic scrollbar
 # the Dashboard setup checklist's widest step button ("Build search index", one line) widened
@@ -2279,3 +2754,641 @@ def test_layout_setup_step_button_stays_inside_its_card_at_320() -> None:
         assert _scroll_overflow(page) <= 0.5, info
         assert info["right"] <= info["inner"] + 0.5, info
         assert info["height"] >= 40, info
+
+
+# --- dialogs ---
+# Dialogs fit narrow and zoomed viewports (webui-dialog-fit, design D1-D11 and D17): the one
+# width rule on Radix's padding wrapper, the Changelog's wrap and its two guards, and the
+# History dialog's compact chrome, row floors, two-line rows, clamp and artist class. The CSS
+# tests pin the stylesheet text. The static layout tests build the Radix wrappers by hand
+# (position: fixed, an inline width and overflow: auto, because the harness loads only the app's
+# stylesheets) and pin the pieces that were measured on a static harness; they do not replace
+# the live run of check_reflow.py. The layout tests skip when Playwright or Chromium is missing.
+
+_DIALOG_COMPACT = "(max-width: 640px), (max-height: 600px)"
+
+
+def _bare_padding_wrapper_rules() -> list[tuple[str, str]]:
+    """``(file, body)`` of every innermost rule whose selector list holds the bare wrapper."""
+    return [
+        (name, " ".join(body.split()))
+        for name in (REDESIGN, STYLES)
+        for selectors, body in _all_rules(name)
+        if ".rt-BaseDialogScrollPadding" in selectors
+    ]
+
+
+def test_dialog_width_rule_is_the_only_unscoped_radix_dialog_rule() -> None:
+    """Design D1 and D3: one global rule, with one declaration, declared once at the top
+    level; nothing is built on Radix's ``--max-width``, which is 600px on every dialog."""
+    assert declarations(REDESIGN, ".rt-BaseDialogScrollPadding") == [("min-width", "0")]
+    assert _bare_padding_wrapper_rules() == [(REDESIGN, "min-width: 0;")]
+    for name in (REDESIGN, STYLES):
+        for _selectors, body in _all_rules(name):
+            for prop, value in _DECLARATION.findall(body):
+                assert "var(--max-width)" not in value, (name, prop, value)
+
+
+def test_dialog_width_rule_comment_names_its_exception_and_the_max_width_trap() -> None:
+    section = zoom_fit_section()
+    marker = section.index("/* --- zoom-fit: dialogs --- */")
+    comment = section[marker : section.index(".rt-BaseDialogScrollPadding { min-width: 0; }")]
+    for text in (
+        ".rt-BaseDialogScroll",
+        ".rt-BaseDialogScrollPadding",
+        ".rt-BaseDialogContent",
+        "620px",
+        "411px",
+        "D9 of webui-zoom-and-narrow-fit",
+        "tests/ui/test_reflow_fit.py",
+        "var(--max-width)",
+        "600px",
+    ):
+        assert text in comment, text
+    # Design D2: the sub-block adds no max-width rule of its own.
+    for _selectors, body in rules(strip_comments(section[marker:])):
+        assert "max-width" not in _props(body), body
+
+
+def test_changelog_notes_wrap_long_tokens_and_guard_code_blocks_and_images() -> None:
+    """Design D4: ``break-word`` alone leaves the min-content width, so ``anywhere`` follows
+    it (live, 4 of 12 changelog cells still failed with ``break-word`` alone)."""
+    assert declared(REDESIGN, ".changelog-body", "overflow-wrap") == ["break-word", "anywhere"]
+    assert declared(REDESIGN, ".changelog-body pre", "white-space") == ["pre-wrap"]
+    assert declared(REDESIGN, ".changelog-body img", "max-width") == ["100%"]
+    assert declared(REDESIGN, ".changelog-body img", "height") == ["auto"]
+
+
+# The notes sit in a Radix scroll area whose content wrapper is width: fit-content, so one long
+# token set its width (live: 351px of notes in a 228px area at 320x640). An <img>, not an
+# <svg>: the guard's selector is `.changelog-body img` and the notes renderer emits only <img>.
+_SVG_600 = (
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='600' height='60'%3E"
+    "%3Crect width='600' height='60'/%3E%3C/svg%3E"
+)
+_CHANGELOG_NOTES_PAGE = (
+    "<div id='notes-area' style='width:228px;overflow:auto'><div style='width:fit-content'>"
+    "<div class='changelog-body'>"
+    f"<p id='tok'>{_TOKEN_70}</p><pre id='pre'>{'x' * 200}</pre>"
+    f"<img id='img' alt='' src=\"{_SVG_600}\"></div></div></div>"
+)
+
+
+def test_layout_changelog_notes_wrap_inside_their_scroll_area_at_320() -> None:
+    """Static check of design D4 at 320x640: a 70-character token, a 200-character preformatted
+    line and a 600px image leave the 228px area with nothing to scroll sideways. Each guard is
+    load-bearing: with it switched off in the page, the same fixture overflows."""
+    sideways = (
+        "const a = document.getElementById('notes-area'); return a.scrollWidth - a.clientWidth;"
+    )
+    switch_off = (
+        "([sel, prop, off]) => { const el = document.querySelector('.changelog-body ' + sel);"
+        f" el.style[prop] = off; const over = (() => {{ {sideways} }})(); el.style[prop] = '';"
+        " return over; }"
+    )
+    for page in _layout_page(_CHANGELOG_NOTES_PAGE, 320, 640):
+        assert page.evaluate("document.getElementById('notes-area').clientWidth") == 228
+        assert page.evaluate(f"(() => {{ {sideways} }})()") <= 1
+        for element, prop, off in (
+            ("p", "overflowWrap", "normal"),
+            ("pre", "whiteSpace", "pre"),
+            ("img", "maxWidth", "none"),
+        ):
+            assert page.evaluate(switch_off, [element, prop, off]) > 1, (element, prop)
+        assert page.evaluate(f"(() => {{ {sideways} }})()") <= 1
+
+
+def test_history_dialog_chrome_compacts_on_narrow_or_short_viewports() -> None:
+    """Design D6: 16px gutters, an 18px title and 32px footer buttons that keep their labels.
+    The query is one comma-separated string, so every test quotes it in full."""
+    assert media_block(REDESIGN, _DIALOG_COMPACT)
+    media = _DIALOG_COMPACT
+    assert declared(REDESIGN, ".pl-dialog .modal-head", "padding", media) == ["14px 16px 10px"]
+    assert declared(REDESIGN, ".pl-dialog .pl-dialog-title", "font-size", media) == ["18px"]
+    assert declared(REDESIGN, ".pl-dialog .modal-body", "padding", media) == ["0 16px"]
+    foot = dict(declarations(REDESIGN, ".pl-dialog .modal-foot", media))
+    assert foot == {"gap": "8px", "padding": "12px 16px", "margin-top": "8px"}
+    button = dict(declarations(REDESIGN, ".pl-dialog .modal-foot .btn", media))
+    assert button == {"height": "32px", "padding": "0 12px", "font-size": "13px"}
+    # WCAG 2.5.8: a target is at least 24px tall. The buttons are never hidden or icon-only.
+    assert int(button["height"].removesuffix("px")) >= 24
+    for selector in (".pl-dialog .modal-foot .btn", ".pl-dialog .modal-foot"):
+        assert declared(REDESIGN, selector, "display", media) == []
+    # The desktop chrome stays where the base rules put it.
+    assert declared(REDESIGN, ".pl-dialog .pl-dialog-title", "font-size") == ["23px"]
+    assert declared(REDESIGN, ".modal-head", "padding") == ["22px 24px 16px"]
+
+
+def test_history_dialog_takes_the_viewport_height_on_short_viewports() -> None:
+    """Design D7: 16px above and below plus a panel of the viewport minus 32px add up to the
+    viewport, so the dialog layer cannot scroll vertically and the track list scrolls."""
+    scoped = ".rt-BaseDialogScrollPadding:has(> .pl-dialog)"
+    assert declared(REDESIGN, scoped, "padding-top", _HEIGHT) == ["16px"]
+    assert declared(REDESIGN, scoped, "padding-bottom", _HEIGHT) == ["16px"]
+    # vh first, then dvh: a browser without dvh keeps the first value.
+    assert declared(REDESIGN, ".rt-BaseDialogContent.pl-dialog", "max-height", _HEIGHT) == [
+        "calc(100vh - 32px)",
+        "calc(100dvh - 32px)",
+    ]
+    assert declared(REDESIGN, ".rt-BaseDialogContent.pl-dialog", "max-height") == ["86vh"]
+    assert declared(REDESIGN, ".pl-trk", "padding-block", _HEIGHT) == ["4px"]
+    # Design D5: no second unscoped rule that tightens every dialog's padding.
+    assert declared(REDESIGN, ".rt-BaseDialogScrollPadding", "padding-top", _HEIGHT) == []
+    assert declared(REDESIGN, ".rt-BaseDialogScrollPadding", "padding-bottom", _HEIGHT) == []
+
+
+def test_history_dialog_track_list_floors_apply_only_while_there_are_rows() -> None:
+    """Design D8: one and two compact rows (49.5px each) stay visible; no rows, no floor."""
+    assert declared(REDESIGN, ".pl-dialog .modal-body:has(> .pl-trk)", "min-height") == ["49px"]
+    assert declared(REDESIGN, ".pl-dialog .modal-body:has(> .pl-trk + .pl-trk)", "min-height") == [
+        "99px"
+    ]
+    # An unconditional floor leaves a blank band under a short playlist, desktop included.
+    assert declared(REDESIGN, ".pl-dialog .modal-body", "min-height") == []
+    assert declared(REDESIGN, ".pl-dialog .modal-body", "min-height", _DIALOG_COMPACT) == []
+    assert declared(REDESIGN, ".modal-body", "min-height") == ["0"]
+
+
+def test_history_dialog_track_rows_take_two_lines_at_480px() -> None:
+    """Design D9: number and title on line one, duration and Move buttons on line two."""
+    assert declared(REDESIGN, ".pl-trk", "flex-wrap", _W480) == ["wrap"]
+    assert declared(REDESIGN, ".pl-trk", "row-gap", _W480) == ["0"]
+    # 34px = the position number (26px) plus its 8px gap.
+    assert declared(REDESIGN, ".pl-trk .info", "flex-basis", _W480) == ["calc(100% - 34px)"]
+    assert declared(REDESIGN, ".pl-trk .dur", "margin-inline", _W480) == ["34px auto"]
+    assert declared(REDESIGN, ".pl-trk .pos", "width") == ["26px"]
+    assert declared(REDESIGN, ".pl-trk", "gap") == ["8px"]
+    # Nothing is hidden, whatever the width.
+    for name in (REDESIGN, STYLES):
+        for selectors, body in _all_rules(name):
+            if ".pl-trk .dur" in selectors:
+                assert _props(body).get("display") != "none", (name, selectors)
+    for media in (_W480, _W640, _HEIGHT, _DIALOG_COMPACT):
+        assert declared(REDESIGN, ".pl-trk .dur", "display", media) == []
+
+
+def test_history_dialog_name_and_prompt_clamp_to_two_lines() -> None:
+    """Design D10: at every width. The clamp must come after the mood rule it replaces."""
+    assert declared(REDESIGN, ".pl-dialog .pl-dialog-mood", "display") == ["block", "-webkit-box"]
+    assert declared(REDESIGN, ".pl-dialog .pl-dialog-title", "display") == ["-webkit-box"]
+    for selector in (".pl-dialog .pl-dialog-title", ".pl-dialog .pl-dialog-mood"):
+        assert declared(REDESIGN, selector, "-webkit-line-clamp") == ["2"], selector
+        assert declared(REDESIGN, selector, "-webkit-box-orient") == ["vertical"], selector
+        assert declared(REDESIGN, selector, "overflow") == ["hidden"], selector
+        assert declared(REDESIGN, selector, "overflow-wrap") == ["break-word", "anywhere"], selector
+    # Always on: no media query turns the clamp off.
+    for media in (_W480, _W640, _HEIGHT, _DIALOG_COMPACT):
+        assert declared(REDESIGN, ".pl-dialog .pl-dialog-mood", "display", media) == []
+        assert declared(REDESIGN, ".pl-dialog .pl-dialog-mood", "-webkit-line-clamp", media) == []
+
+
+def test_history_dialog_title_keeps_room_above_its_trimmed_first_line() -> None:
+    """Design D10: Radix trims the title's first line (``rt-r-lt-start``) by pulling it above its
+    box, and the clamp's ``overflow: hidden`` clips at that box, so every playlist name lost the
+    tops of its glyphs. The title takes ``padding-top`` and an equal negative ``margin-top``
+    (after the base rule's ``margin: 0``): the clip edge moves up, no box moves. Nothing is added
+    below: a bottom padding would show a clipped third line."""
+    selector = ".pl-dialog .pl-dialog-title"
+    assert declared(REDESIGN, selector, "padding-top") == [".5em"]
+    assert declared(REDESIGN, selector, "margin-top") == ["-.5em"]
+    for prop in ("padding", "padding-bottom", "margin-bottom"):
+        assert declared(REDESIGN, selector, prop) == [], prop
+    for media in (_W480, _W640, _HEIGHT, _DIALOG_COMPACT):
+        assert declared(REDESIGN, selector, "padding-top", media) == [], media
+        assert declared(REDESIGN, selector, "margin-top", media) == [], media
+    # The negative margin must win over the base rule's ``margin: 0``, so it comes later.
+    positions = {
+        prop: [
+            index
+            for index, (selectors, body) in enumerate(_all_rules(REDESIGN))
+            if selector in selectors and prop in _props(body)
+        ]
+        for prop in ("margin", "margin-top")
+    }
+    assert positions["margin"] and positions["margin-top"]
+    assert max(positions["margin"]) < min(positions["margin-top"])
+
+
+def test_history_dialog_title_and_prompt_keep_room_beside_their_lines() -> None:
+    """Design D10: the title box is shrink-wrapped to its text, so the clamp's ``overflow:
+    hidden`` clipped on the advance box of the first and last glyph of a line and cut the ink of
+    Ï, j, a final bracket and the like. The title and the prompt take ``padding-inline`` and an
+    equal negative ``margin-inline``: the clip edge moves out, no box or glyph moves. The
+    logical pair, once, for both, on no media query."""
+    for selector in (".pl-dialog .pl-dialog-title", ".pl-dialog .pl-dialog-mood"):
+        assert declared(REDESIGN, selector, "padding-inline") == [".5em"], selector
+        assert declared(REDESIGN, selector, "margin-inline") == ["-.5em"], selector
+        for prop in ("padding-left", "padding-right", "margin-left", "margin-right"):
+            assert declared(REDESIGN, selector, prop) == [], (selector, prop)
+        for media in (_W480, _W640, _HEIGHT, _DIALOG_COMPACT):
+            assert declared(REDESIGN, selector, "padding-inline", media) == [], (selector, media)
+            assert declared(REDESIGN, selector, "margin-inline", media) == [], (selector, media)
+    # Nothing below the title (a bottom padding would show a clipped third line) and the room
+    # sits in a rule that comes after the base rule's ``margin: 0``, which it must win over.
+    title = ".pl-dialog .pl-dialog-title"
+    assert declared(REDESIGN, title, "padding-bottom") == []
+    rules = _all_rules(REDESIGN)
+    base = max(
+        i for i, (sel, body) in enumerate(rules) if title in sel and "margin" in _props(body)
+    )
+    room = [
+        i for i, (sel, body) in enumerate(rules) if title in sel and "margin-inline" in _props(body)
+    ]
+    assert len(room) == 1 and room[0] > base, (base, room)
+
+
+def test_history_artist_line_has_its_own_class() -> None:
+    """Design D11: the global ``.art`` rule is the album swatch (flex, centred, shadow, gloss),
+    which centred the artist line and cut it at both ends without an ellipsis."""
+    artist = dict(declarations(REDESIGN, ".pl-trk .artist"))
+    assert artist["text-overflow"] == "ellipsis"
+    assert artist["white-space"] == "nowrap" and artist["overflow"] == "hidden"
+    for name in (REDESIGN, STYLES):
+        for selectors, _body in _all_rules(name):
+            assert not [s for s in selectors if re.search(r"\.pl-trk\s+\.art(?![\w-])", s)], name
+    # The swatch rules stay: the Generator's album art still uses them.
+    assert declared(REDESIGN, ".art", "display") == ["flex"]
+    for path in sorted((_PAGES_SRC / "pages").glob("*.py")):
+        assert 'class_name="art"' not in path.read_text(encoding="utf-8"), path.name
+    history = (_PAGES_SRC / "pages" / "history.py").read_text(encoding="utf-8")
+    assert 'class_name="artist"' in history
+
+
+# Static layout of the History dialog. The harness loads only the app's stylesheets, so the
+# fixture uses the page's own classes and gives the panel what Radix would: an inline width,
+# position: fixed (the shell's rail and gutters do not squeeze it) and overflow: auto.
+
+_TRACK_TITLE = "A very long track title that goes on and on past the end of any narrow row"
+_TRACK_ARTIST = "An artist credit just as long, feat. Another Artist and The Long Name Orchestra"
+_NAME_130 = ("Slow Sunday morning mix for the long drive out to the lake " * 3)[:130]
+_PROMPT_280 = ("a quiet, rainy evening with warm piano, soft vocals and a little jazz " * 5)[:280]
+_FOOTER_LABELS = ("Rerun", "Export to Plex", "Export M3U", "Export JSON", "Save order", "Delete")
+_DIALOG_SIZES = ((1440, 900, 620), (640, 400, 608), (320, 640, 288))
+
+
+# Radix Themes' start trim for the dialog title, which the harness does not load (styles.css:
+# ``.rt-Heading`` takes ``--leading-trim-start`` 0.42em, size 5 a 26px ``--line-height``, and
+# ``.rt-r-lt-start::before`` an empty table with that negative margin). It pulls the first line
+# above the title's box by 3.34px at 23px and 5.44px at 18px.
+_RADIX_TITLE_TRIM = (
+    "<style>.pl-dialog-title { --leading-trim-start: .42em; --line-height: 26px; }"
+    " .rt-r-lt-start::before { content: ''; display: table;"
+    " margin-bottom: calc(var(--leading-trim-start) - var(--line-height) / 2); }</style>"
+)
+
+
+def _history_dialog(
+    rows: int,
+    width: int,
+    *,
+    name: str = "Late night drive",
+    mood: str = "",
+    style: str = "",
+    trim: bool = False,
+) -> str:
+    """The playlist detail with ``rows`` tracks, as the page builds it (history.py). With
+    ``trim`` the title carries Radix's start trim (``rt-r-lt-start``), as ``rx.dialog.title``
+    renders it."""
+    arrow = "<svg width='15' height='15' aria-hidden='true'></svg>"
+    tracks = "".join(
+        f"<li class='pl-trk'><span class='pos'>{n}</span><span class='info'>"
+        f"<span class='ttl'>{_TRACK_TITLE}</span><span class='artist'>{_TRACK_ARTIST}</span>"
+        "</span><span class='dur'>3:42</span>"
+        f"<button class='icon-btn' type='button' aria-label='Move up'>{arrow}</button>"
+        f"<button class='icon-btn' type='button' aria-label='Move down'>{arrow}</button></li>"
+        for n in range(1, rows + 1)
+    )
+    classes = (
+        "btn btn-3 btn-primary",
+        "btn btn-3 btn-blue",
+        "btn btn-3 btn-soft",
+        "btn btn-3 btn-soft",
+        "btn btn-3 btn-soft",
+        "btn btn-3 btn-danger",
+    )
+    footer = "".join(
+        f"<button class='{c}' type='button'><svg width='16' height='16' aria-hidden='true'></svg>"
+        f"{label}</button>"
+        for c, label in zip(classes, _FOOTER_LABELS)
+    )
+    prompt = f"<span class='pl-dialog-mood'>“{mood}”</span>" if mood else ""
+    title_class = "rt-r-lt-start pl-dialog-title" if trim else "pl-dialog-title"
+    return (
+        (_RADIX_TITLE_TRIM if trim else "")
+        + f"<div class='rt-BaseDialogContent pl-dialog' style='position:fixed;top:16px;left:16px;"
+        f"width:{width}px;overflow:auto;{style}'>"
+        "<div class='modal-head'><div class='pl-dialog-heading'>"
+        f"<h2 class='{title_class}'>{name}</h2>"
+        f"<p class='pl-dialog-desc'>{prompt}"
+        f"<span class='pl-dialog-stats'>{rows} tracks · 3:42</span></p></div>"
+        "<button class='icon-btn' type='button' aria-label='Close'>"
+        "<svg width='18' height='18' aria-hidden='true'></svg></button></div>"
+        f"<ol class='modal-body pl-tracks' role='list' aria-label='Tracks'>{tracks}</ol>"
+        f"<div class='modal-foot'>{footer}</div></div>"
+    )
+
+
+def _set_fixture(page: Any, html: str) -> None:
+    page.evaluate("(h) => { document.getElementById('main-content').innerHTML = h; }", html)
+
+
+_ROW_PARTS_JS = """() => [...document.querySelectorAll('.pl-trk')].map((row) => {
+  const box = row.getBoundingClientRect();
+  const rect = (r) => ({top: r.top, bottom: r.bottom, left: r.left, right: r.right,
+    width: r.width, height: r.height});
+  const out = {row: rect(box)};
+  const parts = {pos: '.pos', info: '.info', ttl: '.ttl', artist: '.artist', dur: '.dur',
+    up: '.icon-btn:nth-of-type(1)', down: '.icon-btn:nth-of-type(2)'};
+  for (const [name, selector] of Object.entries(parts)) {
+    const r = row.querySelector(selector).getBoundingClientRect();
+    out[name] = {...rect(r), inside: r.width > 0 && r.left >= box.left - 0.5 &&
+      r.right <= box.right + 0.5 && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5};
+  }
+  return out; })"""
+
+
+def test_layout_history_dialog_rows_take_two_lines_at_320() -> None:
+    """Design D9, static: at 320x640 with a 288px panel and long titles, the duration and both
+    Move buttons sit below the title and artist, every part is inside its row, and the title
+    column is wide enough to read (78px on one line, about 204px here)."""
+    for page in _layout_page(_history_dialog(4, 288), 320, 640):
+        rows = page.evaluate(_ROW_PARTS_JS)
+        assert len(rows) == 4
+        for row in rows:
+            assert all(part["inside"] for key, part in row.items() if key != "row"), row
+            for key in ("dur", "up", "down"):
+                assert row[key]["top"] >= row["info"]["bottom"] - 0.5, (key, row)
+            assert row["info"]["width"] >= 120, row
+            assert row["ttl"]["right"] <= row["info"]["right"] + 0.5, row
+
+
+def test_layout_history_dialog_rows_are_one_line_at_640x400() -> None:
+    """Design D9, static: above 480px wide each row is a single line, with the duration and
+    the Move buttons beside the title and artist (the compact 4px row padding applies)."""
+    for page in _layout_page(_history_dialog(4, 608), 640, 400):
+        rows = page.evaluate(_ROW_PARTS_JS)
+        assert len(rows) == 4
+        for row in rows:
+            assert all(part["inside"] for key, part in row.items() if key != "row"), row
+            assert row["row"]["height"] <= 56, row
+            assert row["dur"]["left"] >= row["info"]["right"] - 0.5, row
+            assert row["up"]["left"] >= row["dur"]["right"] - 0.5, row
+            assert row["down"]["left"] >= row["up"]["right"] - 0.5, row
+            for key in ("dur", "up", "down"):
+                assert row[key]["top"] < row["info"]["bottom"], (key, row)
+
+
+_LIST_HEIGHTS_JS = """() => {
+  const list = document.querySelector('.pl-dialog .modal-body');
+  const rows = [...list.querySelectorAll('.pl-trk')];
+  return {list: list.getBoundingClientRect().height, count: rows.length,
+    rows: rows.reduce((sum, r) => sum + r.getBoundingClientRect().height, 0)}; }"""
+
+
+def test_layout_history_dialog_list_is_as_tall_as_its_rows_with_none_one_or_two() -> None:
+    """Design D8, static: with no height limit the track list is exactly as tall as its rows
+    (0px with none), on desktop, at 640x400 and at 320x640. An unconditional floor on
+    ``.pl-dialog .modal-body`` would leave a blank band and fail here."""
+    for width, height, panel in _DIALOG_SIZES:
+        for page in _layout_page("", width, height):
+            for rows in (0, 1, 2):
+                _set_fixture(page, _history_dialog(rows, panel))
+                got = page.evaluate(_LIST_HEIGHTS_JS)
+                assert got["count"] == rows
+                assert abs(got["list"] - got["rows"]) <= 0.5, (width, height, rows, got)
+                if rows == 0:
+                    assert got["list"] == 0, (width, height, got)
+
+
+def test_layout_history_dialog_list_never_collapses_under_a_short_panel() -> None:
+    """Design D8, static: when the panel is shorter than header plus footer, the list keeps
+    one compact row (49px) for one track and two (99px) for two or more, and the panel itself
+    scrolls. Without the floors the list shrinks to 0px and no Move button can be reached."""
+    for width, height, panel in _DIALOG_SIZES[1:]:
+        for page in _layout_page("", width, height):
+            for rows, floor in ((1, 49), (2, 99), (5, 99)):
+                _set_fixture(page, _history_dialog(rows, panel, style="max-height:120px"))
+                got = page.evaluate(_LIST_HEIGHTS_JS)
+                chrome = page.evaluate(
+                    "() => { const p = document.querySelector('.pl-dialog');"
+                    " return {scroll: p.scrollHeight, client: p.clientHeight}; }"
+                )
+                assert chrome["scroll"] > chrome["client"], (width, rows, chrome)  # panel scrolls
+                assert got["list"] >= floor - 0.5, (width, height, rows, floor, got)
+
+
+def test_layout_history_dialog_clamps_a_long_name_and_prompt_to_two_lines() -> None:
+    """Design D10, static: a 130-character name and a 280-character prompt each take at most
+    two lines at 320x640 and the clamp cuts the rest; a short name stays whole."""
+    # The title's padding-top (room for Radix's trim, tested below) is not a line of text.
+    probe = """(sel) => { const el = document.querySelector(sel), cs = getComputedStyle(el);
+      return {height: el.getBoundingClientRect().height - parseFloat(cs.paddingTop),
+        line: parseFloat(cs.lineHeight), scroll: el.scrollHeight, client: el.clientHeight}; }"""
+    assert len(_NAME_130) == 130 and len(_PROMPT_280) == 280
+    for page in _layout_page(_history_dialog(2, 288, name=_NAME_130, mood=_PROMPT_280), 320, 640):
+        for selector in (".pl-dialog-title", ".pl-dialog-mood"):
+            got = page.evaluate(probe, selector)
+            assert got["line"] > 0, got
+            assert got["height"] <= 2 * got["line"] + 1, (selector, got)
+            assert got["height"] >= 2 * got["line"] - 1, (selector, got)  # two lines, not one
+            assert got["scroll"] > got["client"] + 1, (selector, got)  # and the rest is cut
+        _set_fixture(page, _history_dialog(2, 288, name="Late night drive", mood="Quiet jazz"))
+        for selector in (".pl-dialog-title", ".pl-dialog-mood"):
+            got = page.evaluate(probe, selector)
+            assert got["height"] <= got["line"] + 1, (selector, got)
+            assert got["scroll"] <= got["client"] + 1, (selector, got)
+
+
+# Playlist names with letters that stand above the cap height: accents on capitals and i-dots.
+_NAME_ACCENTED = "Ünlü Ångström Éclat Ĳ ïĩ Ǻ"
+_TITLE_TRIM_PROBE_JS = """() => { const t = document.querySelector('.pl-dialog-title');
+  const cs = getComputedStyle(t), range = document.createRange();
+  range.selectNodeContents(t);
+  const text = Math.min(...[...range.getClientRects()].map((r) => r.top));
+  const lineHeight = parseFloat(cs.lineHeight), padTop = parseFloat(cs.paddingTop);
+  const clip = t.getBoundingClientRect().top + parseFloat(cs.borderTopWidth);
+  const pull = -parseFloat(getComputedStyle(t, '::before').marginBottom);
+  // The top half of the first line: where the accents, i-dots and cap tops are.
+  return {fontSize: parseFloat(cs.fontSize), overflow: cs.overflowY, pull, textTop: text,
+    clipTop: clip, region: clip + padTop - pull + lineHeight / 2}; }"""
+_INK_DIFF_JS = """async ([a, b]) => {
+  const load = (url) => new Promise((resolve) => {
+    const image = new Image(); image.onload = () => resolve(image); image.src = url; });
+  const pixels = (image) => { const canvas = document.createElement('canvas');
+    canvas.width = image.width; canvas.height = image.height;
+    const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+    return context.getImageData(0, 0, image.width, image.height).data; };
+  const [one, two] = [pixels(await load(a)), pixels(await load(b))];
+  let differing = 0;
+  for (let i = 0; i < one.length; i += 4) {
+    const delta = Math.max(Math.abs(one[i] - two[i]), Math.abs(one[i + 1] - two[i + 1]),
+      Math.abs(one[i + 2] - two[i + 2]));
+    if (delta > 24) differing++;
+  }
+  return differing; }"""
+
+
+def _png_data_url(png: bytes) -> str:
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+_TITLE = ".pl-dialog .pl-dialog-title"
+_PROMPT = ".pl-dialog .pl-dialog-mood"
+
+
+def _ink_hidden_by_the_overflow_of(page: Any, selector: str, bottom: float) -> int:
+    """How many pixels above ``bottom`` the ``overflow`` of ``selector`` hides: a screenshot as
+    shipped against one with that element's overflow forced visible."""
+    clip = {"x": 0, "y": 0, "width": page.viewport_size["width"], "height": bottom}
+    shipped = page.screenshot(clip=clip)
+    style = page.add_style_tag(content=f"{selector} {{ overflow: visible !important }}")
+    visible = page.screenshot(clip=clip)
+    style.evaluate("(element) => element.remove()")
+    reader = page.context.new_page()  # a page without the fixture's request filter
+    try:
+        reader.goto("about:blank")
+        return int(reader.evaluate(_INK_DIFF_JS, [_png_data_url(shipped), _png_data_url(visible)]))
+    finally:
+        reader.close()
+
+
+def test_layout_history_dialog_clamp_does_not_cut_the_trimmed_first_line() -> None:
+    """Design D10, static, in the app's own faces: the clamp (``overflow: hidden``) must not cut
+    the top of the playlist name. Radix pulls the title's first line above its box (3.34px at
+    23px, 5.44px at the compact 18px), so without ``padding-top`` the i-dots and the accents on
+    capitals were clipped, on every name, at 320 CSS px and with accents even on desktop. Pixels
+    above the first line's baseline must be the same with the title's overflow as shipped and
+    forced visible, and the line's content area must start inside the clip edge."""
+    for width, height, panel, pull in ((1440, 900, 620, 3.34), (320, 640, 288, 5.44)):
+        fixture = _history_dialog(1, panel, name=_NAME_ACCENTED, mood="Quiet jazz", trim=True)
+        for page in _layout_page(fixture, width, height, fonts=True, device_scale_factor=2):
+            got = page.evaluate(_TITLE_TRIM_PROBE_JS)
+            assert got["overflow"] == "hidden", got  # the clamp is on
+            assert abs(got["pull"] - pull) < 0.05, got  # the fixture reproduces Radix's trim
+            assert got["textTop"] >= got["clipTop"] - 0.5, got  # no line starts above the edge
+            assert _ink_hidden_by_the_overflow_of(page, _TITLE, got["region"]) == 0, got
+
+
+# Names whose first or last glyph reaches past its advance box in the app's own face: the
+# diaeresis of Ï and ï, the circumflex of Î, the hook of j, a final acute, a bracket, a slash.
+# The ones that end in such a glyph are longer than the prompt and the stats line, because the
+# title box is only as wide as its text when it is the widest line of the heading.
+_NAMES_WITH_OVERHANG = (
+    "Ïdle Hours Mix",
+    "Île de Ré Nights",
+    "jazz for a rainy day",
+    "ïdle ïdle ïdle",
+    "Late Night Drive Ï",
+    "Quiet Hours Hôtel Î",
+    "Café del Mar Í ł",
+    "Fresh Sound Mix (",
+    "Cold Brew Mix [",
+    "Pop / Rock Mix /",
+)
+# Prompts that fill their first line and start the second with such a glyph (``<br>`` ends a line
+# in the fixture, as a wrap would). The page wraps them in curly quotes. The name is short, so
+# the prompt is the widest line of the heading. The prompt is set in IBM Plex Sans, whose ink
+# overhangs less (.04em, about half a pixel at 13.5px): the clip loses a few device pixels.
+_PROMPTS_WITH_OVERHANG = (
+    "quiet evening î<br>île de ré",
+    "slow evening jazz îî<br>îles î",
+    "quiet evening jazz ïï<br>Ï",
+)
+_BOX_BOTTOM_JS = "(selector) => document.querySelector(selector).getBoundingClientRect().bottom"
+
+
+def test_layout_history_dialog_clamp_does_not_cut_the_sides_of_a_name_or_prompt() -> None:
+    """Design D10, static, in the app's own faces: the title box is shrink-wrapped to its text
+    (the heading is a ``min-width: 0`` flex item of ``.modal-head``), so the clamp's ``overflow:
+    hidden`` clipped on the advance box of the first and last glyph, and a glyph whose ink
+    overhangs its advance lost a sliver (the diaeresis of Ï, the hook of j, a final bracket). The
+    prompt's lines have the same edge. Nothing may differ between the overflow as shipped and
+    forced visible, for each name and prompt, on desktop and at the compact 18px title. The
+    fallback face has other letter shapes, so the helper serves the app's fonts."""
+    for width, height, panel in ((1440, 900, 620), (320, 640, 288)):
+        for page in _layout_page("", width, height, fonts=True, device_scale_factor=3):
+            cases = [
+                (_TITLE, name, "Quiet jazz") for name in (_NAME_ACCENTED, *_NAMES_WITH_OVERHANG)
+            ]
+            cases += [(_PROMPT, "Mix", mood) for mood in _PROMPTS_WITH_OVERHANG]
+            for selector, name, mood in cases:
+                _set_fixture(page, _history_dialog(1, panel, name=name, mood=mood, trim=True))
+                # Up to the last pixel row of the box: at the compact 18px the tip of a bracket
+                # or a dot-below mark leaves the line box by a third of a pixel, and nothing may
+                # sit below the title (a bottom padding would show a clipped third line).
+                bottom = page.evaluate(_BOX_BOTTOM_JS, selector.rsplit(" ", 1)[-1]) - 1
+                hidden = _ink_hidden_by_the_overflow_of(page, selector, bottom)
+                assert hidden == 0, (width, selector, name, mood, hidden)
+
+
+_ROOM_PROBE_JS = """() => {
+  const rect = (r) => [r.top, r.left, r.right, r.bottom];
+  const box = (selector) => rect(document.querySelector(selector).getBoundingClientRect());
+  const text = (selector) => { const range = document.createRange();
+    range.selectNodeContents(document.querySelector(selector));
+    return [...range.getClientRects()].flatMap(rect); };
+  const panel = document.querySelector('.pl-dialog');
+  return {boxes: ['.pl-dialog-heading', '.pl-dialog-desc', '.pl-dialog-stats', '.modal-body',
+      '.modal-foot'].flatMap(box),
+    text: [...text('.pl-dialog-title'), ...text('.pl-dialog-mood')],
+    sideways: panel.scrollWidth - panel.clientWidth}; }"""
+
+
+def test_layout_history_dialog_title_room_leaves_every_box_where_it_was() -> None:
+    """Design D10, static: the room above and beside the title and beside the prompt is cancelled
+    by an equal negative margin, so the heading, the stats, the track list and the footer, and
+    every line of the name and the prompt, sit where they did without it: same boxes, same
+    line breaks, and the panel gains no sideways scroll."""
+    plain = (
+        ".pl-dialog .pl-dialog-title { padding-top: 0 !important; margin-top: 0 !important }"
+        " .pl-dialog .pl-dialog-title, .pl-dialog .pl-dialog-mood {"
+        " padding-inline: 0 !important; margin-inline: 0 !important }"
+    )
+    for width, height, panel in ((1440, 900, 620), (320, 640, 288)):
+        for name, mood in ((_NAME_ACCENTED, "Quiet jazz"), (_NAME_130, _PROMPT_280)):
+            fixture = _history_dialog(2, panel, name=name, mood=mood, trim=True)
+            for page in _layout_page(fixture, width, height):
+                shipped = page.evaluate(_ROOM_PROBE_JS)
+                page.add_style_tag(content=plain)
+                without = page.evaluate(_ROOM_PROBE_JS)
+                assert shipped["boxes"] == pytest.approx(without["boxes"], abs=0.05), (width, name)
+                assert shipped["text"] == pytest.approx(without["text"], abs=0.05), (width, name)
+                assert shipped["sideways"] <= 0.5 and without["sideways"] <= 0.5, (width, shipped)
+
+
+def test_check_reflow_measures_a_title_whose_first_line_the_clamp_cuts() -> None:
+    """The gate's ``topCut`` helper: 0 with the title as shipped, and the pulled-up height
+    without its padding. It is the number behind the ``header-lines`` floor's third failure."""
+    cr = _check_reflow()
+    measure = cr._js("return topCut(document.querySelector('.pl-dialog-title'));")
+    plain = ".pl-dialog .pl-dialog-title { padding-top: 0 !important; margin-top: 0 !important }"
+    for width, height, panel, pull in ((1440, 900, 620, 3.34), (320, 640, 288, 5.44)):
+        fixture = _history_dialog(1, panel, name=_NAME_ACCENTED, trim=True)
+        for page in _layout_page(fixture, width, height):
+            assert page.evaluate(measure, {}) == 0
+            page.add_style_tag(content=plain)
+            cut = page.evaluate(measure, {})
+            assert cut >= pull - 0.1, (width, cut)  # about the trim, plus the font's overshoot
+            page.add_style_tag(content=".pl-dialog .pl-dialog-title { overflow: visible }")
+            assert page.evaluate(measure, {}) == 0  # nothing clips, nothing is cut
+
+
+def test_check_reflow_header_floor_reports_a_cut_first_line() -> None:
+    """``header-lines`` fails when the name's first line starts above the edge that clips it, by
+    more than the tolerance, and only then; the older keys of ``fixtureHeader`` still work."""
+    cr = _check_reflow()
+    base = {"titleLines": 1, "promptLines": 2}
+    assert cr.TITLE_CUT_MAX == 0.5
+    assert "header-lines" in cr.DIALOG_GATING_FLOORS
+
+    def header_failures(header: dict[str, Any]) -> list[dict[str, Any]]:
+        dialog = _dialog_measure(fixtureHeader=header)
+        failures = cr.dialog_failures("History detail", dialog, fixture=True)
+        return [f for f in failures if f["floor"] == "header-lines"]
+
+    for header in (base, {**base, "titleCut": 0}, {**base, "titleCut": cr.TITLE_CUT_MAX}):
+        assert header_failures(header) == [], header
+    cut = header_failures({**base, "titleCut": 5.4})
+    assert len(cut) == 1 and cut[0]["soft"] is True and cut[0]["check"] == "dialog-floor", cut
+    assert "5.4px above the edge that clips it" in cut[0]["detail"], cut
+    assert cr.failure_gates(cut[0], True), cut

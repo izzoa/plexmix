@@ -114,8 +114,12 @@ class TestDetailDialog:
         assert js.startswith("jsx(RadixThemesDialog.Root,{")
         assert "onOpenChange:" in js and "set_detail_modal_open" in js
         assert "open:" in js and "is_detail_modal_open" in js
+        # The full name rides along as a real title attribute (custom_attrs, not title=, which
+        # the dialog title would emit as CSS), and the child text reads the same name.
         assert re.search(
-            r'RadixThemesDialog\.Title,\{className:"pl-dialog-title"\},[^)]*\["name"\]', js
+            r'RadixThemesDialog\.Title,\{className:"pl-dialog-title",title:[^{}]*\["name"\]\},'
+            r'[^)]*\["name"\]',
+            js,
         )
         assert "RadixThemesDialog.Description" in js
         assert "modal-backdrop" not in js
@@ -141,6 +145,26 @@ class TestDetailDialog:
         assert 'jsx("li",{className:"pl-trk",key:' in js
         assert 'className:"pos"},track_rx_state_?.["position"]' in js
         assert 'className:"dur"},track_rx_state_?.["duration_formatted"]' in js
+        # The artist is `artist`, not the album swatch's `art` (design D11). A title or artist
+        # cut to one line keeps its full text in a real title attribute (design D17).
+        assert 'className:"artist"' in js
+        assert 'className:"art"' not in js
+        assert re.search(
+            r'jsx\("span",\{className:"ttl",title:track_rx_state_\?\.\["title"\]\},', js
+        )
+        assert re.search(
+            r'jsx\("span",\{className:"artist",title:track_rx_state_\?\.\["artist"\]\},', js
+        )
+
+    def test_long_name_and_prompt_carry_their_full_text_as_title(self) -> None:
+        """The clamped name and prompt keep their full text on hover (design D10)."""
+        js = _dialog_js()
+        assert re.search(
+            r'jsx\("span",\{className:"pl-dialog-mood",title:[^{}]*\["mood_query"\]\},', js
+        )
+        assert re.search(r'RadixThemesDialog\.Title,\{className:"pl-dialog-title",title:', js)
+        # `title=` on the dialog title would be emitted as CSS, not as an attribute.
+        assert 'css:({ ["title"]' not in js
 
     def test_reorder_controls_are_named_identified_and_bounded(self) -> None:
         js = _dialog_js()

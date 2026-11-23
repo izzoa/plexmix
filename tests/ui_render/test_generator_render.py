@@ -1,10 +1,12 @@
-"""Render smoke: Generator names, states, progress, stage focus, results and the prompt form.
+"""Render smoke: Generator names, states, progress, stage focus, the lost-connection notice,
+results and the prompt form.
 
 Run in its own session (real Reflex): ``pytest tests/ui_render -q``.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -265,21 +267,222 @@ class TestProgress:
 
     def test_phase_status_is_sr_only_and_polite(self) -> None:
         js = _js("_thinking_stage")
-        status = _element_with(js, 'role:"status"')
+        status = _element_with(js, 'id:"gen-phase-status"')
         props = status.split("},", 1)[0]
         assert 'className:"sr-only"' in props
-        assert 'id:"gen-phase-status"' in props
+        assert 'role:"status"' in props
         assert "active_phase_rx_state_" in status
         for label in ("Embed vibe", "Vector search", "Diversity", "Order set"):
             assert f'return ("{label}")' in status, label
-        assert js.count('role:"status"') == 1
+        # The phase region and the lost-connection region (TestLostConnection).
+        assert js.count('role:"status"') == 2
 
     def test_message_and_log_stay_out_of_live_regions(self) -> None:
         js = _js("_thinking_stage")
-        status = _element_with(js, 'role:"status"')
+        status = _element_with(js, 'id:"gen-phase-status"')
         assert "generation_message_rx_state_" not in status
         assert "generation_log_rx_state_" not in status
         assert "aria-live" not in js
+
+
+# ── lost connection: the thinking stage when the server cannot be reached ──
+
+_RETRYING = "(connectErrors.length >= 2)"
+_LOST = "(connectErrors.length >= 5)"
+_RETRYING_ONLY = "((connectErrors.length >= 2) && (connectErrors.length < 5))"
+
+
+class TestLostConnection:
+    """Two steps, client-side only: a quiet line, then an alert (design D2-D5).
+
+    Both read Reflex's ``connectErrors`` list, so nothing here needs the server.
+    """
+
+    def test_reflex_still_exposes_the_connection_state(self) -> None:
+        # Reflex-internal: recheck on every Reflex upgrade (CLAUDE.md lists the others).
+        from reflex.components.core.banner import has_too_many_connection_errors
+
+        # Reflex fixes its own var at 2 failures; the constant must follow it.
+        assert (
+            str(has_too_many_connection_errors)
+            == f"(connectErrors.length >= {gen_page._RECONNECT_AFTER})"
+        )
+        assert str(gen_page._CONN_RETRYING) == _RETRYING
+        assert str(gen_page._CONN_LOST) == _LOST
+        assert str(gen_page._CONN_RETRYING_ONLY) == _RETRYING_ONLY
+        assert gen_page._ALERT_AFTER == 5
+        hooks = _stage_hooks("_thinking_stage")
+        assert any("useContext(EventLoopContext)" in hook for hook in hooks)
+
+    def test_reconnect_region_is_a_persistent_polite_region(self) -> None:
+        js = _js("_thinking_stage")
+        region = _element_with(js, 'id:"gen-reconnect-region"')
+        assert region.startswith('jsx(RadixThemesBox,{id:"gen-reconnect-region",')
+        assert 'role:"status"' in region.split("},", 1)[0]
+        assert js[js.index(region) - 1] == ","  # a plain child of the stage, not a cond branch
+        # Only its child is conditional (the "2 to 4" step), so the region persists.
+        assert region.split("},", 1)[1].startswith(f"jsx(Fragment,{{}},({_RETRYING_ONLY}?")
+
+    def test_quiet_line_is_quiet(self) -> None:
+        line = _element_with(_js("_thinking_stage"), 'id:"gen-reconnect"')
+        assert 'className:"gen-reconnect"' in line
+        assert json.dumps(gen_page.RECONNECTING_TEXT) in line
+        assert gen_page.RECONNECTING_TEXT == "Reconnecting to PlexMix\u2026"
+        assert "callout" not in line
+
+    def test_alert_region_is_a_persistent_alert(self) -> None:
+        js = _js("_thinking_stage")
+        region = _element_with(js, 'id:"gen-offline-region"')
+        assert region.startswith('jsx(RadixThemesBox,{id:"gen-offline-region",')
+        assert 'role:"alert"' in region.split("},", 1)[0]
+        assert js[js.index(region) - 1] == ","  # a plain child of the stage, not a cond branch
+        # Only its child is conditional (the "5 or more" step), so the region persists.
+        assert region.split("},", 1)[1].startswith(f"jsx(Fragment,{{}},({_LOST}?")
+
+    def test_alert_wording_is_conditional(self) -> None:
+        notice = _element_with(_js("_thinking_stage"), 'id:"gen-offline"')
+        assert '"callout callout-error"' in notice
+        assert json.dumps(gen_page.LOST_CONNECTION_TITLE) in notice
+        assert json.dumps(gen_page.LOST_CONNECTION_BODY) in notice
+        assert gen_page.LOST_CONNECTION_TITLE == "Lost connection to PlexMix"
+        body = gen_page.LOST_CONNECTION_BODY
+        for phrase in (
+            "can't reach",
+            "reconnects on its own",
+            "may still be generating",
+            "If it does not reconnect",
+            "may have stopped",
+        ):
+            assert phrase in body, phrase
+        # No claim that the playlist is lost, no jargon and no command (the page carries
+        # no CLI hints; README.md names how to start PlexMix again).
+        for banned in ("not kept", "websocket", "Run:", "plexmix "):
+            assert banned not in body, banned
+        assert "tabIndex" not in notice  # the alert is not a focus target
+
+    def test_notices_need_no_server(self) -> None:
+        js = _js("_thinking_stage")
+        for marker in ('id:"gen-reconnect-region"', 'id:"gen-offline-region"'):
+            notice = _element_with(js, marker)
+            for needs_server in ("addEvents", "ReflexEvent", "_rx_state_"):
+                assert needs_server not in notice, (marker, needs_server)
+            # No button, link or other control inside either notice.
+            for control in ('jsx("button",', "RadixThemesLink", "ReactRouterLink", "onClick"):
+                assert control not in notice, (marker, control)
+
+    def test_progress_and_cancel_are_offered_only_while_connected(self) -> None:
+        js = _js("_thinking_stage")
+        assert (
+            f"({_RETRYING}?(jsx(Fragment,{{}},)):(jsx(Fragment,{{}},"
+            'jsx(RadixThemesBox,{className:"gen-progress"}' in js
+        )
+        assert js.count("cancel_generation") == 1
+        assert js.index("cancel_generation") > js.index('className:"gen-progress"')
+        # Order on screen: phase track, the two regions, then (when connected) the row.
+        assert (
+            js.index('className:"phase-track"')
+            < js.index('id:"gen-reconnect-region"')
+            < js.index('id:"gen-offline-region"')
+            < js.index('className:"gen-progress"')
+        )
+
+    def test_stage_is_marked_offline_only_at_the_alert_step(self) -> None:
+        js = _js("_thinking_stage")
+        assert f'className:({_LOST} ? "think is-offline" : "think")' in js
+        assert "is-offline" not in js.replace('"think is-offline"', "")
+        css = (_REPO / "assets" / "redesign.css").read_text(encoding="utf-8")
+        assert ".think.is-offline .phase-node.active .phase-dot" in css
+        assert ".think.is-offline .viz-phase-label" in css
+        script = (_REPO / "assets" / "plexmix.js").read_text(encoding="utf-8")
+        assert "closest('.is-offline')" in script
+
+    def test_other_stages_do_not_read_the_connection(self) -> None:
+        for stage in ("_idle_hero", "_results_stage"):
+            assert "connectErrors" not in _js(stage), stage
+
+
+# ── the prompt of a generation in flight is held by the browser ──────
+
+
+class TestInFlightStorage:
+    """``GeneratorState.in_flight_prompt`` rides on Reflex's session storage (design D7).
+
+    The restore after a restart relies on how Reflex names the entry, on the order of the
+    events a reconnecting tab sends, and on the browser's value reaching the var. All of it
+    is Reflex-internal: recheck on every Reflex upgrade (CLAUDE.md lists it).
+    """
+
+    def test_one_session_storage_entry_named_for_the_prompt(self) -> None:
+        import reflex as rx
+        from reflex.compiler.utils import compile_client_storage
+
+        entries = compile_client_storage(rx.State)["session_storage"]
+        assert len(entries) == 1, entries  # nothing but the prompt is kept in the tab
+        key, options = next(iter(entries.items()))
+        assert options["name"] == "pm_gen_in_flight"
+        assert "generator_state" in key and "in_flight_prompt" in key
+
+    def test_browser_values_are_queued_before_the_pages_on_load(self) -> None:
+        import inspect
+
+        from reflex.compiler import templates
+
+        source = inspect.getsource(templates.context_template)
+        assert source.index("CompileVars.UPDATE_VARS_INTERNAL") < source.index(
+            "CompileVars.ON_LOAD_INTERNAL"
+        )
+        # What the compiler writes: hydrate, then the storage values, then the page's on_load.
+        context = templates.context_template(
+            is_dev_mode=False,
+            default_color_mode='"light"',
+            initial_state={},
+            state_name="state",
+            client_storage={},
+        )
+        assert context.index("update_vars_internal") < context.index("on_load_internal")
+        initial = context[context.index("export const initialEvents") :]
+        assert initial.index("state.hydrate") < initial.index("...onLoadInternalEvent()")
+
+    def test_the_browsers_value_reaches_the_var_and_the_restore_empties_it(self) -> None:
+        import asyncio
+        from typing import Any
+
+        import reflex as rx
+        from reflex.compiler.utils import compile_client_storage
+        from reflex.istate.manager.memory import StateManagerMemory
+        from reflex.state import State, UpdateVarsInternalState
+
+        from plexmix.ui.states.generator_state import INTERRUPTED_TITLE, GeneratorState
+
+        # The key the browser sends with the hydrate: the compiled storage map's own key.
+        key = next(iter(compile_client_storage(rx.State)["session_storage"]))
+
+        async def scenario() -> tuple[str, list[Any], GeneratorState, dict[str, Any]]:
+            manager = StateManagerMemory(state=State)
+            async with manager.modify_state("token-restore") as root:
+                root._reset_client_storage()  # what every hydrate does first
+                updater = await root.get_state(UpdateVarsInternalState)
+                await updater.update_vars_internal({key: "rainy day melancholy"})
+                generator = await root.get_state(GeneratorState)
+                held = generator.in_flight_prompt
+                events = list(generator._resume_interrupted_prompt())
+                sent = {
+                    name: value
+                    for delta in root.get_delta().values()
+                    for name, value in delta.items()
+                    if name.startswith("in_flight_prompt")
+                }
+                return held, events, generator, sent
+
+        held, events, generator, sent = asyncio.run(scenario())
+
+        assert held == "rainy day melancholy"
+        assert len(events) == 1  # rx.set_value for the prompt field
+        assert generator.mood_query == "rainy day melancholy"
+        assert generator.generation_error["title"] == INTERRUPTED_TITLE
+        assert generator.in_flight_prompt == ""
+        # The empty value goes back to the browser, so the entry is emptied there too.
+        assert list(sent.values()) == [""]
 
 
 # ── 6.7 results: cover, ordered list, named remove buttons ───────────

@@ -8,7 +8,7 @@ import reflex as rx
 
 from plexmix.ui.components.inputs import COMMIT_DEBOUNCE_MS, compose_input, filter_input
 from plexmix.ui.components.navbar import layout
-from plexmix.ui.components.scope_confirm import embed_all_confirm_dialog
+from plexmix.ui.components.scope_confirm import embed_all_confirm_dialog, scope_provider_line
 from plexmix.ui.components.seg_radio import seg_radio_group
 from plexmix.ui.states.app_state import AppState
 from plexmix.ui.states.library_state import (
@@ -22,6 +22,8 @@ from plexmix.ui.states.library_state import (
     LIBRARY_YEAR_MIN_ID,
     NEXT_PAGE_BUTTON_ID,
     PREV_PAGE_BUTTON_ID,
+    REGENERATE_COST_LINE,
+    REGENERATE_IN_PLACE_LINE,
     LibraryState,
 )
 
@@ -42,6 +44,12 @@ REMOVAL_NOTICE_REGION_ID = "lib-removal-notice-region"
 EMBED_NOTICE_REGION_ID = "lib-embed-notice-region"
 BULK_TAG_ERROR_ID = "lib-bulk-tags-error"
 BULK_MODE_LEGEND_ID = "lib-bulk-mode-legend"
+REGENERATE_SCOPE_ID = "lib-regenerate-scope"
+
+# The Sync buttons. The "regenerate" mode opens its confirmation first
+# (start_sync_or_confirm), and the second handler then reads the scope that the
+# confirmation states (it does nothing in the other modes).
+_SYNC_CLICK: Any = [LibraryState.start_sync_or_confirm, LibraryState.load_regenerate_scope]
 
 # Enrichment column chips: (row flag key, Lucide icon, title when present, title when absent).
 # The flags come from enrichment_flags() in LibraryState.load_tracks.
@@ -123,7 +131,7 @@ def _action_bar() -> rx.Component:
         rx.el.select(
             rx.el.option("Incremental sync", value="incremental"),
             rx.el.option("Full sync", value="full"),
-            rx.el.option("Regenerate (clear tags + embeddings)", value="regenerate"),
+            rx.el.option("Regenerate (replace tags + embeddings)", value="regenerate"),
             value=LibraryState.sync_mode,
             on_change=LibraryState.set_sync_mode,
             class_name="minisel",
@@ -133,9 +141,9 @@ def _action_bar() -> rx.Component:
             rx.icon("refresh-cw", size=16),
             "Sync",
             class_name="btn btn-3 btn-primary",
-            # Route through a dispatcher so the destructive 'regenerate' mode is
-            # confirmed first (and is actually reachable).
-            on_click=LibraryState.start_sync_or_confirm,
+            # Route through a dispatcher so the 'regenerate' mode, which replaces
+            # every tag and embedding, is confirmed first.
+            on_click=_SYNC_CLICK,
             disabled=LibraryState.is_syncing,
             type="button",
             # The AI-tagging note below (absent when no AI provider is set up).
@@ -593,21 +601,69 @@ def _bulk_tag_dialog() -> rx.Component:
     )
 
 
+def _regenerate_scope_line(line: Any) -> rx.Component:
+    """One line of the regenerate scope, rendered only once it has text."""
+    return cast(
+        rx.Component,
+        rx.cond(line != "", rx.el.span(line, class_name="lib-dialog-line"), rx.fragment()),
+    )
+
+
+def _regenerate_step(line: Any, role: str, label: Any, model: Any) -> rx.Component:
+    """One step of the regenerate scope: its count sentence, then its provider.
+
+    "5,943 tracks will be tagged. AI provider: OpenAI · gpt-5-mini", with the model
+    in the mono data style. Nothing is rendered while the scope is still being read.
+    """
+    return cast(
+        rx.Component,
+        rx.cond(
+            line != "",
+            rx.el.span(
+                line, " ", role, scope_provider_line(label, model), class_name="lib-dialog-line"
+            ),
+            rx.fragment(),
+        ),
+    )
+
+
 def _regenerate_confirm_dialog() -> rx.Component:
-    """Confirm the destructive regenerate sync (clears all tags + embeddings).
+    """Confirm the "Regenerate" sync, which replaces every tag and embedding in place.
 
     An AlertDialog: Cancel (``alert_dialog.cancel``) takes focus on open, Escape
-    dismisses through ``on_open_change`` and outside clicks are ignored. The
+    dismisses through ``on_open_change`` and outside clicks are ignored. The body
+    states how many tracks, the AI provider and the embedding provider with their
+    models, and where track details are sent, from ``LibraryState.regenerate_scope``
+    (``readiness.describe_job_scope`` copy). Then it says that nothing is cleared first.
+
+    The scope is read when the dialog opens and arrives a moment later, so it sits
+    in a polite live region, and "Regenerate" is disabled until it is stated. The
     confirm is a plain button, not ``alert_dialog.action``; ``start_sync`` closes
     the dialog by state, and ``set_regenerate_confirm_open(False)`` is idempotent.
     """
+    scope = LibraryState.regenerate_scope
     return rx.alert_dialog.root(
         rx.alert_dialog.content(
             rx.alert_dialog.title("Regenerate all tags & embeddings?"),
             rx.alert_dialog.description(
-                "This clears every AI tag and embedding and regenerates them from "
-                "scratch during the sync. It can take a while and re-incurs AI API "
-                "costs. Your Plex library is not affected.",
+                rx.el.span(
+                    _regenerate_scope_line(scope["checking_line"]),
+                    _regenerate_step(
+                        scope["tags_line"], "AI provider: ", scope["ai_label"], scope["ai_model"]
+                    ),
+                    _regenerate_step(
+                        scope["embeddings_line"],
+                        "Embedding provider: ",
+                        scope["embedding_label"],
+                        scope["embedding_model"],
+                    ),
+                    _regenerate_scope_line(scope["privacy_line"]),
+                    id=REGENERATE_SCOPE_ID,
+                    role="status",
+                    class_name="lib-dialog-line",
+                ),
+                rx.el.span(REGENERATE_IN_PLACE_LINE, class_name="lib-dialog-line"),
+                rx.el.span(REGENERATE_COST_LINE, class_name="lib-dialog-line"),
                 size="2",
             ),
             rx.hstack(
@@ -618,6 +674,8 @@ def _regenerate_confirm_dialog() -> rx.Component:
                     "Regenerate",
                     class_name="btn btn-3 btn-danger",
                     on_click=LibraryState.start_sync,
+                    # Not before the dialog has stated what it confirms (a moment).
+                    disabled=LibraryState.regenerate_confirm_blocked,
                     type="button",
                 ),
                 spacing="2",
@@ -885,7 +943,7 @@ def _empty_not_synced() -> rx.Component:
             rx.icon("refresh-cw", size=16, aria_hidden="true"),
             "Sync library",
             class_name="btn btn-3 btn-soft",
-            on_click=LibraryState.start_sync_or_confirm,
+            on_click=_SYNC_CLICK,
             disabled=LibraryState.is_syncing,
             type="button",
         ),

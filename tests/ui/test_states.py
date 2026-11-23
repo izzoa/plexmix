@@ -982,16 +982,26 @@ class TestGeneratorState:
         self._assert_idle_hero(state)
         assert state.mood_query == "rainy day jazz"
 
-    def test_on_load_rerun_while_generating_is_refused(self) -> None:
+    def test_on_load_rerun_while_generating_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import json
+        from types import SimpleNamespace
         from unittest.mock import patch
 
+        from plexmix.ui.job_manager import JobManager
         from plexmix.ui.states import generator_state as gs
 
         state = self._loadable_state(
             json.dumps({"mood_query": "sunday morning coffee", "genre_filter": "folk"})
         )
         state.mood_query = "rainy day jazz"
+        # A generation that is running: the session is marked as generating and its cancel
+        # handle is registered (a page load ends a session whose generation is gone).
+        state.router = SimpleNamespace(session=SimpleNamespace(client_token="tab-a"))
+        manager = JobManager()
+        monkeypatch.setattr(gs, "jobs", manager)
+        manager.start("tab-a", "generation")
         state.is_generating = True
         with patch.object(gs.rx, "toast") as toast:
             result = state.on_load()
@@ -1000,6 +1010,40 @@ class TestGeneratorState:
         assert state.mood_query == "rainy day jazz"
         assert state.genre_filter == ""
         assert state._rerun_generation_config == ""  # not applied later by surprise
+        assert state.is_page_loading is False
+
+    def test_on_load_rerun_after_the_generation_is_gone_is_applied(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The session says "generating" but no generation runs: the load ends that state
+        first, so the rerun is not refused with a busy toast."""
+        import json
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from plexmix.ui.job_manager import JobManager
+        from plexmix.ui.states import generator_state as gs
+
+        state = self._loadable_state(
+            json.dumps({"mood_query": "sunday morning coffee", "genre_filter": "folk"})
+        )
+        state.mood_query = "rainy day jazz"
+        state.router = SimpleNamespace(session=SimpleNamespace(client_token="tab-a"))
+        monkeypatch.setattr(gs, "jobs", JobManager())  # nothing registered for "tab-a"
+        state.is_generating = True
+        with patch.object(gs.rx, "toast") as toast:
+            result = state.on_load()
+        toast.info.assert_not_called()
+        assert state.is_generating is False
+        assert state.mood_query == "sunday morning coffee"
+        assert state.genre_filter == "folk"
+        assert self._set_values(result) == [
+            ("set_value", "gen-prompt", "sunday morning coffee"),
+            ("set_value", "gen-genre", "folk"),
+        ]
+        assert state._rerun_generation_config == ""
+        assert state.generation_error["title"] == gs.INTERRUPTED_TITLE
+        assert state.generation_error["tone"] == "warning"
         assert state.is_page_loading is False
 
     def test_apply_template_with_results_and_while_generating(self) -> None:

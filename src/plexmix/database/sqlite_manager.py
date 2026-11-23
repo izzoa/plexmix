@@ -1,6 +1,7 @@
 import sqlite3
 import json
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Generator, Optional, List, Dict, Any, Tuple
 import logging
@@ -8,6 +9,16 @@ import logging
 from .models import Artist, Album, Track, Genre, Embedding, SyncHistory, Playlist, PlaylistTemplate
 
 logger = logging.getLogger(__name__)
+
+
+def _utc_seconds(moment: datetime) -> str:
+    """``moment`` in UTC as ``YYYY-MM-DD HH:MM:SS``, the form of ``CURRENT_TIMESTAMP``.
+
+    A time without a zone is taken as UTC, the way the models write their times.
+    """
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc)
+    return moment.strftime("%Y-%m-%d %H:%M:%S")
 
 
 class SQLiteManager:
@@ -1705,6 +1716,36 @@ class SQLiteManager:
         result = cursor.fetchone()
         return result["count"] if result else 0
 
+    def count_tracks_with_only_other_embeddings(
+        self, embedding_model: Optional[str] = None, embedding_dim: Optional[int] = None
+    ) -> int:
+        """Count the tracks whose stored embedding is none of one model and one vector size.
+
+        That is a track that holds at least one embedding row, and none of
+        ``embedding_model`` whose ``embedding_dim`` is ``embedding_dim``. A search
+        index of that model and size cannot hold such a track. None for the model,
+        or for the size, leaves that part of the test out. A track without any
+        embedding row is not counted, and neither is a row whose track is gone.
+        Read-only.
+        """
+        cursor = self.get_connection().cursor()
+        cursor.execute(
+            """
+            SELECT COUNT(*) as count
+            FROM tracks t
+            WHERE EXISTS (SELECT 1 FROM embeddings e WHERE e.track_id = t.id)
+              AND NOT EXISTS (
+                SELECT 1 FROM embeddings e
+                WHERE e.track_id = t.id
+                  AND (? IS NULL OR e.embedding_model = ?)
+                  AND (? IS NULL OR e.embedding_dim = ?)
+              )
+        """,
+            (embedding_model, embedding_model, embedding_dim, embedding_dim),
+        )
+        result = cursor.fetchone()
+        return result["count"] if result else 0
+
     def get_tracks_without_embeddings(self, embedding_model: Optional[str] = None) -> List[Track]:
         """Tracks that have no embedding (same definition as
         :meth:`count_tracks_without_embeddings`), ordered by id."""
@@ -1730,6 +1771,51 @@ class SQLiteManager:
             """
             )
         return [Track(**dict(row)) for row in cursor.fetchall()]
+
+    def get_track_ids_to_retag_since(self, since: datetime) -> List[int]:
+        """Ids of the tracks whose tags were not written at or after ``since``, by id.
+
+        That is a track without a ``tags_generated_at`` time, or with one that is
+        older than ``since`` or cannot be read as a time. Read-only. Times are
+        compared in UTC and in whole seconds: ``update_track_tags`` stamps the
+        column with ``CURRENT_TIMESTAMP``, which is UTC without fractions.
+        """
+        cursor = self.get_connection().cursor()
+        cursor.execute(
+            """
+            SELECT id FROM tracks
+            WHERE datetime(tags_generated_at) IS NULL
+               OR datetime(tags_generated_at) < datetime(?)
+            ORDER BY id
+        """,
+            (_utc_seconds(since),),
+        )
+        return [int(row["id"]) for row in cursor.fetchall()]
+
+    def get_track_ids_to_reembed_since(self, embedding_model: str, since: datetime) -> List[int]:
+        """Ids of the tracks whose embedding was not written at or after ``since``, by id.
+
+        That is a track with no embedding row for ``embedding_model``, or with a row
+        whose ``updated_at`` is older than ``since`` or cannot be read as a time.
+        Rows of other models do not count. Read-only. Times are compared in UTC and
+        in whole seconds: ``updated_at`` holds the UTC time of the ``Embedding``
+        object that was written, with fractions of a second.
+        """
+        cursor = self.get_connection().cursor()
+        cursor.execute(
+            """
+            SELECT t.id FROM tracks t
+            WHERE NOT EXISTS (
+                SELECT 1 FROM embeddings e
+                WHERE e.track_id = t.id
+                  AND e.embedding_model = ?
+                  AND datetime(e.updated_at) >= datetime(?)
+            )
+            ORDER BY t.id
+        """,
+            (embedding_model, _utc_seconds(since)),
+        )
+        return [int(row["id"]) for row in cursor.fetchall()]
 
     def get_tags_for_tracks(self, track_ids: List[int]) -> Dict[int, Dict[str, Optional[str]]]:
         """Read the stored tag columns of several tracks at once.

@@ -5,6 +5,11 @@ Covers the scan state (no health before a scan, one scan at a time, a single
 fixes behind a scope confirmation (``start_fix`` → ``confirm_fix``), real causes
 for provider failures, fix failures kept on their row, and progress labels.
 
+fix-cli-secrets-and-data-loss, task 3.10 (the last section): "Rebuild embeddings"
+replaces every embedding in place. Nothing is cleared first, the provider is checked
+before any change, and a refused, failed or cancelled run leaves every track with
+its new or its previous embedding.
+
 Reflex is mocked (tests/ui/conftest.py). Nothing here touches the network, the
 real keyring or ~/.plexmix: every test runs on a scratch ``PLEXMIX_DATA_DIR`` with
 its own config.yaml, the keyring lookup is patched out, providers are fakes, and
@@ -15,9 +20,14 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
+import logging
 import os
+import pickle
 import sqlite3
+import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 from unittest.mock import MagicMock
@@ -837,6 +847,174 @@ class TestFixHandlers:
         state.poll_task_progress()
         assert state.fix_errors["tags"]["action_label"] == "Add API key"
 
+    def test_retag_all_never_blanks_a_column_the_reply_left_empty(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        """An empty list in the AI provider's reply is no replacement for what a track has."""
+        import re
+
+        write_config(_isolated, OPENAI_AI_YAML)
+        ids = make_db(_isolated, tracks=3)
+        conn = sqlite3.connect(str(_isolated / "plexmix.db"))
+        try:
+            conn.execute(
+                "UPDATE tracks SET tags = 'old-tag', environments = 'old-room', "
+                "instruments = 'old-horn'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        tags_only, no_tags, nothing = ids
+
+        class Provider:
+            def complete(self, prompt: str, **options: Any) -> str:
+                listed = prompt.split("Assign tags to the following songs:")[1]
+                sent = [int(found) for found in re.findall(r'"id": (\d+)', listed)]
+                assert sorted(sent) == ids
+                return json.dumps(
+                    {
+                        str(tags_only): {"tags": ["new"], "environments": [], "instruments": []},
+                        str(no_tags): {"tags": [], "environments": ["focus"], "instruments": []},
+                        str(nothing): {"tags": [], "environments": [], "instruments": []},
+                    }
+                )
+
+        monkeypatch.setattr(
+            "plexmix.services.providers.build_ai_provider", lambda *args, **kwargs: Provider()
+        )
+
+        run(harness().regenerate_all_tags())
+
+        done = task_store.get(FIX_JOB)
+        assert done is not None and done.status == "completed", done
+        conn = sqlite3.connect(str(_isolated / "plexmix.db"))
+        try:
+            rows = dict(
+                (row[0], row[1:])
+                for row in conn.execute("SELECT id, tags, environments, instruments FROM tracks")
+            )
+        finally:
+            conn.close()
+        assert rows[tags_only] == ("new", "old-room", "old-horn")
+        assert rows[no_tags] == ("old-tag", "focus", "old-horn")
+        assert rows[nothing] == ("old-tag", "old-room", "old-horn")
+
+    @pytest.mark.parametrize("column", ["tags", "environments", "instruments"])
+    @pytest.mark.parametrize(
+        "blank", [[""], [" "], ["", ""], [None], ["", " ", None], [{"a": 1}], [True]]
+    )
+    @pytest.mark.parametrize("through", ["results of any source", "the tag generator's parser"])
+    def test_retag_all_cleans_the_lists_before_its_per_column_rule(
+        self,
+        _isolated: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        toast: MagicMock,
+        column: str,
+        blank: list[Any],
+        through: str,
+    ) -> None:
+        """A list of blanks in one column blanks nothing, writes no "," and no "None".
+
+        The handler applies ``clean_tag_list`` itself: it can be handed results that
+        did not come through the parser. The other two columns, which hold real
+        items, are still written.
+        """
+        import re
+
+        from plexmix.ai.tag_generator import TagGenerator
+
+        write_config(_isolated, OPENAI_AI_YAML)
+        (track,) = make_db(_isolated, tracks=1)
+        conn = sqlite3.connect(str(_isolated / "plexmix.db"))
+        try:
+            conn.execute(
+                "UPDATE tracks SET tags = 'old-tag', environments = 'old-room', "
+                "instruments = 'old-horn'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        reply: dict[str, Any] = {
+            "tags": ["new"],
+            "environments": ["focus"],
+            "instruments": ["lute"],
+        }
+        reply[column] = blank
+        monkeypatch.setattr(
+            "plexmix.services.providers.build_ai_provider", lambda *args, **kwargs: object()
+        )
+        if through == "results of any source":
+            monkeypatch.setattr(
+                TagGenerator, "generate_tags_batch", lambda self, tracks, **kw: {track: reply}
+            )
+        else:
+
+            class Provider:
+                def complete(self, prompt: str, **options: Any) -> str:
+                    listed = prompt.split("Assign tags to the following songs:")[1]
+                    assert [int(n) for n in re.findall(r'"id": (\d+)', listed)] == [track]
+                    return json.dumps({str(track): reply})
+
+            monkeypatch.setattr(
+                "plexmix.services.providers.build_ai_provider", lambda *args, **kwargs: Provider()
+            )
+
+        run(harness().regenerate_all_tags())
+
+        done = task_store.get(FIX_JOB)
+        assert done is not None and done.status == "completed", done
+        conn = sqlite3.connect(str(_isolated / "plexmix.db"))
+        try:
+            row = conn.execute(
+                "SELECT tags, environments, instruments FROM tracks WHERE id = ?", (track,)
+            ).fetchone()
+        finally:
+            conn.close()
+        expected = {"tags": "new", "environments": "focus", "instruments": "lute"}
+        previous = {"tags": "old-tag", "environments": "old-room", "instruments": "old-horn"}
+        expected[column] = previous[column]  # the blank list is no result for this column
+        assert dict(zip(("tags", "environments", "instruments"), row)) == expected
+        assert done.extra["result_msg"] == "Tagged 1 track."
+
+    def test_retag_all_writes_nothing_for_a_track_that_got_only_blanks(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        """Three lists of blanks are no result: nothing is written and nothing is counted."""
+        from plexmix.ai.tag_generator import TagGenerator
+
+        write_config(_isolated, OPENAI_AI_YAML)
+        (track,) = make_db(_isolated, tracks=1)
+        conn = sqlite3.connect(str(_isolated / "plexmix.db"))
+        try:
+            conn.execute(
+                "UPDATE tracks SET tags = 'old-tag', environments = 'old-room', "
+                "instruments = 'old-horn', tags_generated_at = '2020-01-01 00:00:00'"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        reply = {"tags": [""], "environments": [" ", " "], "instruments": [None]}
+        monkeypatch.setattr(
+            "plexmix.services.providers.build_ai_provider", lambda *args, **kwargs: object()
+        )
+        monkeypatch.setattr(
+            TagGenerator, "generate_tags_batch", lambda self, tracks, **kw: {track: reply}
+        )
+
+        run(harness().regenerate_all_tags())
+
+        done = task_store.get(FIX_JOB)
+        assert done is not None and done.status == "completed", done
+        assert done.extra["result_msg"] == "Tagged 0 tracks."
+        conn = sqlite3.connect(str(_isolated / "plexmix.db"))
+        try:
+            row = conn.execute(
+                "SELECT tags, environments, instruments, tags_generated_at FROM tracks"
+            ).fetchone()
+        finally:
+            conn.close()
+        assert tuple(row) == ("old-tag", "old-room", "old-horn", "2020-01-01 00:00:00")
+
     def test_audio_fix_without_essentia(
         self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
     ) -> None:
@@ -1085,3 +1263,1053 @@ class TestEnrichConfirmationCopy:
         # A model-less provider the copy doesn't name keeps its bare name, once.
         sc.scope_provider_line("Custom (OpenAI-compatible)", "")
         span.assert_called_once_with("Custom (OpenAI-compatible)")
+
+
+# ── Rebuild embeddings replaces in place (fix-cli-secrets-and-data-loss 3.10) ──
+
+DUMMY_KEY = "dummy-api-key-0000"
+CUSTOM_EMBED_YAML = (
+    "embedding:\n"
+    "  default_provider: custom\n"
+    "  custom_endpoint: http://127.0.0.1:9/v1\n"
+    "  custom_model: standin\n"
+    "  custom_dimension: 4\n"
+    f"  custom_api_key: {DUMMY_KEY}\n"
+)
+OLD = [0.1, 0.2, 0.3, 0.4]
+NEW = [0.9, 0.1, 0.0, 0.0]
+OTHER_MODEL = [0.1, 0.2]  # what make_db(embedded=...) writes for "openai"
+LONG_AGO = datetime(2020, 1, 1)
+CANNOT_CONNECT = "Could not connect to the server. Is the URL correct and the service running?"
+NOTHING_CHANGED = "No embedding was changed."
+
+
+class FakeGenerator:
+    """An in-process embedding provider that records what it was asked to embed.
+
+    ``fail_test`` is raised by the single test request of the provider check,
+    ``fail_on_batch`` makes that batch raise ``batch_error``, and
+    ``cancel_after_batch`` requests a cancel once that batch has been answered, and
+    ``short_on_batch`` answers that batch with one vector too few.
+    """
+
+    provider_name = "custom"
+
+    def __init__(
+        self,
+        *,
+        dimension: int = 4,
+        fail_test: Optional[BaseException] = None,
+        fail_on_batch: int = 0,
+        batch_error: Optional[BaseException] = None,
+        cancel_after_batch: int = 0,
+        short_on_batch: int = 0,
+    ) -> None:
+        self.dimension = dimension
+        self.fail_test = fail_test
+        self.fail_on_batch = fail_on_batch
+        self.short_on_batch = short_on_batch
+        self.batch_error = batch_error or ConnectionError("Connection refused")
+        self.cancel_after_batch = cancel_after_batch
+        self.test_texts: list[str] = []
+        self.batches: list[list[str]] = []
+        self.calls = 0
+        self.on_main_thread: list[bool] = []
+
+    @property
+    def embedded(self) -> int:
+        return sum(len(batch) for batch in self.batches)
+
+    def get_dimension(self) -> int:
+        return self.dimension
+
+    def _vector(self) -> list[float]:
+        return list(NEW[: self.dimension])
+
+    def generate_embedding(self, text: str) -> list[float]:
+        self.on_main_thread.append(threading.current_thread() is threading.main_thread())
+        self.test_texts.append(text)
+        if self.fail_test is not None:
+            raise self.fail_test
+        return self._vector()
+
+    def generate_batch_embeddings(
+        self, texts: list[str], batch_size: int = 50
+    ) -> list[list[float]]:
+        self.on_main_thread.append(threading.current_thread() is threading.main_thread())
+        self.calls += 1
+        if self.calls == self.fail_on_batch:
+            raise self.batch_error
+        self.batches.append(list(texts))
+        if self.calls == self.cancel_after_batch:
+            task_store.cancel(FIX_JOB)
+        vectors = [self._vector() for _ in texts]
+        return vectors[:-1] if self.calls == self.short_on_batch else vectors
+
+
+def use_generator(monkeypatch: pytest.MonkeyPatch, generator: FakeGenerator) -> FakeGenerator:
+    """Hand ``generator`` to the real provider check in place of a real provider."""
+    monkeypatch.setattr(
+        "plexmix.services.regenerate_service.build_embedding_generator_with_reason",
+        lambda settings: (generator, None),
+    )
+    return generator
+
+
+@pytest.fixture
+def pairs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Embed two tracks per batch, so five tracks take three batches."""
+    monkeypatch.setattr("plexmix.ui.states.doctor_state.EMBEDDING_BATCH_SIZE", 2)
+
+
+def seed_embeddings(
+    data: Path, ids: list[int], vector: list[float] = OLD, model: str = "custom"
+) -> None:
+    """Give ``ids`` an embedding of ``model`` (the configured one), written long ago."""
+    from plexmix.database.models import Embedding
+    from plexmix.database.sqlite_manager import SQLiteManager
+
+    with SQLiteManager(str(data / "plexmix.db")) as db:
+        for tid in ids:
+            db.insert_embedding(
+                Embedding(
+                    track_id=tid,
+                    embedding_model=model,
+                    embedding_dim=len(vector),
+                    vector=list(vector),
+                    created_at=LONG_AGO,
+                    updated_at=LONG_AGO,
+                )
+            )
+
+
+def index_files(data: Path) -> dict[str, bytes]:
+    """Every file of the search index (moved-aside copies included), by name."""
+    return {path.name: path.read_bytes() for path in sorted(data.glob("embeddings.*"))}
+
+
+def save_index(data: Path, ids: list[int], vector: list[float] = OLD) -> dict[str, bytes]:
+    """Save a real search index over ``ids``; returns its files."""
+    from plexmix.database.vector_index import VectorIndex
+
+    path = data / "embeddings.index"
+    index = VectorIndex(dimension=len(vector), index_path=str(path))
+    index.build_index([list(vector) for _ in ids], list(ids))
+    index.save_index(str(path))
+    return index_files(data)
+
+
+def index_metadata(data: Path) -> dict[str, Any]:
+    with open(data / "embeddings.metadata", "rb") as handle:
+        loaded_metadata: dict[str, Any] = pickle.load(handle)
+    return loaded_metadata
+
+
+def embedding_rows(data: Path) -> dict[tuple[int, str], list[float]]:
+    """Every embedding row: (track id, model) → vector."""
+    conn = sqlite3.connect(str(data / "plexmix.db"))
+    try:
+        rows = conn.execute("SELECT track_id, embedding_model, vector FROM embeddings").fetchall()
+    finally:
+        conn.close()
+    return {(int(tid), str(model)): json.loads(vector) for tid, model, vector in rows}
+
+
+def library(data: Path, tracks: int = 5) -> list[int]:
+    """Five tracks that all hold an embedding of the configured model, and their index."""
+    write_config(data, CUSTOM_EMBED_YAML)
+    ids = make_db(data, tracks=tracks)
+    seed_embeddings(data, ids)
+    save_index(data, ids)
+    return ids
+
+
+def library_of_another_model(data: Path, tracks: int = 5) -> list[int]:
+    """Five tracks embedded by another provider (2 dimensions), and that provider's index."""
+    write_config(data, CUSTOM_EMBED_YAML)
+    ids = make_db(data, tracks=tracks, embedded=tracks)
+    save_index(data, ids, OTHER_MODEL)
+    return ids
+
+
+def library_of_two_sizes(data: Path, tracks: int = 5, replaced: int = 0) -> list[int]:
+    """Rows of two vector sizes under one model name, and the index of the earlier size.
+
+    The configured provider ("custom") makes 4 numbers. Every track holds a "custom" row
+    of 2 numbers, as after a change of ``custom_dimension``, and the saved index holds
+    those. The first ``replaced`` tracks already hold a row of 4 numbers (a run that
+    was stopped part-way wrote them).
+    """
+    write_config(data, CUSTOM_EMBED_YAML)
+    ids = make_db(data, tracks=tracks)
+    seed_embeddings(data, ids, OTHER_MODEL)
+    save_index(data, ids, OTHER_MODEL)
+    seed_embeddings(data, ids[:replaced], NEW)
+    return ids
+
+
+INDEX_NOT_UPDATED = "The search index was not updated"
+POINTS_TO_REBUILD = "Rebuild the embeddings"
+
+
+def index_status() -> Any:
+    """The readiness of the search index, read from the files and settings as they are now."""
+    from plexmix.config.settings import Settings
+
+    settings = Settings.load_from_file()
+    return rd.evaluate(settings, rd.collect_facts(settings))["index"]
+
+
+def sizes_of(data: Path) -> dict[int, int]:
+    """The size of the "custom" vector of every track that has one."""
+    return {tid: len(vector) for (tid, model), vector in embedding_rows(data).items()}
+
+
+def assert_index_not_updated(state: Any, toast: MagicMock, done: Any) -> None:
+    """The finished job says that the search index was not updated, never that it was.
+
+    ``done`` is the finished Doctor task. Nothing the page is handed claims a success,
+    and the words say what replaces the embeddings in the way.
+    """
+    said = shown(done) + " " + " ".join(str(call) for call in toast.method_calls)
+    for row in state.row_map.values():
+        said += " " + row["error_title"] + " " + row["error_body"]
+    assert INDEX_NOT_UPDATED in said and POINTS_TO_REBUILD in said
+    toast.success.assert_not_called()
+    assert "Rebuilt the search index" not in said
+    assert "index was updated" not in said.lower()
+
+
+def assert_saved_index_still_mismatched(data: Path, ids: list[int], dimension: int = 4) -> None:
+    """A fresh open of the saved index still covers ``ids`` and reports the mismatch."""
+    from plexmix.database.vector_index import VectorIndex
+
+    opened = VectorIndex(dimension=dimension, index_path=str(data / "embeddings.index"))
+    assert sorted(opened.track_ids) == sorted(ids)
+    assert opened.dimension_mismatch is True
+
+
+def rebuild(state: Optional[Any] = None) -> Any:
+    """Run the "Rebuild embeddings" handler to its end; returns the finished task."""
+    state = state if state is not None else harness()
+    run(state.regenerate_all_embeddings())
+    done = task_store.get(FIX_JOB)
+    assert done is not None
+    return done
+
+
+def shown(done: Any) -> str:
+    """Everything a finished fix hands to the page."""
+    return " ".join([str(done.message), *(str(value) for value in done.extra.values())])
+
+
+def engine_spies(monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicMock]:
+    """Spies on the two sync engine functions that close a pass: finish and follow-the-rows."""
+    from plexmix.plex import sync
+
+    finish = MagicMock(wraps=sync.finish_embeddings_pass)
+    follow = MagicMock(wraps=sync.follow_rows_after_stopped_pass)
+    monkeypatch.setattr(sync, "finish_embeddings_pass", finish)
+    monkeypatch.setattr(sync, "follow_rows_after_stopped_pass", follow)
+    return finish, follow
+
+
+class TestRebuildEmbeddings:
+    @pytest.mark.parametrize("fail_on_batch,replaced", [(1, 0), (2, 2)])
+    def test_rebuild_embeddings_deletes_nothing_first(
+        self,
+        _isolated: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        toast: MagicMock,
+        pairs: None,
+        caplog: pytest.LogCaptureFixture,
+        fail_on_batch: int,
+        replaced: int,
+    ) -> None:
+        ids = library(_isolated)
+        before_rows, before_index = embedding_rows(_isolated), index_files(_isolated)
+        error = ConnectionError(f"Connection refused (Authorization: Bearer {DUMMY_KEY})")
+        generator = use_generator(
+            monkeypatch, FakeGenerator(fail_on_batch=fail_on_batch, batch_error=error)
+        )
+        state = loaded(harness(), doctor_total_tracks=5)
+
+        with caplog.at_level(logging.DEBUG):
+            done = rebuild(state)
+
+        assert done.status == "failed"
+        rows = embedding_rows(_isolated)
+        # Every track still has its embedding: the new one or the previous one.
+        assert set(rows) == {(tid, "custom") for tid in ids}
+        assert [tid for tid in ids if rows[(tid, "custom")] == NEW] == ids[:replaced]
+        assert [tid for tid in ids if rows[(tid, "custom")] == OLD] == ids[replaced:]
+        # The index files are still there, and the index still covers every track.
+        assert set(index_files(_isolated)) == {"embeddings.index", "embeddings.metadata"}
+        assert sorted(index_metadata(_isolated)["track_ids"]) == ids
+        if not replaced:
+            assert rows == before_rows
+            assert index_files(_isolated) == before_index
+
+        assert done.message == CANNOT_CONNECT
+        note = (
+            f"{replaced} of 5 tracks got a new embedding. The others keep the embedding they had."
+            if replaced
+            else NOTHING_CHANGED
+        )
+        assert done.extra["error_body"].endswith(note)
+        record = readiness_store.get("embeddings")
+        assert record is not None
+        assert (record.level, record.cause) == (rd.Level.FAILING, rd.Cause.UNREACHABLE)
+        state.poll_task_progress()
+        assert state.row_map["embeddings"]["error_title"] == CANNOT_CONNECT
+        assert state.row_map["embeddings"]["error_body"].endswith(note)
+        assert generator.embedded == replaced
+        assert f"Doctor embedding rebuild stopped after {replaced} of 5 tracks" in caplog.text
+        assert DUMMY_KEY not in shown(done) + caplog.text
+
+    @pytest.mark.parametrize(
+        "error,cause,title",
+        [
+            (
+                ConnectionError(f"Connection refused by http://user:{DUMMY_KEY}@127.0.0.1:9/v1"),
+                rd.Cause.UNREACHABLE,
+                CANNOT_CONNECT,
+            ),
+            (
+                RuntimeError(f"Error code: 401 - Incorrect API key provided: {DUMMY_KEY}"),
+                rd.Cause.INVALID_CREDENTIALS,
+                "Invalid API key. Please check your key and try again.",
+            ),
+        ],
+    )
+    def test_rebuild_is_refused_when_the_provider_does_not_answer(
+        self,
+        _isolated: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        toast: MagicMock,
+        caplog: pytest.LogCaptureFixture,
+        error: BaseException,
+        cause: rd.Cause,
+        title: str,
+    ) -> None:
+        from plexmix.config.settings import Settings
+
+        library(_isolated)
+        before_rows, before_index = embedding_rows(_isolated), index_files(_isolated)
+        generator = use_generator(monkeypatch, FakeGenerator(fail_test=error))
+        state = loaded(harness(), doctor_total_tracks=5)
+
+        with caplog.at_level(logging.DEBUG):
+            done = rebuild(state)
+
+        # One test request, then nothing: no track was sent and nothing was changed.
+        assert len(generator.test_texts) == 1
+        assert generator.batches == []
+        assert embedding_rows(_isolated) == before_rows
+        assert index_files(_isolated) == before_index
+
+        # The Embeddings row shows the cause, and says that nothing was changed.
+        assert done.status == "failed"
+        assert done.message == title
+        assert done.extra["error_body"].endswith(NOTHING_CHANGED)
+        assert done.extra["error_action_href"] == "/settings?section=embedding"
+        state.poll_task_progress()
+        row = state.row_map["embeddings"]
+        assert row["error_title"] == title
+        assert row["error_body"].endswith(NOTHING_CHANGED)
+        assert row["error_action_href"] == "/settings?section=embedding"
+        toast.error.assert_called_once_with(title)
+
+        # Readiness is failing with that cause, on every status surface.
+        record = readiness_store.get("embeddings")
+        assert record is not None
+        assert (record.level, record.cause) == (rd.Level.FAILING, cause)
+        settings = Settings.load_from_file()
+        status = rd.evaluate(settings, rd.collect_facts(settings))
+        assert status["embeddings"].level == rd.Level.FAILING
+        assert status["embeddings"].cause == cause
+        assert "it did not answer the test request" in caplog.text
+        assert DUMMY_KEY not in shown(done) + caplog.text + record.message
+
+    def test_rebuild_that_cannot_start_leaves_an_unreadable_index_alone(
+        self, _isolated: Path, toast: MagicMock
+    ) -> None:
+        """The check comes before the index is opened, so nothing is moved aside either."""
+        write_config(_isolated, OPENAI_EMBED_YAML)  # no key is stored
+        make_db(_isolated, tracks=2, embedded=2)
+        (_isolated / "embeddings.index").write_bytes(b"not an index")
+        before_rows, before_index = embedding_rows(_isolated), index_files(_isolated)
+
+        done = rebuild()
+
+        assert done.status == "failed"
+        assert done.message == "No API key for OpenAI"
+        assert done.extra["error_body"].endswith(NOTHING_CHANGED)
+        assert embedding_rows(_isolated) == before_rows
+        assert index_files(_isolated) == before_index
+        record = readiness_store.get("embeddings")
+        assert record is not None
+        assert (record.level, record.cause) == (rd.Level.FAILING, rd.Cause.MISSING_API_KEY)
+
+    def test_rebuild_processes_every_track_after_an_interrupted_run(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock, pairs: None
+    ) -> None:
+        from plexmix.config.settings import Settings
+        from plexmix.database.models import Embedding
+        from plexmix.database.sqlite_manager import SQLiteManager
+        from plexmix.services import regenerate_service as rs
+
+        ids = library(_isolated)
+        # An earlier "embeddings generate --regenerate" replaced two tracks and stopped.
+        provider = rs.run_provider(Settings.load_from_file(), rs.SCOPE_EMBEDDINGS)
+        with SQLiteManager(str(_isolated / "plexmix.db")) as db:
+            earlier = rs.open_run(db, rs.SCOPE_EMBEDDINGS, provider)
+            for tid in ids[:2]:
+                db.insert_embedding(
+                    Embedding(track_id=tid, embedding_model="custom", embedding_dim=4, vector=OLD)
+                )
+            # A command that continues that run would do only the other three.
+            assert rs.preview_run(db, rs.SCOPE_EMBEDDINGS, provider).continued is True
+            assert rs.remaining_track_ids(db, earlier) == ids[2:]
+            marker = rs.marker_path(db)
+        marker_before = marker.read_bytes()
+
+        # The confirmation states every track, and the fix embeds every track.
+        state = loaded(harness(), doctor_total_tracks=5)
+        state.start_fix("embeddings_full")
+        assert "5 tracks" in state.fix_scope["count_line"]
+        assert state.confirm_fix() is type(state).regenerate_all_embeddings
+        generator = use_generator(monkeypatch, FakeGenerator())
+
+        done = rebuild(state)
+
+        assert done.status == "completed"
+        assert done.extra["result_msg"] == "Rebuilt the search index with 5 tracks."
+        assert generator.embedded == 5
+        assert embedding_rows(_isolated) == {(tid, "custom"): NEW for tid in ids}
+        assert done.extra["fix_total"] == 5 and done.progress == 5
+        # The marker belongs to the CLI commands: it was not read and not written.
+        assert marker.read_bytes() == marker_before
+
+    def test_cancelled_rebuild_keeps_old_and_new(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock, pairs: None
+    ) -> None:
+        from plexmix.ui.states.doctor_state import DoctorState
+
+        ids = library(_isolated)
+        generator = use_generator(monkeypatch, FakeGenerator(cancel_after_batch=1))
+        finish, follow = engine_spies(monkeypatch)
+        state = loaded(harness(), doctor_total_tracks=5)
+
+        done = rebuild(state)
+
+        assert done.status == "cancelled"
+        assert generator.embedded == 2  # the cancel request stopped the pass after one batch
+        # A stopped pass is not closed: nothing is removed, the index follows the rows.
+        finish.assert_not_called()
+        follow.assert_called_once()
+        rows = embedding_rows(_isolated)
+        assert set(rows) == {(tid, "custom") for tid in ids}  # no track lost its embedding
+        assert [rows[(tid, "custom")] for tid in ids] == [NEW, NEW, OLD, OLD, OLD]
+        # The index follows the rows: every track, the new vectors and the previous ones.
+        assert set(index_files(_isolated)) == {"embeddings.index", "embeddings.metadata"}
+        assert sorted(index_metadata(_isolated)["track_ids"]) == ids
+        events = state.poll_task_progress()
+        assert DoctorState.run_health_check in events
+        toast.warning.assert_called_once_with(
+            "Fix cancelled. 2 of 5 tracks got a new embedding. "
+            "The others keep the embedding they had."
+        )
+
+    def test_cancel_before_the_first_batch_changes_nothing(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        library(_isolated)
+        before_rows, before_index = embedding_rows(_isolated), index_files(_isolated)
+        generator = FakeGenerator()
+
+        def answer_then_cancel(text: str) -> list[float]:
+            task_store.cancel(FIX_JOB)  # the user cancels while the provider is checked
+            return list(NEW)
+
+        monkeypatch.setattr(generator, "generate_embedding", answer_then_cancel)
+        use_generator(monkeypatch, generator)
+        state = loaded(harness(), doctor_total_tracks=5)
+
+        done = rebuild(state)
+
+        assert done.status == "cancelled"
+        assert generator.batches == []
+        assert embedding_rows(_isolated) == before_rows
+        assert index_files(_isolated) == before_index
+        # Readiness records what a run did: no row was written, so nothing is claimed.
+        assert readiness_store.get("embeddings") is None
+        state.poll_task_progress()
+        toast.warning.assert_called_once_with(f"Fix cancelled. {NOTHING_CHANGED}")
+
+    def test_finished_rebuild_removes_other_models_and_rebuilds_the_index(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock, pairs: None
+    ) -> None:
+        """The usual way in: the provider changed, so the index has another dimension."""
+        ids = library_of_another_model(_isolated)
+        assert index_metadata(_isolated)["dimension"] == 2
+        generator = use_generator(monkeypatch, FakeGenerator())
+        finish, _follow = engine_spies(monkeypatch)
+
+        done = rebuild()
+
+        assert done.status == "completed"
+        assert done.extra["result_msg"] == "Rebuilt the search index with 5 tracks."
+        assert generator.embedded == 5
+        # The pass is closed by the sync engine's own code, for the model of the new rows.
+        finish.assert_called_once()
+        assert finish.call_args.args[2:] == ("custom",)
+        # Only now, with a replacement for every track, are the other model's rows gone.
+        assert embedding_rows(_isolated) == {(tid, "custom"): NEW for tid in ids}
+        metadata = index_metadata(_isolated)
+        assert metadata["dimension"] == 4
+        assert sorted(metadata["track_ids"]) == ids
+        record = readiness_store.get("embeddings")
+        assert record is not None and record.level == rd.Level.READY
+
+    @pytest.mark.parametrize("stop", ["cancel", "provider"])
+    def test_stopped_rebuild_after_a_provider_change_keeps_rows_and_index(
+        self,
+        _isolated: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        toast: MagicMock,
+        pairs: None,
+        stop: str,
+    ) -> None:
+        from plexmix.config.settings import Settings
+
+        ids = library_of_another_model(_isolated)
+        before_rows, before_index = embedding_rows(_isolated), index_files(_isolated)
+        fake = (
+            FakeGenerator(cancel_after_batch=1)
+            if stop == "cancel"
+            else FakeGenerator(fail_on_batch=2)
+        )
+        use_generator(monkeypatch, fake)
+        finish, follow = engine_spies(monkeypatch)
+
+        state = loaded(harness(), doctor_total_tracks=5)
+        done = rebuild(state)
+
+        assert done.status == ("cancelled" if stop == "cancel" else "failed")
+        # A stopped pass is not closed. The index is offered the rows, and the engine
+        # refuses to build it: three tracks hold nothing but the other model's row.
+        finish.assert_not_called()
+        follow.assert_called_once()
+        rows = embedding_rows(_isolated)
+        # No row of the other model was removed: three tracks have nothing else yet.
+        assert {key: rows[key] for key in before_rows} == before_rows
+        assert {key for key in rows if key[1] == "custom"} == {(tid, "custom") for tid in ids[:2]}
+        # Two new vectors must not pass for the library's index: the saved one stays,
+        # so Doctor still reports the mismatch and still offers "Rebuild embeddings".
+        assert index_files(_isolated) == before_index
+        settings = Settings.load_from_file()
+        status = rd.evaluate(settings, rd.collect_facts(settings))
+        assert status["index"].cause == rd.Cause.DIMENSION_MISMATCH
+        stats = {**dict.fromkeys(_stat_keys(), 0), "total_tracks": 5, "tracks_with_embeddings": 5}
+        rows_shown = rd.doctor_rows(stats, rd.status_snapshot(status), {"scan_state": "done"})
+        embeddings_row = next(row for row in rows_shown if row["id"] == "embeddings")
+        assert embeddings_row["fix"] == "embeddings_full"
+        # The job says so: the index was not updated, and what replaces the embeddings.
+        state.poll_task_progress()
+        assert_index_not_updated(state, toast, done)
+        # The saved index is the one of the earlier provider, and a fresh open says so.
+        assert_saved_index_still_mismatched(_isolated, ids)
+
+    def test_the_rebuild_closes_a_pass_only_through_the_engine_s_own_functions(self) -> None:
+        """One rule for every regenerate action: the Library sync, the CLI and this fix.
+
+        The engine's two functions go through ``index_rebuild.rebuild_index``, which
+        builds and saves the index only when it is complete. This module never builds
+        or saves an index by itself, except through that function.
+        """
+        import inspect
+
+        from plexmix.plex import sync
+        from plexmix.ui.states import doctor_state
+
+        source = inspect.getsource(doctor_state.rebuild_embeddings)
+        assert "finish_embeddings_pass" in source and "follow_rows_after_stopped_pass" in source
+        assert callable(sync.finish_embeddings_pass)
+        assert callable(sync.follow_rows_after_stopped_pass)
+        assert not hasattr(doctor_state, "index_may_follow_rows")
+        assert not hasattr(doctor_state, "rebuild_index_from_rows")
+        whole = Path(doctor_state.__file__).read_text(encoding="utf-8")
+        assert ".build_index(" not in whole and ".save_index(" not in whole
+        assert "skipped_vectors" not in whole and "_vectors_that_fit" not in whole
+
+    @pytest.mark.parametrize("fix", ["regenerate_all_embeddings", "generate_missing_embeddings"])
+    def test_embedding_fix_does_not_start_beside_a_regenerate_sync(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock, fix: str
+    ) -> None:
+        """The Library's "Regenerate" sync writes embeddings and saves the index itself.
+
+        Two writers at once would pay the provider twice for the same tracks and
+        save the same index files over each other.
+        """
+        from plexmix.ui.states import library_state as ls
+
+        library(_isolated)
+        before_rows, before_index = embedding_rows(_isolated), index_files(_isolated)
+        generator = use_generator(monkeypatch, FakeGenerator())
+        assert task_store.start("sync", message="Starting sync...") is not None
+        task_store.update("sync", extra={ls.REGENERATE_RUN_KEY: True})
+        try:
+            run(getattr(harness(), fix)())
+        finally:
+            task_store.clear("sync")
+
+        done = task_store.get(FIX_JOB)
+        assert done is not None and done.status == "failed"
+        assert done.message == "A Regenerate sync is running"
+        assert done.extra["error_body"] == (
+            "It is replacing tags and embeddings. Wait for it to finish, then try again. "
+            "No embedding was changed."
+        )
+        # The provider was not asked, and nothing was written.
+        assert generator.calls == 0 and generator.test_texts == []
+        assert embedding_rows(_isolated) == before_rows
+        assert index_files(_isolated) == before_index
+
+    def test_embedding_fix_runs_beside_a_sync_of_another_mode(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        ids = library(_isolated)
+        generator = use_generator(monkeypatch, FakeGenerator())
+        assert task_store.start("sync", message="Starting sync...") is not None
+        try:
+            done = rebuild()
+        finally:
+            task_store.clear("sync")
+
+        assert done.status == "completed" and generator.embedded == len(ids)
+
+    @pytest.mark.parametrize("saved_index", ["same dimension", "no metadata file"])
+    def test_stopped_rebuild_never_shrinks_the_saved_index(
+        self,
+        _isolated: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        toast: MagicMock,
+        pairs: None,
+        saved_index: str,
+    ) -> None:
+        """Two indexes of another model that the dimension in the metadata does not give away."""
+        write_config(_isolated, CUSTOM_EMBED_YAML)
+        ids = make_db(_isolated, tracks=5)
+        if saved_index == "same dimension":
+            seed_embeddings(_isolated, ids, model="cohere")
+            save_index(_isolated, ids)
+        else:
+            seed_embeddings(_isolated, ids, OTHER_MODEL, model="cohere")
+            save_index(_isolated, ids, OTHER_MODEL)
+            (_isolated / "embeddings.metadata").unlink()  # the index alone tells its dimension
+        before_index = index_files(_isolated)
+        use_generator(monkeypatch, FakeGenerator(cancel_after_batch=1))
+        finish, follow = engine_spies(monkeypatch)
+
+        done = rebuild()
+
+        assert done.status == "cancelled"
+        rows = embedding_rows(_isolated)
+        assert {key for key in rows if key[1] == "cohere"} == {(tid, "cohere") for tid in ids}
+        assert {key for key in rows if key[1] == "custom"} == {(tid, "custom") for tid in ids[:2]}
+        # An index of the two new vectors would cover fewer tracks than the saved one.
+        finish.assert_not_called()
+        follow.assert_called_once()  # offered the rows, and refused: three are in the way
+        assert index_files(_isolated) == before_index
+
+    def test_rebuild_moves_an_unreadable_index_aside_and_builds_a_new_one(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        write_config(_isolated, CUSTOM_EMBED_YAML)
+        ids = make_db(_isolated, tracks=3)
+        seed_embeddings(_isolated, ids)
+        (_isolated / "embeddings.index").write_bytes(b"not an index")
+        use_generator(monkeypatch, FakeGenerator())
+
+        done = rebuild()
+
+        assert done.status == "completed"
+        files = index_files(_isolated)
+        moved = [name for name in files if ".unreadable-" in name]
+        assert len(moved) == 1 and files[moved[0]] == b"not an index"  # kept, not deleted
+        assert sorted(index_metadata(_isolated)["track_ids"]) == ids
+
+    def test_rebuild_stops_before_any_batch_when_the_index_cannot_be_replaced(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        """An unreadable index that cannot be moved aside is never written over."""
+        import plexmix.database.vector_index as vector_index_module
+
+        write_config(_isolated, CUSTOM_EMBED_YAML)
+        ids = make_db(_isolated, tracks=3)
+        seed_embeddings(_isolated, ids)
+        index = _isolated / "embeddings.index"
+        index.write_bytes(b"not an index")
+        before_rows, before_index = embedding_rows(_isolated), index_files(_isolated)
+        generator = use_generator(monkeypatch, FakeGenerator())
+        monkeypatch.setattr(
+            vector_index_module.os, "rename", MagicMock(side_effect=PermissionError(13, "denied"))
+        )
+
+        done = rebuild()
+
+        assert done.status == "failed"
+        assert done.message == "The search index file couldn't be read or moved aside"
+        assert str(index) in done.extra["error_body"]
+        assert done.extra["error_body"].endswith(NOTHING_CHANGED)
+        assert generator.batches == []  # no track was sent to the provider
+        assert embedding_rows(_isolated) == before_rows
+        assert index_files(_isolated) == before_index
+        # The provider answered its test request: this is not a provider failure.
+        assert readiness_store.get("embeddings") is None
+
+    def test_rebuild_work_stays_off_the_event_loop(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock, pairs: None
+    ) -> None:
+        library(_isolated)
+        generator = use_generator(monkeypatch, FakeGenerator())
+
+        assert rebuild().status == "completed"
+
+        # The test request and every batch ran in a worker thread, the check first.
+        assert len(generator.test_texts) == 1 and generator.calls == 3
+        assert generator.on_main_thread == [False, False, False, False]
+
+    def test_rebuild_of_an_empty_library(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        write_config(_isolated, CUSTOM_EMBED_YAML)
+        make_db(_isolated, tracks=0)
+        generator = use_generator(monkeypatch, FakeGenerator())
+
+        done = rebuild()
+
+        assert done.status == "completed"
+        assert done.extra["result_msg"] == "No tracks available to embed."
+        assert generator.batches == []
+        assert index_files(_isolated) == {}
+
+    def test_incremental_fix_with_one_vector_size_ends_as_it_always_did(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        """The "Generate embeddings" fix sends no test request and embeds only what is missing.
+
+        With one provider and one vector size the index holds every embedded track and
+        the job ends with its success message.
+        """
+        write_config(_isolated, CUSTOM_EMBED_YAML)
+        ids = make_db(_isolated, tracks=5)
+        seed_embeddings(_isolated, ids[:2], OLD)  # two tracks hold a row of the same size
+        save_index(_isolated, ids[:2])
+        generator = FakeGenerator()
+        monkeypatch.setattr(
+            "plexmix.services.providers.build_embedding_generator_with_reason",
+            lambda settings: (generator, None),
+        )
+        state = harness()
+
+        run(state.generate_missing_embeddings())
+
+        done = task_store.get(FIX_JOB)
+        assert done is not None and done.status == "completed"
+        assert done.extra["result_msg"] == "Generated embeddings for 3 tracks."
+        assert generator.test_texts == []
+        assert generator.embedded == 3
+        rows = embedding_rows(_isolated)
+        assert {key for key in rows if key[1] == "custom"} == {(tid, "custom") for tid in ids}
+        assert [rows[(tid, "custom")] for tid in ids] == [OLD, OLD, NEW, NEW, NEW]
+        # The index now holds every embedded track, and no mismatch is left.
+        from plexmix.database.vector_index import VectorIndex
+
+        opened = VectorIndex(dimension=4, index_path=str(_isolated / "embeddings.index"))
+        assert sorted(opened.track_ids) == ids and opened.dimension_mismatch is False
+        state.poll_task_progress()
+        assert state.fix_errors == {}
+
+    def test_incremental_fix_after_a_provider_change_says_what_is_in_the_way(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        """Two tracks hold only the embedding of another provider: no index is built."""
+        write_config(_isolated, CUSTOM_EMBED_YAML)
+        ids = make_db(_isolated, tracks=5, embedded=2)  # two tracks hold another model's row
+        generator = FakeGenerator()
+        monkeypatch.setattr(
+            "plexmix.services.providers.build_embedding_generator_with_reason",
+            lambda settings: (generator, None),
+        )
+        state = harness()
+
+        run(state.generate_missing_embeddings())
+
+        done = task_store.get(FIX_JOB)
+        assert done is not None and done.status == "failed"
+        assert done.message == INDEX_NOT_UPDATED
+        body = done.extra["error_body"]
+        assert body.startswith("Generated embeddings for 3 tracks. ")
+        assert "2 tracks hold an embedding that was made with other embedding settings" in body
+        # Nothing mismatches (there is no saved index): Generate embeddings in the
+        # Library embeds those two for this provider, or switching back keeps them.
+        assert "Generate embeddings" in body
+        assert (done.extra["error_action_label"], done.extra["error_action_href"]) == (
+            "Switch back",
+            "/settings?section=embedding",
+        )
+        assert generator.embedded == 3
+        rows = embedding_rows(_isolated)
+        assert {key for key in rows if key[1] == "custom"} == {(tid, "custom") for tid in ids[2:]}
+        assert {key for key in rows if key[1] == "openai"} == {(tid, "openai") for tid in ids[:2]}
+        assert index_files(_isolated) == {}  # nothing was built, nothing saved
+        record = readiness_store.get("embeddings")
+        assert record is not None and record.level == rd.Level.READY  # the 3 rows were written
+        state.poll_task_progress()
+        toast.success.assert_not_called()
+        toast.error.assert_called_once_with(INDEX_NOT_UPDATED)
+        assert state.row_map["embeddings"]["error_title"] == INDEX_NOT_UPDATED
+
+    def test_incremental_fix_leaves_the_saved_index_of_two_vector_sizes(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        """Rows of two sizes under one model name: the fix saves its rows and not the index.
+
+        An index of the vectors that fit would take the place of the library's index and
+        cover one track. The saved files stay as they are, byte for byte, the job is
+        no success, and Doctor still reports the mismatch and offers the full rebuild.
+        """
+        write_config(_isolated, CUSTOM_EMBED_YAML)
+        ids = make_db(_isolated, tracks=5)
+        seed_embeddings(_isolated, ids[1:], OTHER_MODEL)  # the first track has no row at all
+        before_index = save_index(_isolated, ids[1:], OTHER_MODEL)
+        generator = FakeGenerator()
+        monkeypatch.setattr(
+            "plexmix.services.providers.build_embedding_generator_with_reason",
+            lambda settings: (generator, None),
+        )
+        state = loaded(harness(), doctor_total_tracks=5, doctor_tracks_needing_embeddings=1)
+
+        run(state.generate_missing_embeddings())
+
+        done = task_store.get(FIX_JOB)
+        assert done is not None and done.status == "failed"
+        assert done.message == INDEX_NOT_UPDATED
+        assert done.extra["error_body"].startswith("Generated embeddings for 1 track. ")
+        assert "4 tracks hold an embedding that was made with other embedding settings" in (
+            done.extra["error_body"]
+        )
+        assert generator.embedded == 1
+        # The new row is saved, the others keep theirs, and the index files are untouched.
+        assert sizes_of(_isolated) == {ids[0]: 4, ids[1]: 2, ids[2]: 2, ids[3]: 2, ids[4]: 2}
+        assert index_files(_isolated) == before_index
+        assert_saved_index_still_mismatched(_isolated, ids[1:])
+        state.poll_task_progress()
+        assert_index_not_updated(state, toast, done)
+        toast.error.assert_called_once_with(INDEX_NOT_UPDATED)
+
+        # The next scan still reports the mismatch and still offers the full rebuild.
+        run(state.run_health_check())
+        row = state.row_map["embeddings"]
+        assert row["fix"] == "embeddings_full" and row["fix_label"] == "Rebuild embeddings"
+        assert index_status().level == rd.Level.FAILING
+        assert index_status().cause == rd.Cause.DIMENSION_MISMATCH
+
+    def test_cancelled_incremental_fix_that_leaves_the_index_is_cancelled_and_says_so(
+        self, _isolated: Path, monkeypatch: pytest.MonkeyPatch, toast: MagicMock
+    ) -> None:
+        write_config(_isolated, CUSTOM_EMBED_YAML)
+        ids = make_db(_isolated, tracks=5)
+        seed_embeddings(_isolated, ids[1:], OTHER_MODEL)
+        before_index = save_index(_isolated, ids[1:], OTHER_MODEL)
+        generator = FakeGenerator(cancel_after_batch=1)
+        monkeypatch.setattr(
+            "plexmix.services.providers.build_embedding_generator_with_reason",
+            lambda settings: (generator, None),
+        )
+        state = harness()
+
+        run(state.generate_missing_embeddings())
+
+        done = task_store.get(FIX_JOB)
+        assert done is not None and done.status == "cancelled"
+        assert index_files(_isolated) == before_index
+        state.poll_task_progress()
+        assert_index_not_updated(state, toast, done)
+        (message,) = [call.args[0] for call in toast.warning.call_args_list]
+        assert message.startswith("Fix cancelled. Generated embeddings for 1 track. ")
+        toast.error.assert_not_called()
+
+    @pytest.mark.parametrize("stop", ["cancel", "provider"])
+    def test_stopped_rebuild_of_two_vector_sizes_leaves_the_saved_index(
+        self,
+        _isolated: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        toast: MagicMock,
+        pairs: None,
+        stop: str,
+    ) -> None:
+        """A rebuild that stops after two tracks must not save an index of those two.
+
+        Rows of two sizes sit under one model name. The saved files stay as they are,
+        byte for byte; the job is no success and says that the index was not updated;
+        the next scan reports the mismatch and offers "Rebuild embeddings" again.
+        """
+        ids = library_of_two_sizes(_isolated)
+        before_rows, before_index = embedding_rows(_isolated), index_files(_isolated)
+        fake = (
+            FakeGenerator(cancel_after_batch=1)
+            if stop == "cancel"
+            else FakeGenerator(fail_on_batch=2)
+        )
+        use_generator(monkeypatch, fake)
+        finish, follow = engine_spies(monkeypatch)
+        state = loaded(harness(), doctor_total_tracks=5)
+
+        done = rebuild(state)
+
+        assert done.status == ("cancelled" if stop == "cancel" else "failed")
+        finish.assert_not_called()
+        follow.assert_called_once()  # offered the rows, and refused: three are in the way
+        assert sizes_of(_isolated) == {ids[0]: 4, ids[1]: 4, ids[2]: 2, ids[3]: 2, ids[4]: 2}
+        assert {key for key in embedding_rows(_isolated)} == set(before_rows)  # none lost
+        assert index_files(_isolated) == before_index
+        assert_saved_index_still_mismatched(_isolated, ids)
+        state.poll_task_progress()
+        assert_index_not_updated(state, toast, done)
+        if stop == "provider":
+            # The provider's own cause leads, and the note says how far the rebuild got.
+            assert done.message == CANNOT_CONNECT
+            assert "2 of 5 tracks got a new embedding." in done.extra["error_body"]
+        else:
+            toast.warning.assert_called_once()
+
+        run(state.run_health_check())
+        assert state.row_map["embeddings"]["fix"] == "embeddings_full"
+        assert index_status().cause == rd.Cause.DIMENSION_MISMATCH
+
+    def test_rebuild_that_reaches_its_end_and_cannot_build_the_index_is_no_success(
+        self,
+        _isolated: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        toast: MagicMock,
+        pairs: None,
+    ) -> None:
+        """The provider hands back vectors of another size than it states.
+
+        Every track gets its new row, so the pass reaches its end. The rows cannot go
+        into an index of 4 numbers, so none is built: the saved files stay as they are,
+        and the job fails and says so, instead of "Rebuilt the search index".
+        """
+        ids = library(_isolated)
+        before_index = index_files(_isolated)
+        generator = use_generator(monkeypatch, FakeGenerator())
+        monkeypatch.setattr(generator, "_vector", lambda: [0.9, 0.1, 0.0])  # 3 of 4 numbers
+        state = loaded(harness(), doctor_total_tracks=5)
+
+        done = rebuild(state)
+
+        assert done.status == "failed" and done.message == INDEX_NOT_UPDATED
+        assert done.extra["error_body"].startswith("All 5 tracks got a new embedding. ")
+        assert "5 tracks hold an embedding that was made with other embedding settings" in (
+            done.extra["error_body"]
+        )
+        assert generator.embedded == 5 and len(embedding_rows(_isolated)) == len(ids)
+        assert index_files(_isolated) == before_index
+        record = readiness_store.get("embeddings")
+        assert record is not None and record.level == rd.Level.READY  # the provider answered
+        state.poll_task_progress()
+        toast.success.assert_not_called()
+        toast.error.assert_called_once_with(INDEX_NOT_UPDATED)
+
+    def test_rebuild_with_a_short_provider_reply_and_a_track_in_the_way_is_no_success(
+        self,
+        _isolated: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        toast: MagicMock,
+        pairs: None,
+    ) -> None:
+        """The provider answers one request with a vector too few, in a library of two sizes.
+
+        Four of the five tracks get their new row, and the fifth still holds its row of
+        the earlier size, so no index is built. The job ends as the Library's
+        "Generate embeddings" and Doctor's other fixes do: failed, with "The search index
+        was not updated", never "completed" with a success toast. The saved index is
+        untouched, so the mismatch and the fix that clears it stay in view.
+        """
+        ids = library_of_two_sizes(_isolated)
+        before_index = index_files(_isolated)
+        generator = use_generator(monkeypatch, FakeGenerator(short_on_batch=2))
+        state = loaded(harness(), doctor_total_tracks=5)
+
+        done = rebuild(state)
+
+        assert generator.embedded == 5 and len(embedding_rows(_isolated)) == len(ids)
+        assert done.status == "failed" and done.message == INDEX_NOT_UPDATED
+        body = done.extra["error_body"]
+        assert body.startswith("4 of 5 tracks got a new embedding. The others keep the embedding ")
+        assert "1 track holds an embedding that was made with other embedding settings" in body
+        assert sum(1 for size in sizes_of(_isolated).values() if size == 4) == 4
+        assert index_files(_isolated) == before_index
+        assert_saved_index_still_mismatched(_isolated, ids)
+        record = readiness_store.get("embeddings")
+        assert record is not None and record.level == rd.Level.READY  # the provider answered
+        state.poll_task_progress()
+        assert_index_not_updated(state, toast, done)
+        toast.error.assert_called_once_with(INDEX_NOT_UPDATED)
+
+        run(state.run_health_check())
+        assert state.row_map["embeddings"]["fix"] == "embeddings_full"
+        assert index_status().cause == rd.Cause.DIMENSION_MISMATCH
+
+    @pytest.mark.parametrize("replaced", [0, 2])
+    def test_rebuild_that_reaches_its_end_replaces_the_index_of_two_vector_sizes(
+        self,
+        _isolated: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        toast: MagicMock,
+        pairs: None,
+        replaced: int,
+    ) -> None:
+        """The full rebuild is the way out: every track at the new size, the mismatch gone."""
+        from plexmix.database.vector_index import VectorIndex
+
+        ids = library_of_two_sizes(_isolated, replaced=replaced)
+        generator = use_generator(monkeypatch, FakeGenerator())
+        finish, follow = engine_spies(monkeypatch)
+        state = loaded(harness(), doctor_total_tracks=5)
+
+        done = rebuild(state)
+
+        assert done.status == "completed"
+        assert done.extra["result_msg"] == "Rebuilt the search index with 5 tracks."
+        assert generator.embedded == 5
+        finish.assert_called_once()
+        follow.assert_not_called()
+        assert sizes_of(_isolated) == dict.fromkeys(ids, 4)
+        assert embedding_rows(_isolated) == {(tid, "custom"): NEW for tid in ids}
+        opened = VectorIndex(dimension=4, index_path=str(_isolated / "embeddings.index"))
+        assert sorted(opened.track_ids) == ids and opened.dimension_mismatch is False
+        assert index_metadata(_isolated)["dimension"] == 4
+        state.poll_task_progress()
+        toast.success.assert_called_once_with("Rebuilt the search index with 5 tracks.")
+        assert index_status().cause != rd.Cause.DIMENSION_MISMATCH
+        assert index_status().level == rd.Level.READY
+
+    def test_doctor_state_holds_no_clearing_code(self) -> None:
+        """Only the orphan clean-up deletes embedding rows, and no file is deleted."""
+        import plexmix.ui.states.doctor_state as module
+
+        source = Path(module.__file__).read_text(encoding="utf-8")
+        deletes = [line.strip() for line in source.splitlines() if "DELETE FROM embeddings" in line]
+        assert len(deletes) == 1
+        assert "WHERE track_id NOT IN (SELECT id FROM tracks)" in deletes[0]
+        assert "unlink(" not in source
+
+
+def _stat_keys() -> tuple[str, ...]:
+    from plexmix.ui.states.doctor_state import _STAT_KEYS
+
+    return _STAT_KEYS

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "plexmix"
-version = "0.13.0"
+version = "0.14.0"
 description = "AI-powered Plex playlist generator using mood-based queries"
 authors = ["Anthony Izzo"]
 license = "AGPL-3.0-only"

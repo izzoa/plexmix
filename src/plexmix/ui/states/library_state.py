@@ -147,6 +147,146 @@ def plex_error_title(code: Optional[str], settings: Any = None) -> str:
     return describe("plex", cause_for_plex_error_code(code), context)["title"]
 
 
+# ── The search index is rebuilt only when it is complete ──
+#
+# ``plexmix.database.index_rebuild.rebuild_index`` builds and saves nothing while a
+# track holds an embedding and none of the current provider and vector size: an
+# index of the rows that fit would take the place of the library's index and cover
+# only part of it. A web UI job that meets this ends as failed, never with a
+# success message, and says in these words that the index was not updated and
+# what replaces the embeddings in the way. The saved index is untouched, so every
+# status surface keeps showing what it showed (a dimension mismatch, for one).
+
+INDEX_NOT_UPDATED_TITLE = "The search index was not updated"
+# Extra key of a failed "embedding" task: the ``index_not_updated_copy`` of that run.
+INDEX_NOTICE_KEY = "index_notice"
+# Keys of that copy. It always holds every key, so a reader never meets a missing one.
+INDEX_NOTICE_KEYS: tuple[str, ...] = (
+    "title",
+    "body",
+    "action_label",
+    "action_href",
+    "secondary_label",
+    "secondary_href",
+)
+
+
+def refused_rebuild(vector_index: Any) -> int:
+    """How many tracks kept the last index rebuild of ``vector_index`` from building; 0 for none.
+
+    Read after a call that goes through ``index_rebuild.rebuild_index``, which
+    keeps its result on the index object. Only that result is believed: a stand-in
+    index (the tests pass a mock) answers every attribute.
+    """
+    from plexmix.database.index_rebuild import IndexRebuild
+
+    last = getattr(vector_index, "last_rebuild", None)
+    return last.left_out if isinstance(last, IndexRebuild) and last.refused else 0
+
+
+def index_mismatch_copy(settings: Any, index_dimension: int) -> Optional[dict[str, str]]:
+    """The readiness copy for a saved index of another vector size than the provider makes.
+
+    ``index_dimension`` is what the saved index holds (0 when there is none). None
+    when that is the size the embedding provider of ``settings`` makes. The copy
+    links to Doctor's "Rebuild embeddings" and to switching back in Settings.
+    """
+    from plexmix.services import readiness as rd
+    from plexmix.services.registry import embedding_provider_display_name
+
+    provider = (settings.embedding.default_provider or "").strip().lower()
+    try:
+        expected = int(settings.embedding.get_dimension_for_provider(provider))
+    except Exception:
+        expected = 0
+    if not (index_dimension and expected and index_dimension != expected):
+        return None
+    return rd.describe(
+        "index",
+        rd.Cause.DIMENSION_MISMATCH,
+        {
+            "label": embedding_provider_display_name(provider),
+            "provider": provider,
+            "model": rd.embedding_model_for(settings),
+            "index_dimension": index_dimension,
+            "expected_dimension": expected,
+        },
+    )
+
+
+def index_not_updated_copy(settings: Any, left_out: int, other_provider: int = 0) -> dict[str, str]:
+    """Why a job left the search index as it is, and what replaces the embeddings in the way.
+
+    ``left_out`` tracks hold an embedding and none of the current provider and
+    vector size (``IndexRebuild.left_out``). ``other_provider`` of them hold
+    embeddings of other providers only
+    (``SQLiteManager.count_tracks_with_only_other_embeddings(provider)``). Returns
+    ``title``, ``body`` and the links ``action_label``/``action_href`` and
+    ``secondary_label``/``secondary_href`` ("" when there is none).
+
+    The body says how many tracks are in the way, then what to do:
+
+    - The saved index has another vector size than the provider makes: the words
+      every status surface uses for that mismatch, with their links to Doctor's
+      "Rebuild embeddings" and to switching back.
+    - No such mismatch shows, and tracks hold embeddings of another provider only
+      (the provider was changed for one that makes vectors of the same size):
+      "Generate embeddings" for the whole library embeds them.
+    - Otherwise the embeddings in the way carry the provider's name and another
+      vector size: the Library's "Regenerate" sync replaces every embedding.
+
+    ``settings`` None (not known) gives the last of the three.
+    """
+    from plexmix.services import readiness as rd
+
+    held = "1 track holds" if left_out == 1 else f"{format_count(left_out)} tracks hold"
+    them = "it" if left_out == 1 else "them"
+    why = (
+        f"{held} an embedding that was made with other embedding settings, so a new "
+        f"index would leave {them} out."
+    )
+    copy = dict.fromkeys(INDEX_NOTICE_KEYS, "")
+    copy["title"] = INDEX_NOT_UPDATED_TITLE
+    settings_href = rd.SETTINGS_SECTION_HREFS["embeddings"]
+    mismatch: Optional[dict[str, str]] = None
+    label = ""
+    if settings is not None:
+        from plexmix.services.registry import embedding_provider_display_name
+
+        mismatch = index_mismatch_copy(settings, rd.read_index_metadata(settings)["dimension"])
+        label = embedding_provider_display_name(
+            (settings.embedding.default_provider or "").strip().lower()
+        )
+    if mismatch is not None:
+        copy.update(
+            body=f"{why} {mismatch['body']}",
+            action_label=mismatch["action_label"],
+            action_href=mismatch["action_href"],
+            secondary_label=mismatch["secondary_label"],
+            secondary_href=mismatch["secondary_href"],
+        )
+    elif other_provider > 0 and label:
+        copy.update(
+            body=(
+                f"{why} To embed {them} with {label}, choose Generate embeddings on the "
+                "Library page with no track selected. Or switch back to the provider that "
+                f"made {them}."
+            ),
+            action_label="Switch back",
+            action_href=settings_href,
+        )
+    else:
+        copy.update(
+            body=(
+                f"{why} Check the embedding settings, then use the Regenerate sync on the "
+                "Library page to replace every embedding."
+            ),
+            action_label="Embedding settings",
+            action_href=settings_href,
+        )
+    return copy
+
+
 # ── Embeddings: whole-library "Build search index" (webui-library-selection) ──
 
 ALL_EMBEDDED_MESSAGE = "All tracks already have embeddings."
@@ -229,29 +369,15 @@ def embed_all_preflight() -> EmbedAllPreflight:
     if missing == 0:
         meta = rd.read_index_metadata(settings)
         index_dim = meta["dimension"]
-        try:
-            expected = int(settings.embedding.get_dimension_for_provider(provider))
-        except Exception:
-            expected = 0
-        if index_dim and expected and index_dim != expected:
-            copy = rd.describe(
-                "index",
-                rd.Cause.DIMENSION_MISMATCH,
-                {
-                    "label": label,
-                    "provider": provider,
-                    "model": model,
-                    "index_dimension": index_dim,
-                    "expected_dimension": expected,
-                },
-            )
+        mismatch = index_mismatch_copy(settings, index_dim)
+        if mismatch is not None:
             return EmbedAllPreflight(
                 "mismatch",
-                notice=f"{copy['title']}. {copy['body']}",
-                action_label=copy["action_label"],
-                action_href=copy["action_href"],
-                secondary_label=copy["secondary_label"],
-                secondary_href=copy["secondary_href"],
+                notice=f"{mismatch['title']}. {mismatch['body']}",
+                action_label=mismatch["action_label"],
+                action_href=mismatch["action_href"],
+                secondary_label=mismatch["secondary_label"],
+                secondary_href=mismatch["secondary_href"],
             )
         index_file = settings.database.get_index_path()
         if index_file.exists() and not (index_dim and not meta["vector_count"]):
@@ -290,6 +416,12 @@ def run_embedding_job(
     current provider, then rebuilds the search index from that provider's vectors. Records
     the provider's real outcome in readiness. Returns ``(status, message)`` for
     ``task_store.complete``; messages are plain and secret-free.
+
+    The index is rebuilt only when it would be complete (``index_rebuild.rebuild_index``).
+    While a track holds only an embedding of another provider or vector size, the
+    saved index stays as it is and the job ends as ``failed``: its message says
+    that the index was not updated, and the task's ``INDEX_NOTICE_KEY`` extra holds
+    the copy and links for the page (:func:`index_not_updated_copy`).
     """
     from plexmix.config.settings import Settings
     from plexmix.database.sqlite_manager import SQLiteManager
@@ -371,6 +503,24 @@ def run_embedding_job(
                 str(settings.database.get_index_path()),
                 generator.provider_name,
             )
+            left_out = refused_rebuild(vector_index)
+            if left_out:
+                # Tracks hold an embedding of another provider or vector size, so
+                # nothing was built and the saved index is as it was. The new
+                # embeddings are saved. This is no success: say what is in the way.
+                notice = index_not_updated_copy(
+                    settings,
+                    left_out,
+                    _whole(db.count_tracks_with_only_other_embeddings(generator.provider_name)),
+                )
+                task_store.update("embedding", extra={INDEX_NOTICE_KEY: notice})
+                lead = f"{INDEX_NOT_UPDATED_TITLE}."
+                if generated:
+                    lead = (
+                        f"Generated embeddings for {pluralize(generated, 'track')}, but the "
+                        "search index was not updated."
+                    )
+                return "failed", f"{lead} {notice['body']}"
             if not tracks:
                 return "completed", (
                     f"Rebuilt the search index from {pluralize(indexed, 'stored embedding')}."
@@ -584,13 +734,16 @@ def redact_secrets(text: str, secrets: Iterable[Optional[str]]) -> str:
 
 
 def _sync_secrets(settings: Any) -> list[str]:
-    """The Plex token and AI key a sync uses, so failure text can be redacted."""
+    """The Plex token and the provider keys a sync uses, so failure text can be redacted.
+
+    A "Regenerate" sync also uses the embedding provider, so its key is covered too.
+    """
     from plexmix.services.readiness import resolve_secret
 
     secrets: list[str] = []
     if settings is None:
         return secrets
-    for component in ("plex", "ai"):
+    for component in ("plex", "ai", "embeddings"):
         try:
             secret = resolve_secret(component, settings)
         except Exception:
@@ -626,6 +779,7 @@ REMOVAL_HELD_KEY = "removal_held"  # tracks kept because the removal needs confi
 REMOVAL_TOTAL_KEY = "removal_total"  # tracks in the library before that sync
 UNREAD_TRACKS_KEY = "unread_tracks"  # listed tracks whose details could not be read
 SYNC_PARTIAL_KEY = "sync_partial"  # True when anything was unread, skipped or held
+INDEX_LEFT_OUT_KEY = "index_left_out"  # tracks in the way of the search index (0: none)
 REMOVAL_RUN_KEY = "removal_run"  # True when the task is a confirmed removal, not a sync
 REMOVAL_RESULT_KEY = "removal_result"  # RemovalResult.status of that removal
 
@@ -638,13 +792,6 @@ REMOVAL_CANCELLED_MESSAGE = f"Removal cancelled. {NOTHING_REMOVED}"
 REMOVAL_SETTINGS_CHANGED_MESSAGE = (
     "The library settings changed after that sync, so its removal no longer applies. "
     f"{NOTHING_REMOVED} Run a sync to compare the library with Plex again."
-)
-# Added to the failure of a "Regenerate" sync that Plex stopped: the engine's own
-# sentence ("... so nothing was changed.") is about the library sync, and that mode
-# clears the tags and embeddings before it reads Plex.
-REGENERATE_CLEARED_MESSAGE = (
-    "The existing tags and embeddings had already been cleared. "
-    "Run a sync to rebuild the tags, then generate the embeddings again."
 )
 
 
@@ -677,15 +824,22 @@ def sync_outcome_extra(outcome: Any) -> dict[str, Any]:
         UNREAD_TRACKS_KEY: _whole(outcome.unread_tracks),
         # Also true for a run whose only unread items are artists or albums.
         SYNC_PARTIAL_KEY: outcome.is_partial is True,
+        INDEX_LEFT_OUT_KEY: _whole(outcome.index_left_out),
     }
 
 
-def sync_result_message(outcome: Any, tagging_skipped: bool = False) -> str:
+def sync_result_message(
+    outcome: Any, tagging_skipped: bool = False, completed: bool = True, settings: Any = None
+) -> str:
     """The result of a finished sync, for its toast ("" keeps the last progress text).
 
     A run that kept unread tracks says how many. A run that removed nothing says
     why. The copy is plain UI text: the engine's own sentence for an empty listing
-    names a terminal command, so that case is worded here.
+    names a terminal command, so that case is worded here. ``completed=False``
+    leaves out the "Sync completed." lead, for a task that does not end as completed.
+    A run whose embeddings stage left the search index as it is (a plain sync that
+    makes embeddings; the web UI's sync does not) says so in the words of
+    :func:`index_not_updated_copy`, which reads ``settings`` for the way out.
     """
     from plexmix.plex.client import READ_KINDS
     from plexmix.plex.sync import SyncOutcome
@@ -706,18 +860,23 @@ def sync_result_message(outcome: Any, tagging_skipped: bool = False) -> str:
             f"{pluralize(outcome.library_total, 'track')}. {NOTHING_REMOVED}"
         )
     else:
-        lead = f"{done or 'Sync completed'}."
+        lead = f"{done or 'Sync completed'}." if completed else ""
     unread = [outcome.unread_sentence(kind) for kind in READ_KINDS]
-    return " ".join([lead, *(sentence for sentence in unread if sentence)])
+    index = ""
+    if _whole(outcome.index_left_out):
+        notice = index_not_updated_copy(settings, _whole(outcome.index_left_out))
+        index = f"{notice['title']}. {notice['body']}"
+    return " ".join(sentence for sentence in (lead, *unread, index) if sentence)
 
 
 def sync_result_tone(extra: Mapping[str, Any]) -> str:
     """Toast tone for a completed "sync" task: ``warning``, ``info`` or ``success``.
 
     A sync that removed nothing for a reason (a held removal, an empty listing,
-    too many failed reads) is a warning, never a success.
+    too many failed reads), or that left the search index as it is, is a warning,
+    never a success.
     """
-    if str(extra.get(REMOVAL_REASON_KEY) or ""):
+    if str(extra.get(REMOVAL_REASON_KEY) or "") or _whole(extra.get(INDEX_LEFT_OUT_KEY)):
         return "warning"
     if extra.get(REMOVAL_RESULT_KEY) == REMOVAL_LISTED_AGAIN:
         return "info"
@@ -847,6 +1006,21 @@ def waiting_removal_scope(held: int, total: int) -> str:
     return hold.scope
 
 
+def waiting_hold(entry: Any) -> Optional[HeldRemoval]:
+    """The removal that waits for confirmation, with its keys and its library; None for none.
+
+    For a caller that replaces the "sync" task entry and may have to give the hold
+    back: a "Regenerate" sync that a provider check refuses compared nothing with
+    Plex, so the removal the last sync held still waits afterwards.
+    """
+    held, total = waiting_removal(entry)
+    if not held:
+        return None
+    return HeldRemoval(
+        held, total, waiting_removal_keys(held, total), waiting_removal_scope(held, total)
+    )
+
+
 def hold_applies_to(settings: Any, held: int, total: int) -> bool:
     """False when the hold was counted in another library than ``settings`` name now.
 
@@ -964,8 +1138,9 @@ def _saved_index_for_removal(settings: Any) -> dict[str, Any]:
 
     The engine copies the index files into the backup first and opens the index
     only after that, to drop the removed tracks' vectors: search then never
-    returns a track that is gone. An index that cannot be loaded does not survive
-    being opened, so it must not be opened before the backup.
+    returns a track that is gone. Opening an index that cannot be loaded moves its
+    files aside under another name, so it is not opened before the backup, which
+    then still holds them under their own names.
     """
     try:
         provider = (settings.embedding.default_provider or "").strip().lower()
@@ -1007,6 +1182,501 @@ def run_confirmed_removal(
         )
 
 
+# ── "Regenerate" sync: confirmation, provider check and result ──
+#
+# The "Regenerate" sync mode gives every track new tags and a new embedding
+# (``SyncEngine.regenerate_sync``). Nothing is cleared first: a track keeps what it
+# has until its replacement is saved, so a run that is refused, fails or is
+# cancelled leaves every track with its new or its previous data. Both providers
+# answer one test request before anything changes (``check_regenerate_providers``).
+# A refusal, and a run that a provider stopped or that wrote nothing, end the task
+# as failed with the provider and the cause. Readiness records what the run proved.
+
+REGENERATE_MODE = "regenerate"
+NOTHING_CHANGED = "Nothing was changed."
+REGENERATE_CHECKING_MESSAGE = "Checking the AI provider and the embedding provider..."
+REGENERATE_NOTHING_MESSAGE = "No tags or embeddings were regenerated."
+REGENERATE_NO_TRACKS_MESSAGE = (
+    "Your PlexMix library has no tracks, so there was nothing to regenerate."
+)
+REGENERATE_UNFINISHED_MESSAGE = "Regenerating stopped before it reached the end of the library."
+REGENERATE_NO_TAGS_MESSAGE = (
+    "The AI provider returned no tags, so the embeddings were left as they are."
+)
+SYNC_CANCELLED_MESSAGE = "Sync cancelled"
+# Extra key of the "sync" task: what a cancelled "Regenerate" sync had replaced.
+SYNC_CANCEL_MESSAGE_KEY = "cancel_msg"
+
+# A "Regenerate" sync writes embeddings and saves the search index, as the
+# "embedding" task and Doctor's fixes do. Two of them at once would pay the provider
+# twice for the same tracks and save the same index files over each other. So this
+# sync does not start beside one of those, and they do not start beside it.
+REGENERATE_RUN_KEY = "regenerate_run"  # extra key of the "sync" task: True for this mode
+# The task of Doctor's fixes (``doctor_state.FIX_JOB``; a test keeps the two equal).
+DOCTOR_FIX_JOB = "doctor_fix"
+REGENERATE_BUSY_TITLE = "Another job is writing tags or embeddings"
+REGENERATE_BUSY_BODY = (
+    f"Wait for it to finish, then start the Regenerate sync again. {NOTHING_CHANGED}"
+)
+REGENERATE_RUNNING_TITLE = "A Regenerate sync is running"
+REGENERATE_RUNNING_BODY = (
+    "It is replacing tags and embeddings. Wait for it to finish, then try again."
+)
+
+
+def regenerate_sync_running() -> bool:
+    """True while a "Regenerate" sync runs (in any tab): it is writing embeddings."""
+    entry = task_store.get("sync")
+    return bool(
+        entry is not None and entry.status == "running" and entry.extra.get(REGENERATE_RUN_KEY)
+    )
+
+
+def embedding_job_running() -> bool:
+    """True while the "embedding" task or a Doctor fix runs (in any tab)."""
+    return task_store.is_running("embedding") or task_store.is_running(DOCTOR_FIX_JOB)
+
+
+# The confirmation's fixed sentences (pages/library.py). The first one is the rule
+# of this mode, as spec ``webui-library-selection`` words it.
+REGENERATE_IN_PLACE_LINE = (
+    "Tags and embeddings are replaced as new ones arrive, and nothing is cleared first."
+)
+REGENERATE_COST_LINE = (
+    "This can take a while and may incur provider costs. Your Plex library is not affected."
+)
+REGENERATE_SCOPE_CHECKING_LINE = "Checking your library and providers…"
+REGENERATE_SCOPE_ERROR_LINE = (
+    "Couldn't read your library or your settings. Details are in the server log."
+)
+# The count sentences for a library without tracks: the sync adds them first.
+REGENERATE_EMPTY_TAGS_LINE = (
+    "Your PlexMix library has no tracks yet. Every track this sync adds will be tagged."
+)
+REGENERATE_EMPTY_EMBEDDINGS_LINE = "Each of them will also get an embedding."
+
+# Keys of ``LibraryState.regenerate_scope``. A scope always holds every key, so the
+# page never reads a missing one.
+REGENERATE_SCOPE_KEYS: tuple[str, ...] = (
+    "checking_line",
+    "tags_line",
+    "ai_label",
+    "ai_model",
+    "embeddings_line",
+    "embedding_label",
+    "embedding_model",
+    "privacy_line",
+    "count",
+)
+
+
+def regenerate_scope_notice(line: str) -> dict[str, str]:
+    """A scope that states nothing yet: only ``checking_line`` (checking, or why not)."""
+    return {**dict.fromkeys(REGENERATE_SCOPE_KEYS, ""), "checking_line": line}
+
+
+def regenerate_scope_stated(scope: Any) -> bool:
+    """True once the confirmation states the track count, the providers and the privacy line."""
+    return bool(scope) and bool(scope.get("tags_line")) and bool(scope.get("privacy_line"))
+
+
+def regenerate_scope(settings: Any, count: int) -> dict[str, str]:
+    """The copy of the "Regenerate" sync confirmation for a library of ``count`` tracks.
+
+    Made with ``readiness.describe_job_scope``, once for the tags and once for the
+    embeddings: ``tags_line`` and ``embeddings_line`` state the count, ``ai_label``
+    with ``ai_model`` and ``embedding_label`` with ``embedding_model`` name the two
+    providers, and ``privacy_line`` says where track details are sent. The providers
+    and models are the ones the run itself records (``run_provider``).
+
+    The privacy line names every place the details go, once each: the embedding
+    text holds everything the tagging request holds, so a provider that does both
+    gets the embedding sentence alone. When neither provider sends anything, it
+    says that nothing is sent to a cloud provider.
+    """
+    from plexmix.services import readiness as rd
+    from plexmix.services.regenerate_service import SCOPE_EMBEDDINGS, SCOPE_TAGS, run_provider
+
+    ai = run_provider(settings, SCOPE_TAGS)
+    embedder = run_provider(settings, SCOPE_EMBEDDINGS)
+    # Where metadata goes: a Local or Custom endpoint can be another machine.
+    ai_destination = rd.ai_sends_to(settings)
+    embedding_destination = rd.embedding_sends_to(settings)
+    tags = rd.describe_job_scope(
+        "tagging", count, ai.label, ai.model, bool(ai_destination), {"sends_to": ai_destination}
+    )
+    embeddings = rd.describe_job_scope(
+        "embeddings",
+        count,
+        embedder.label,
+        embedder.model,
+        bool(embedding_destination),
+        {"rebuild": True, "sends_to": embedding_destination},
+    )
+    sent = []
+    if ai_destination and ai_destination != embedding_destination:
+        sent.append(tags["privacy_line"])
+    if embedding_destination:
+        sent.append(embeddings["privacy_line"])
+    scope = regenerate_scope_notice("")
+    scope.update(
+        tags_line=tags["count_line"],
+        ai_label=ai.label,
+        ai_model=ai.model,
+        embeddings_line=embeddings["count_line"],
+        embedding_label=embedder.label,
+        embedding_model=embedder.model,
+        # Neither sends anything: both scopes carry the same "runs on this machine" line.
+        privacy_line=" ".join(sent) or tags["privacy_line"],
+        count=format_count(count),
+    )
+    if count <= 0:
+        # The sync adds the tracks first: "0 tracks will be tagged" would mislead.
+        scope.update(
+            tags_line=REGENERATE_EMPTY_TAGS_LINE,
+            embeddings_line=REGENERATE_EMPTY_EMBEDDINGS_LINE,
+        )
+    return scope
+
+
+def regenerate_preflight() -> dict[str, str]:
+    """Count the library's tracks and build the "Regenerate" confirmation copy.
+
+    Blocking (settings, SQLite): run it in an executor. The count is the library
+    as it is now. The sync that follows compares it with Plex first, so tracks
+    that Plex added since are regenerated too.
+    """
+    from plexmix.config.settings import Settings
+    from plexmix.database.sqlite_manager import SQLiteManager
+
+    settings = Settings.load_from_file()
+    db_path = settings.database.get_db_path()
+    total = 0
+    if db_path.exists():
+        with SQLiteManager(str(db_path)) as db:
+            cursor = db.get_connection().cursor()
+            cursor.execute("SELECT COUNT(*) FROM tracks")
+            row = cursor.fetchone()
+            total = int(row[0]) if row else 0
+    return regenerate_scope(settings, total)
+
+
+class RegenerateProviders(NamedTuple):
+    """What a "Regenerate" sync runs with, once both providers passed the check.
+
+    ``tags_run`` and ``embeddings_run`` name the provider and model of each pass
+    (``regenerate_service.run_provider``), which the engine records for the run.
+    """
+
+    ai_provider: Any
+    embedding_generator: Any
+    vector_index: Any
+    tags_run: Any
+    embeddings_run: Any
+
+
+def check_regenerate_providers(settings: Any) -> RegenerateProviders:
+    """Check both providers of a "Regenerate" sync and build what the engine needs.
+
+    Blocking (one request to each provider, then the saved search index is read):
+    run it in an executor. ``check_providers`` builds the AI provider and the
+    embedding generator and sends each one test request. The search index is
+    opened only after both answered.
+
+    Raises:
+        RegenerateRefused: a provider has no key, could not be started or did not
+            answer the test request. Nothing was changed.
+    """
+    from plexmix.services.regenerate_service import (
+        COMPONENT_AI,
+        COMPONENT_EMBEDDINGS,
+        SCOPE_EMBEDDINGS,
+        SCOPE_TAGS,
+        RegenerateRefused,
+        check_providers,
+        run_provider,
+    )
+    from plexmix.services.sync_service import build_vector_index
+
+    ai_provider, generator = check_providers(settings, need_ai=True, need_embeddings=True)
+    # This mode never runs without one of them ("tagging skipped" is not an outcome).
+    if ai_provider is None:
+        raise RegenerateRefused.not_given(COMPONENT_AI)
+    if generator is None:
+        raise RegenerateRefused.not_given(COMPONENT_EMBEDDINGS)
+    return RegenerateProviders(
+        ai_provider,
+        generator,
+        build_vector_index(settings, generator),
+        run_provider(settings, SCOPE_TAGS),
+        run_provider(settings, SCOPE_EMBEDDINGS),
+    )
+
+
+class ProviderProblem(NamedTuple):
+    """Why the AI provider or the embedding provider failed in a "Regenerate" sync.
+
+    ``cause`` and ``message`` are what readiness records. ``message`` is set for the
+    "unknown" cause only and holds no secret. ``sentence`` is the readiness copy of
+    the cause: plain words that name the provider, and never a terminal command.
+    """
+
+    cause: str
+    message: str
+    sentence: str
+
+
+def _sentence(text: str) -> str:
+    """``text`` with a full stop when it ends without one; "" stays ""."""
+    text = (text or "").strip()
+    if text and not text.endswith((".", "!", "?", "…")):
+        text += "."
+    return text
+
+
+def _provider_problem(
+    component: str, cause: str, settings: Any, detail: str = "", package: str = ""
+) -> ProviderProblem:
+    """The readiness record and copy for ``cause`` of the "ai" or "embeddings" provider.
+
+    ``detail`` is error text without secrets. It is recorded and shown for the
+    "unknown" cause only, and ``readiness.describe`` drops terminal commands from it.
+    """
+    from plexmix.services import readiness as rd
+    from plexmix.services.regenerate_service import SCOPE_EMBEDDINGS, SCOPE_TAGS, run_provider
+
+    run = run_provider(settings, SCOPE_TAGS if component == "ai" else SCOPE_EMBEDDINGS)
+    copy = rd.describe(
+        component,
+        cause,
+        {
+            "label": run.label,
+            "provider": run.provider,
+            "model": run.model,
+            "package": package,
+            "detail": detail,
+        },
+    )
+    unknown = cause == rd.Cause.UNKNOWN.value
+    return ProviderProblem(
+        cause, detail if unknown else "", _sentence(copy["body"] if unknown else copy["title"])
+    )
+
+
+def describe_provider_error(component: str, error: BaseException, settings: Any) -> ProviderProblem:
+    """Classify an error of the "ai" or "embeddings" provider for readiness and for the UI.
+
+    A ``FatalProviderError`` of the tagging stage is read the way the Tagging page
+    reads it, and any other error the way the embedding job reads it. The
+    provider's key is redacted before any of its text is used.
+    """
+    from plexmix.ai.errors import FatalProviderError
+    from plexmix.services import readiness as rd
+
+    if isinstance(error, FatalProviderError):
+        from plexmix.ui.states.tagging_state import tagging_failure_cause
+
+        cause, message = tagging_failure_cause(error)
+    else:
+        key = rd.resolve_secret(component, settings) or ""
+        cause, message = provider_failure_cause(error, key=key)
+    return _provider_problem(component, cause, settings, detail=message)
+
+
+def regenerate_refusal_message(refusal: Any, settings: Any) -> str:
+    """Record a refused "Regenerate" sync in readiness; return what its task says (never raises).
+
+    The message names the provider and the refusal's plain cause ("The AI provider
+    OpenAI is not ready: no API key is stored."), adds the readiness copy of the
+    reason when that says more, and ends with "Nothing was changed.". The refusal's
+    own detail is raw provider text and can name a terminal command, so it is not
+    shown. The provider that was refused is recorded as failing with the cause. A
+    refusal that names no provider (the engine was given none) records nothing.
+    """
+    lead = "A provider is not ready."
+    reason = ""
+    try:
+        from plexmix.services import readiness as rd
+        from plexmix.services.regenerate_service import RegenerateRefused
+
+        # The refusal's words for the provider and the cause, without its raw detail.
+        lead = RegenerateRefused(
+            refusal.provider, refusal.cause, component=refusal.component, reason=refusal.reason
+        ).message
+        component = str(refusal.component or "")
+        problem: Optional[ProviderProblem] = None
+        if component in ("ai", "embeddings"):
+            if refusal.failure is not None:
+                problem = _provider_problem(
+                    component,
+                    rd.Cause(refusal.failure.cause).value,
+                    settings,
+                    detail=str(refusal.detail or ""),
+                    package=str(refusal.failure.package or ""),
+                )
+            elif refusal.error is not None:
+                problem = describe_provider_error(component, refusal.error, settings)
+        if problem is not None:
+            record_readiness(
+                component,
+                "failing",
+                problem.cause,
+                message=problem.message,
+                fingerprint=current_fingerprint_safe(component, settings),
+            )
+            # "no API key is stored" already says all of it.
+            if problem.cause != rd.Cause.MISSING_API_KEY.value:
+                reason = problem.sentence
+    except Exception as e:  # the task must end whatever happens here
+        logger.warning("Could not describe a refused regenerate sync: %s", type(e).__name__)
+    return " ".join(part for part in (lead, reason, NOTHING_CHANGED) if part)
+
+
+def record_regenerate_embeddings(sync_engine: Any, settings: Any) -> None:
+    """Record what a "Regenerate" sync proved about the embedding provider (never raises).
+
+    A provider error that stopped the embeddings pass marks embeddings failing with
+    its cause, and embeddings written without one mark them ready. A run that
+    wrote no embedding (the tags pass did not reach its end) proves nothing and
+    records nothing. ``record_sync_tagging`` does the same for the AI provider.
+    """
+    try:
+        from plexmix.plex.sync import RegenerateResult
+        from plexmix.services.regenerate_service import SCOPE_EMBEDDINGS
+
+        result = getattr(sync_engine, "regenerate_result", None)
+        if not isinstance(result, RegenerateResult):
+            return
+        fingerprint = current_fingerprint_safe("embeddings", settings)
+        if result.stopped_scope == SCOPE_EMBEDDINGS and result.error is not None:
+            problem = describe_provider_error("embeddings", result.error, settings)
+            record_readiness(
+                "embeddings",
+                "failing",
+                problem.cause,
+                message=problem.message,
+                fingerprint=fingerprint,
+            )
+        elif result.embeddings_written:
+            record_readiness("embeddings", "ready", fingerprint=fingerprint)
+    except Exception as e:  # readiness is best effort; never break the sync
+        logger.warning(
+            "Could not record the regenerate sync's embedding outcome: %s", type(e).__name__
+        )
+
+
+def _kept(count: int, one: str, many: str) -> str:
+    """ "1 track keeps its previous tags" or "80 tracks keep their previous tags"."""
+    if count == 1:
+        return f"1 track keeps its previous {one}"
+    return f"{format_count(count)} tracks keep their previous {many}"
+
+
+def regenerate_counts(result: Any) -> str:
+    """What a "Regenerate" sync wrote, and how many tracks keep what they had.
+
+    ``result`` is the engine's ``RegenerateResult``. A track is counted as
+    regenerated only when a row was written for it, and as kept when the run was
+    to replace its tags or its embedding and did not.
+    """
+    tags, embeddings = result.tags_written, result.embeddings_written
+    if tags and embeddings:
+        written = (
+            f"Regenerated the tags of {pluralize(tags, 'track')} and the embeddings of "
+            f"{pluralize(embeddings, 'track')}."
+        )
+    elif tags:
+        written = f"Regenerated the tags of {pluralize(tags, 'track')}."
+    elif embeddings:
+        written = f"Regenerated the embeddings of {pluralize(embeddings, 'track')}."
+    else:
+        written = REGENERATE_NOTHING_MESSAGE
+    kept_tags, kept_embeddings = result.tags.kept_ids, result.embeddings.kept_ids
+    if kept_tags and kept_tags == kept_embeddings:
+        kept = [_kept(len(kept_tags), "tags and embedding", "tags and embeddings")]
+    else:
+        kept = [_kept(len(kept_tags), "tags", "tags")] if kept_tags else []
+        if kept_embeddings:
+            kept.append(_kept(len(kept_embeddings), "embedding", "embeddings"))
+    return f"{written} {', and '.join(kept)}." if kept else written
+
+
+def stopped_pass_sentence(result: Any, settings: Any) -> str:
+    """Why a provider stopped a pass of a "Regenerate" sync, in plain words."""
+    from plexmix.services.regenerate_service import SCOPE_TAGS
+
+    tags = result.stopped_scope == SCOPE_TAGS
+    lead = "AI tagging stopped" if tags else "Embedding generation stopped"
+    if result.error is None or settings is None:
+        return f"{lead}."
+    problem = describe_provider_error("ai" if tags else "embeddings", result.error, settings)
+    return f"{lead}: {problem.sentence}" if problem.sentence else f"{lead}."
+
+
+def regenerate_sync_result(outcome: Any, result: Any, settings: Any = None) -> tuple[str, str]:
+    """``(status, message)`` that ends a "Regenerate" sync whose engine run returned.
+
+    ``completed`` only for a run that reached its end and wrote rows. The message
+    then says how many tracks got new tags and embeddings and how many keep their
+    previous ones. A run that a provider stopped part-way, that did not reach its
+    end or that wrote nothing is ``failed``, with the reason first. So is a run
+    that reached its end and could not rebuild the search index
+    (``RegenerateResult.index_left_out``): it says that the index was not updated,
+    in the words of :func:`index_not_updated_copy`. What the sync itself kept back
+    (``sync_result_message``) is part of the message either way. A run on a library
+    without tracks had nothing to do: it is ``completed`` and says so. Only the
+    engine's own ``RegenerateResult`` is believed: for anything else nothing is
+    claimed.
+    """
+    from plexmix.plex.sync import RegenerateResult
+
+    if not isinstance(result, RegenerateResult) or not result.requested:
+        parts = [REGENERATE_NOTHING_MESSAGE, sync_result_message(outcome, completed=False)]
+        return "failed", " ".join(part for part in parts if part)
+    counts = regenerate_counts(result)
+    if result.provider_failed:
+        reason = stopped_pass_sentence(result, settings)
+    elif result.no_new_tags and result.embeddings.requested and not result.embeddings.started:
+        # The engine makes no embedding from tags that were not replaced.
+        reason = REGENERATE_NO_TAGS_MESSAGE
+    elif not result.finished:
+        reason = REGENERATE_UNFINISHED_MESSAGE
+    elif result.nothing_to_do:
+        # The library holds no track: nothing was regenerated, and nothing failed.
+        parts = [sync_result_message(outcome), REGENERATE_NO_TRACKS_MESSAGE]
+        return "completed", " ".join(part for part in parts if part)
+    elif result.wrote_nothing:
+        reason = ""  # ``counts`` says that nothing was regenerated
+    elif _whole(result.index_left_out):
+        # Every pass reached its end, and the engine left the saved index as it is:
+        # tracks hold an embedding that does not fit the current settings.
+        notice = index_not_updated_copy(settings, _whole(result.index_left_out))
+        reason = f"{notice['title']}. {notice['body']}"
+    else:
+        parts = [sync_result_message(outcome), counts]
+        return "completed", " ".join(part for part in parts if part)
+    parts = [reason, counts, sync_result_message(outcome, completed=False)]
+    return "failed", " ".join(part for part in parts if part)
+
+
+def regenerate_cancel_message(sync_engine: Any) -> str:
+    """What a cancelled "Regenerate" sync had replaced by then; "" when that is not known.
+
+    Tags and embeddings are saved batch by batch, so a cancelled run has usually
+    replaced some. The toast says how many, and that the rest keep what they had.
+    """
+    try:
+        from plexmix.plex.sync import RegenerateResult
+
+        result = getattr(sync_engine, "regenerate_result", None)
+        if not isinstance(result, RegenerateResult) or not result.requested:
+            return ""
+        return f"{SYNC_CANCELLED_MESSAGE}. {regenerate_counts(result)}"
+    except Exception as e:  # the task must end whatever happens here
+        logger.warning("Could not describe a cancelled regenerate sync: %s", type(e).__name__)
+        return ""
+
+
 class LibraryState(AppState):
     tracks: list[dict[str, str]] = []
     total_filtered_tracks: int = 0
@@ -1024,6 +1694,13 @@ class LibraryState(AppState):
     sync_message: str = ""
     sync_mode: str = "incremental"
     show_regenerate_confirm: bool = False
+    # "Regenerate" sync confirmation: readiness.describe_job_scope copy for the tags
+    # and for the embeddings (regenerate_scope: tags_line, ai_label, ai_model,
+    # embeddings_line, embedding_label, embedding_model, privacy_line, count). It is
+    # read off the event loop when the dialog opens (load_regenerate_scope). Until
+    # then it holds only checking_line, and the dialog cannot be confirmed
+    # (regenerate_confirm_blocked).
+    regenerate_scope: dict[str, str] = {}
 
     is_embedding: bool = False
     embedding_progress: int = 0
@@ -1088,7 +1765,8 @@ class LibraryState(AppState):
     embed_all_checking: bool = False
     embed_all_notice: str = ""
     # Callout tone of embed_all_notice: info (all embedded, nothing synced,
-    # already running), warning (index mismatch) or error (provider blocked).
+    # already running), warning (index mismatch, or an embedding job that left the
+    # search index as it is) or error (provider blocked).
     embed_all_notice_tone: str = "info"
     # The notice's links ("" when none): a mismatch offers "Rebuild embeddings"
     # (Doctor) and "Switch back" (Settings); a blocked provider offers its fix.
@@ -1112,13 +1790,45 @@ class LibraryState(AppState):
         self.sync_mode = mode
 
     def start_sync_or_confirm(self):
-        """Sync button entry point: the destructive 'regenerate' mode opens a
-        confirmation first; other modes start immediately. Previously the button
-        always called start_sync, so the regenerate mode/confirm was unreachable."""
-        if self.sync_mode == "regenerate":
+        """Sync button entry point: the 'regenerate' mode, which replaces every tag
+        and embedding, opens a confirmation first; other modes start immediately.
+
+        The confirmation opens at once and states its scope a moment later: the
+        Sync buttons dispatch :meth:`load_regenerate_scope` right after this
+        handler, and until that has run the dialog cannot be confirmed."""
+        if self.sync_mode == REGENERATE_MODE:
             self.show_regenerate_confirm = True
+            self.regenerate_scope = regenerate_scope_notice(REGENERATE_SCOPE_CHECKING_LINE)
             return None
         return LibraryState.start_sync
+
+    @rx.var(cache=True)
+    def regenerate_confirm_blocked(self) -> bool:
+        """The regenerate confirmation can't be confirmed until it states its scope."""
+        return not regenerate_scope_stated(self.regenerate_scope)
+
+    @rx.event(background=True)
+    async def load_regenerate_scope(self) -> None:
+        """State the scope of the open "Regenerate" confirmation.
+
+        Dispatched by the Sync buttons right after :meth:`start_sync_or_confirm`,
+        and a no-op unless that opened the confirmation. The track count and both
+        providers are read off the event loop (:func:`regenerate_preflight`), so the
+        dialog states what the settings say now, not what this tab last loaded. When
+        they cannot be read the dialog says so and cannot be confirmed.
+        """
+        async with self:
+            if not self.show_regenerate_confirm or not self.access_allowed():
+                return
+        try:
+            loop = asyncio.get_running_loop()
+            scope = await loop.run_in_executor(None, regenerate_preflight)
+        except Exception as e:
+            logger.error("Could not read the scope of a regenerate sync: %s", safe_error_text(e))
+            scope = regenerate_scope_notice(REGENERATE_SCOPE_ERROR_LINE)
+        async with self:
+            if self.show_regenerate_confirm:
+                self.regenerate_scope = scope
 
     def confirm_regenerate_sync(self):
         self.show_regenerate_confirm = True
@@ -1189,6 +1899,13 @@ class LibraryState(AppState):
                     # removed and the notice stays. It is not a failed sync.
                     return rx.toast.error(sync_entry.message or REMOVAL_ERROR_MESSAGE)
                 self._show_sync_error(sync_entry)
+                if not sync_entry.extra.get("plex_error_code") and self.access_allowed():
+                    # The sync got past Plex before it failed, so it may have saved
+                    # tracks, tags and embeddings: a "Regenerate" sync that a
+                    # provider stopped part-way has usually replaced many. This poll
+                    # has no access check of its own, and the tracks are not for a
+                    # caller that is not signed in.
+                    self._refresh_after_sync()
                 msg = sync_entry.message or "Sync failed"
                 return rx.toast.error(f"Sync failed: {msg}")
             elif self.is_syncing and sync_entry.status == "cancelled":
@@ -1197,7 +1914,12 @@ class LibraryState(AppState):
                 if sync_entry.extra.get(REMOVAL_RUN_KEY):
                     # A confirmed removal that another tab started and cancelled.
                     return rx.toast.warning(sync_entry.message or REMOVAL_CANCELLED_MESSAGE)
-                return rx.toast.warning("Sync cancelled")
+                # What the sync saved before the cancel request stays in the library.
+                # Reloaded only for a caller that is signed in, as after a failure.
+                if self.access_allowed():
+                    self._refresh_after_sync()
+                cancel_msg = str(sync_entry.extra.get(SYNC_CANCEL_MESSAGE_KEY) or "")
+                return rx.toast.warning(cancel_msg or SYNC_CANCELLED_MESSAGE)
 
         # -- Embedding --
         embed_entry = task_store.get("embedding")
@@ -1222,6 +1944,14 @@ class LibraryState(AppState):
                 self.is_embedding = False
                 self.embedding_message = ""
                 msg = embed_entry.message or "Embedding generation failed"
+                notice = embed_entry.extra.get(INDEX_NOTICE_KEY)
+                if isinstance(notice, Mapping) and self.access_allowed():
+                    # The embeddings were saved, and the search index was left as it
+                    # is. The notice stays on the page with the link to the fix, and
+                    # the table and the counts follow the new embeddings.
+                    self._show_index_notice(msg, notice)
+                    self.load_tracks()
+                    self.load_library_stats()
                 return rx.toast.error(msg)
             elif self.is_embedding and embed_entry.status == "cancelled":
                 self.is_embedding = False
@@ -1287,6 +2017,12 @@ class LibraryState(AppState):
                 self.audio_analysis_paused = False
                 msg = audio_entry.message or "Audio analysis failed"
                 return rx.toast.error(msg)
+
+    def _refresh_after_sync(self) -> None:
+        """Reload what a sync can have changed: the tracks, the status and the counts."""
+        self.load_tracks()
+        self.check_configuration_status()
+        self.load_library_stats()
 
     def _filters_active(self) -> bool:
         """True while any filter narrows the list (search, genre, years, tag, audio)."""
@@ -2022,12 +2758,47 @@ class LibraryState(AppState):
 
     @rx.event(background=True)
     async def start_sync(self) -> None:
-        # Bound before anything starts: the handler at the end names them.
+        """Run the sync of the chosen mode as the ``"sync"`` task.
+
+        The "regenerate" mode also replaces every track's tags and embedding, in
+        place: nothing is cleared first. Both providers answer a test request
+        before anything changes (:func:`check_regenerate_providers`, off the event
+        loop), and a provider that is not ready ends the task as failed with the
+        provider and the cause. Such a refusal compared nothing with Plex, so a
+        removal that the last sync held keeps its notice and its keys. Every track
+        is regenerated: an earlier run is never continued. The task ends from what
+        the run wrote (:func:`regenerate_sync_result`), never as "tagging skipped",
+        and readiness records what the run proved about both providers.
+        """
+        # Bound before anything starts: the handlers at the end name them.
         from plexmix.plex.client import PlexFetchError, PlexReadInterrupted
+        from plexmix.services.regenerate_service import RegenerateRefused
 
         async with self:
             if not self.access_allowed():
                 return
+            regenerate = self.sync_mode == REGENERATE_MODE
+            if (
+                regenerate
+                and self.show_regenerate_confirm
+                and not regenerate_scope_stated(self.regenerate_scope)
+            ):
+                # The open confirmation has not stated its scope yet (its button is
+                # disabled until then), so this confirms nothing. The dialog stays open.
+                return
+            if regenerate and embedding_job_running():
+                # That job writes embeddings and saves the search index, as this
+                # sync would. Nothing is started and nothing is changed: no task
+                # entry is replaced, so a removal that waits keeps its notice.
+                self.show_regenerate_confirm = False
+                self.sync_error = REGENERATE_BUSY_TITLE
+                self.sync_error_body = REGENERATE_BUSY_BODY
+                self.sync_error_action_label = ""
+                self.sync_error_action_href = ""
+                return
+            # A removal that waits now. A "Regenerate" sync that is refused gives it
+            # back (see the RegenerateRefused handler below).
+            waiting = waiting_hold(task_store.get("sync")) if regenerate else None
             self.is_syncing = True
             self.sync_progress = 0
             self.sync_message = "Starting sync..."
@@ -2035,12 +2806,14 @@ class LibraryState(AppState):
             self._clear_sync_error()
             # A new sync replaces the task entry the notice is derived from.
             self._set_removal_notice(0, 0)
-            sync_mode = self.sync_mode
 
         cancel_event = task_store.start("sync", message="Starting sync...")
         if cancel_event is None:
             # Already running — polling will show existing task's progress
             return
+        if regenerate:
+            # Said to the other jobs that write embeddings, which then do not start.
+            task_store.update("sync", extra={REGENERATE_RUN_KEY: True})
         # The new sync replaces whatever the last one held.
         forget_held_removal()
 
@@ -2083,6 +2856,15 @@ class LibraryState(AppState):
                 )
                 return
 
+            loop = asyncio.get_running_loop()
+            checked: Optional[RegenerateProviders] = None
+            if regenerate:
+                # Both providers answer a test request before anything is changed,
+                # and before the database is opened. A provider that is not ready
+                # raises RegenerateRefused, which ends the task below.
+                task_store.update("sync", message=REGENERATE_CHECKING_MESSAGE)
+                checked = await loop.run_in_executor(None, check_regenerate_providers, settings)
+
             db_path = settings.database.get_db_path()
             db = SQLiteManager(str(db_path))
             db.connect()
@@ -2095,11 +2877,32 @@ class LibraryState(AppState):
                     return
                 task_store.update("sync", progress=int(progress * 100), message=message)
 
-            ai_provider = build_ai_provider(settings, silent=True)
-            if ai_provider is None:
-                task_store.update(
-                    "sync", message="AI provider not configured — syncing without tagging..."
-                )
+            # A regenerate run also gets the embedding generator and the search
+            # index: it replaces the embeddings in the same job.
+            engine_options: dict[str, Any] = {}
+            run_options: dict[str, Any] = {}
+            if checked is not None:
+                ai_provider = checked.ai_provider
+                engine_options = {
+                    "embedding_generator": checked.embedding_generator,
+                    "vector_index": checked.vector_index,
+                }
+                if settings.audio.analyze_on_sync:
+                    # The engine then analyses the audio between its tags pass and
+                    # its embeddings pass, so the new embeddings hold the audio
+                    # features. This handler's own audio pass runs after the engine
+                    # and would be too late for them.
+                    engine_options["audio_settings"] = settings.audio
+                run_options = {
+                    "tags_provider": checked.tags_run,
+                    "embeddings_provider": checked.embeddings_run,
+                }
+            else:
+                ai_provider = build_ai_provider(settings, silent=True)
+                if ai_provider is None:
+                    task_store.update(
+                        "sync", message="AI provider not configured — syncing without tagging..."
+                    )
 
             # Pass MusicBrainz settings if enabled and enrichment on sync is on
             mb_settings = None
@@ -2111,16 +2914,22 @@ class LibraryState(AppState):
                 db,
                 ai_provider=ai_provider,
                 musicbrainz_settings=mb_settings,
+                # The keys from the settings: the engine replaces them in the error
+                # text it logs and stores in the sync history.
+                known_secrets=_sync_secrets(settings),
+                **engine_options,
             )
 
-            loop = asyncio.get_running_loop()
-
-            def run_sync():
-                if sync_mode == "regenerate":
+            def run_sync() -> None:
+                if regenerate:
                     sync_engine.regenerate_sync(
-                        generate_embeddings=False,
+                        generate_embeddings=True,
                         progress_callback=progress_callback,
                         cancel_event=cancel_event,
+                        # Every track, as the confirmation states: the web UI never
+                        # continues an earlier run.
+                        continue_run=False,
+                        **run_options,
                     )
                 else:
                     sync_engine.incremental_sync(
@@ -2135,6 +2944,9 @@ class LibraryState(AppState):
                 if ai_provider is not None:
                     # Sync tagging is a real use of the AI provider (readiness D2).
                     record_sync_tagging(sync_engine, settings)
+                if regenerate:
+                    # And so is the embeddings pass of a regenerate run.
+                    record_regenerate_embeddings(sync_engine, settings)
 
             # What the engine kept or held: unread tracks, and a removal that waits
             # for confirmation. Only a real SyncOutcome is copied (see the helper).
@@ -2152,8 +2964,9 @@ class LibraryState(AppState):
                         hold_scope(settings),
                     )
 
-            # Run audio analysis if enabled
-            run_audio = settings.audio.analyze_on_sync
+            # Run audio analysis if enabled. A regenerate run has done it inside
+            # the engine, before the embeddings were made.
+            run_audio = settings.audio.analyze_on_sync and not regenerate
             if run_audio and not cancel_event.is_set():
                 task_store.update("sync", message="Running audio analysis...")
                 try:
@@ -2225,33 +3038,61 @@ class LibraryState(AppState):
             db.close()
 
             if cancel_event.is_set():
+                if regenerate:
+                    cancel_note = regenerate_cancel_message(sync_engine)
+                    task_store.update("sync", extra={SYNC_CANCEL_MESSAGE_KEY: cancel_note})
                 task_store.complete("sync", status="cancelled")
+            elif regenerate:
+                # From what the run wrote: completed with the counts, or failed with
+                # the provider and the cause. Never "tagging skipped".
+                status, message = regenerate_sync_result(
+                    outcome, getattr(sync_engine, "regenerate_result", None), settings
+                )
+                message = redact_secrets(mask_urls_in_text(message), _sync_secrets(settings))
+                task_store.complete("sync", status=status, message=message)
             else:
                 # Plain result text; "" keeps the engine's last progress message.
                 task_store.complete(
                     "sync",
-                    message=sync_result_message(outcome, tagging_skipped=ai_provider is None),
+                    message=sync_result_message(
+                        outcome, tagging_skipped=ai_provider is None, settings=settings
+                    ),
                 )
 
         except KeyboardInterrupt:
             # Cancellation propagates as KeyboardInterrupt from the sync engine;
             # complete the task as cancelled so its TaskStore entry doesn't wedge
             # in the "running" state forever (KeyboardInterrupt isn't an Exception).
+            if regenerate:
+                cancel_note = regenerate_cancel_message(sync_engine)
+                task_store.update("sync", extra={SYNC_CANCEL_MESSAGE_KEY: cancel_note})
             task_store.complete("sync", status="cancelled")
         except PlexFetchError as e:
             # Plex stopped answering or could not list the library, so the engine
             # wrote nothing. The error is one plain sentence without an address.
             secrets = _sync_secrets(settings)
             sentence = redact_secrets(mask_urls_in_text(str(e)), secrets)
-            if getattr(sync_engine, "cleared_before_sync", False) is True:
-                # A "Regenerate" sync: "nothing was changed" is true for the library
-                # sync, but that mode had cleared the tags and embeddings first.
-                sentence = f"{sentence} {REGENERATE_CLEARED_MESSAGE}".strip()
             logger.error("Sync stopped: %s", sentence)
             if isinstance(e, PlexReadInterrupted):
                 cause = record_plex_read_interrupted(settings)
                 task_store.update("sync", extra={"readiness_cause": cause})
             task_store.complete("sync", status="failed", message=sentence or SYNC_FAILED_TITLE)
+        except RegenerateRefused as e:
+            # A provider of a "Regenerate" sync is not ready. The check runs before
+            # the engine, and the engine's own guard before it reads Plex, so no tag,
+            # embedding or track was changed. The task fails with the provider and
+            # the cause, and the provider is recorded as failing.
+            secrets = _sync_secrets(settings)
+            refusal = redact_secrets(mask_urls_in_text(e.message), secrets)
+            logger.error("Regenerate sync refused: %s", refusal)
+            message = redact_secrets(regenerate_refusal_message(e, settings), secrets)
+            if waiting is not None:
+                # Nothing was compared with Plex either, so the removal that the
+                # last sync held still waits: its notice and its keys come back
+                # with this task's end, and "Review removal" works as before.
+                task_store.update("sync", extra=held_removal_extra(waiting.held, waiting.total))
+                remember_held_removal(*waiting)
+            task_store.complete("sync", status="failed", message=message)
         except Exception as e:
             # Shown in the toast and the inline sync_error: plain text, with the
             # Plex token and AI key redacted (from the log line too).
@@ -2344,6 +3185,20 @@ class LibraryState(AppState):
         self.embed_all_notice = ""
         self.embed_all_notice_action_label = self.embed_all_notice_action_href = ""
         self.embed_all_notice_secondary_label = self.embed_all_notice_secondary_href = ""
+
+    def _show_index_notice(self, message: str, notice: Mapping[str, Any]) -> None:
+        """Show that an embedding job left the search index as it is, with its links.
+
+        ``notice`` is the :func:`index_not_updated_copy` the job stored on its task.
+        The embeddings notice of the page shows it as a warning: the job's message,
+        and the links to what replaces the embeddings in the way.
+        """
+        self.embed_all_notice = message
+        self.embed_all_notice_tone = "warning"
+        self.embed_all_notice_action_label = str(notice.get("action_label") or "")
+        self.embed_all_notice_action_href = str(notice.get("action_href") or "")
+        self.embed_all_notice_secondary_label = str(notice.get("secondary_label") or "")
+        self.embed_all_notice_secondary_href = str(notice.get("secondary_href") or "")
 
     async def _embed_all_preflight_flow(self) -> AsyncGenerator[Any, None]:
         async with self:
@@ -2444,6 +3299,15 @@ class LibraryState(AppState):
         cancel_event = task_store.start("embedding", message="Starting embedding generation...")
         if cancel_event is None:
             return  # already running: polling shows the existing task's progress
+        if regenerate_sync_running():
+            # That sync is replacing the embeddings and saves the search index
+            # itself. Nothing was changed by this job.
+            task_store.complete(
+                "embedding",
+                status="failed",
+                message=f"{REGENERATE_RUNNING_TITLE}. {REGENERATE_RUNNING_BODY}",
+            )
+            return
         try:
             loop = asyncio.get_running_loop()
             status, message = await loop.run_in_executor(

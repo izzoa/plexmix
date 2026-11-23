@@ -90,8 +90,8 @@ def _detail_track(track: ObjectVar[dict[str, str]], index: rx.Var) -> rx.Compone
     return rx.el.li(
         rx.el.span(track["position"], class_name="pos"),
         rx.el.span(
-            rx.el.span(track["title"], class_name="ttl"),
-            rx.el.span(track["artist"], class_name="art"),
+            rx.el.span(track["title"], class_name="ttl", title=track["title"]),
+            rx.el.span(track["artist"], class_name="artist", title=track["artist"]),
             class_name="info",
         ),
         rx.el.span(track["duration_formatted"], class_name="dur"),
@@ -178,11 +178,23 @@ def _detail_dialog() -> rx.Component:
         rx.dialog.content(
             rx.box(
                 rx.box(
-                    rx.dialog.title(pl["name"], class_name="pl-dialog-title"),
+                    # custom_attrs, not title=: the dialog title component has no `title`
+                    # prop, so Reflex would emit title= as CSS (tests/ui_render/conftest.py).
+                    rx.dialog.title(
+                        pl["name"],
+                        class_name="pl-dialog-title",
+                        custom_attrs={"title": pl["name"]},
+                    ),
                     rx.dialog.description(
                         rx.cond(
                             pl["mood_query"] != "",
-                            rx.el.span("“", pl["mood_query"], "”", class_name="pl-dialog-mood"),
+                            rx.el.span(
+                                "“",
+                                pl["mood_query"],
+                                "”",
+                                class_name="pl-dialog-mood",
+                                title=pl["mood_query"],
+                            ),
                         ),
                         rx.el.span(
                             pl["track_count"],

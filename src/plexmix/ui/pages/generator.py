@@ -22,6 +22,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, cast
 
 import reflex as rx
+from reflex.components.core.banner import (
+    connect_error_var_data,
+    has_too_many_connection_errors,
+)
 
 from plexmix.ui.components.inputs import compose_textarea, filter_input
 from plexmix.ui.components.navbar import layout
@@ -63,6 +67,47 @@ _ORDERINGS = [
 # moves focus when it was lost (the focused control left with the previous stage),
 # so a fresh page load is never hijacked.
 _STAGE_FOCUS_SCRIPT = focus_first_script(["#gen-error", "#main-heading"])
+
+# Lost connection (the backend process died, or the network dropped). The server cannot
+# report that, so the thinking stage reads Reflex's client-side connection state: the
+# browser's ``connectErrors`` list, one entry per failed reconnect attempt (capped at 10,
+# emptied the moment the websocket connects). The client starts the next attempt
+# 200 ms x (entries so far) after a failure, so against a backend on the same machine
+# that stopped the 2nd failure lands about 0.2 s after the drop and the 5th about 2 s
+# after it (measured in a test harness; in the running app, headless Chromium against a
+# killed backend or a closed port, 0.2-0.5 s and 2.0-2.3 s). Two steps, so a short drop
+# does not raise a false alarm: a quiet line at ``_RECONNECT_AFTER`` failures in a row,
+# an alert at ``_ALERT_AFTER``. The expressions come from a Reflex-internal module
+# (``reflex.components.core.banner``, not exported at ``rx.*``) and the thresholds depend
+# on the client's retry policy: recheck both on every Reflex upgrade (the render smoke
+# pins the compiled expressions; CI does not run it).
+_RECONNECT_AFTER = 2
+_ALERT_AFTER = 5
+
+# 2 or more failures: Reflex's own var, fixed at 2 (the render smoke ties it to
+# ``_RECONNECT_AFTER``).
+_CONN_RETRYING = has_too_many_connection_errors
+# 5 or more failures.
+_CONN_LOST = rx.Var(
+    _js_expr=f"(connectErrors.length >= {_ALERT_AFTER})", _var_data=connect_error_var_data
+).to(bool)
+# 2 to 4 failures: the quiet step only.
+_CONN_RETRYING_ONLY = rx.Var(
+    _js_expr=(
+        f"((connectErrors.length >= {_RECONNECT_AFTER}) && "
+        f"(connectErrors.length < {_ALERT_AFTER}))"
+    ),
+    _var_data=connect_error_var_data,
+).to(bool)
+
+RECONNECTING_TEXT = "Reconnecting to PlexMix…"
+LOST_CONNECTION_TITLE = "Lost connection to PlexMix"
+LOST_CONNECTION_BODY = (
+    "This page can't reach PlexMix. It keeps trying and reconnects on its own. Your "
+    "playlist may still be generating: if the connection returns, you'll see where it got "
+    "to. If it does not reconnect, PlexMix may have stopped. Start it again, then generate "
+    "again."
+)
 
 # Run by the idle-stage triggers just before generation starts (a vibe pill's
 # use_vibe returns it ahead of generate_playlist, only when generation can run; the
@@ -505,6 +550,74 @@ def _phase_node(idx: int, label: str, icon: str) -> rx.Component:
     )
 
 
+def _progress_row(pct: rx.Var) -> rx.Component:
+    # "42%": the bar width, the visible percentage and the bar's value text.
+    return rx.box(
+        rx.box(
+            rx.box(class_name="pfill", style={"width": pct}),
+            role="progressbar",
+            aria_label="Generation progress",
+            aria_valuemin="0",
+            aria_valuemax="100",
+            aria_valuenow=GeneratorState.generation_progress,
+            aria_valuetext=pct,
+            class_name="pbar",
+        ),
+        rx.el.span(pct, class_name="pct"),
+        rx.el.button(
+            rx.icon("x", size=14),
+            "Cancel",
+            class_name="btn btn-sm btn-ghost",
+            on_click=GeneratorState.cancel_generation,
+            type="button",
+        ),
+        class_name="gen-progress",
+    )
+
+
+def _reconnect_notice() -> rx.Component:
+    # Step 1 of a lost connection (2 to 4 failed reconnects): a quiet line in the
+    # progress row's place. Persistent polite region: it is mounted with the stage, so the
+    # line written into it is announced once. It is no focus target and has no control.
+    # Client-side only: nothing here can need the server.
+    return rx.box(
+        rx.cond(
+            _CONN_RETRYING_ONLY,
+            rx.box(RECONNECTING_TEXT, id="gen-reconnect", class_name="gen-reconnect"),
+            rx.fragment(),
+        ),
+        role="status",
+        id="gen-reconnect-region",
+    )
+
+
+def _lost_notice() -> rx.Component:
+    # Step 2 (5 or more failed reconnects): persistent assertive region, mounted with the
+    # stage like #gen-error-region, so the callout inside it is announced once. The
+    # wording is conditional: the playlist may still be generating on the server. No
+    # tabindex, button or link: it is not a focus target and nothing in it needs the
+    # server. assets/plexmix.js moves focus only when it was on the Cancel button that
+    # left with the progress row, and then to the stage heading.
+    return rx.box(
+        rx.cond(
+            _CONN_LOST,
+            rx.box(
+                rx.box(rx.icon("unplug", size=16), class_name="c-ico"),
+                rx.box(
+                    rx.box(LOST_CONNECTION_TITLE, class_name="c-title"),
+                    rx.box(LOST_CONNECTION_BODY, class_name="c-body"),
+                    class_name="c-main",
+                ),
+                id="gen-offline",
+                class_name="callout callout-error",
+            ),
+            rx.fragment(),
+        ),
+        role="alert",
+        id="gen-offline-region",
+    )
+
+
 def _thinking_stage() -> rx.Component:
     # "42%": the bar width, the visible percentage and the bar's value text.
     pct = GeneratorState.generation_progress.to_string() + "%"  # type: ignore[attr-defined]
@@ -534,27 +647,12 @@ def _thinking_stage() -> rx.Component:
                 *[_phase_node(i, label, icon) for i, (label, icon) in enumerate(_PHASES)],
                 class_name="phase-track",
             ),
-            rx.box(
-                rx.box(
-                    rx.box(class_name="pfill", style={"width": pct}),
-                    role="progressbar",
-                    aria_label="Generation progress",
-                    aria_valuemin="0",
-                    aria_valuemax="100",
-                    aria_valuenow=GeneratorState.generation_progress,
-                    aria_valuetext=pct,
-                    class_name="pbar",
-                ),
-                rx.el.span(pct, class_name="pct"),
-                rx.el.button(
-                    rx.icon("x", size=14),
-                    "Cancel",
-                    class_name="btn btn-sm btn-ghost",
-                    on_click=GeneratorState.cancel_generation,
-                    type="button",
-                ),
-                class_name="gen-progress",
-            ),
+            _reconnect_notice(),
+            _lost_notice(),
+            # While the page cannot reach the server the bar, the percentage and Cancel are
+            # stale (a Cancel click could not reach the server), so the quiet line and then
+            # the alert stand in for them.
+            rx.cond(_CONN_RETRYING, rx.fragment(), _progress_row(pct)),
             # Polite, once per phase (about four times a run). The progress message
             # and the log stay out of live regions: they change too often.
             rx.box(
@@ -576,7 +674,9 @@ def _thinking_stage() -> rx.Component:
             ),
             class_name="think-inner fade-up",
         ),
-        class_name="think",
+        # .is-offline (alert step only): redesign.css dims the stage and plexmix.js idles the
+        # canvas.
+        class_name=rx.cond(_CONN_LOST, "think is-offline", "think"),
         on_mount=rx.call_script(_STAGE_FOCUS_SCRIPT),
     )
 

@@ -558,7 +558,10 @@ if (!window.__plexmix_keys__) {
   onBody(function () {
     (function(){
       if (window.__thinkviz__) return; window.__thinkviz__ = true;
-      var raf=0, parts=[], W=0, H=0, ro=null, po=null, cv=null, ctx=null;
+      var raf=0, parts=[], W=0, H=0, ro=null, po=null, so=null, cv=null, ctx=null;
+      // Lost connection (pages/generator.py sets .think.is-offline): nothing is being
+      // computed, so the field holds still until the stage is live again.
+      function offline(){return !!(cv&&cv.closest&&cv.closest('.is-offline'));}
       function rand(a,b){return a+Math.random()*(b-a);}
       function phase(){var w=document.querySelector('.viz-wrap');return w?parseInt(w.getAttribute('data-phase')||'0',10):0;}
       function assign(){
@@ -578,6 +581,7 @@ if (!window.__plexmix_keys__) {
       }
       function frame(){
         if(!cv||!document.body.contains(cv)){stop();return;}
+        if(offline()){raf=0;return;}
         var reduce=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         var dark=document.documentElement.classList.contains('dark');
         var base=dark?'120,120,135':'150,150,160';
@@ -595,9 +599,12 @@ if (!window.__plexmix_keys__) {
         var w=document.querySelector('.viz-wrap');
         if(po) po.disconnect();
         if(w){po=new MutationObserver(assign); po.observe(w,{attributes:true,attributeFilter:['data-phase']});}
-        cancelAnimationFrame(raf); frame();
+        var st=cv.closest?cv.closest('.think'):null;
+        if(so) so.disconnect();
+        if(st){so=new MutationObserver(function(){if(!offline()&&!raf&&cv) frame();}); so.observe(st,{attributes:true,attributeFilter:['class']});}
+        cancelAnimationFrame(raf); raf=0; frame();
       }
-      function stop(){cancelAnimationFrame(raf);raf=0;if(ro){ro.disconnect();ro=null;}if(po){po.disconnect();po=null;}cv=null;ctx=null;parts=[];}
+      function stop(){cancelAnimationFrame(raf);raf=0;if(ro){ro.disconnect();ro=null;}if(po){po.disconnect();po=null;}if(so){so.disconnect();so=null;}cv=null;ctx=null;parts=[];}
       var watch=new MutationObserver(function(){
         var c=document.getElementById('thinkviz');
         if(c && c!==cv){start(c);} else if(!c && cv){stop();}
@@ -932,4 +939,32 @@ if (!window.__plexmix_keys__) {
   document.addEventListener('focusin', function (e) {
     if (e.target !== dismissed) dismissed = null;
   }, true);
+})();
+
+/* 8. Generator lost-connection notice: focus (pages/generator.py, #gen-reconnect-region).
+ *    While the page cannot reach the server, the thinking stage withdraws its progress
+ *    row (.gen-progress, with the Cancel button) and shows a quiet line, then an alert,
+ *    in its place. Neither notice is a focus target. If keyboard focus was on Cancel,
+ *    it falls to <body> when the row leaves: this moves it to the stage heading
+ *    (#main-heading). pmFocus.when acts only when focus was lost, so focus the user
+ *    still has is never touched. A watcher on <body> looks for one change: a .think stage
+ *    that stays while its row has just left. Nothing happens when the row returns, when
+ *    the alert replaces the quiet line, or when the whole stage leaves; a reconnect
+ *    rebuilds the page and the stage's own mount script places focus. */
+(function () {
+  if (window.__pmOfflineFocus__) return; window.__pmOfflineFocus__ = true;
+  var rowShown = false;
+  function check() {
+    var stage = document.querySelector('.think');
+    var row = !!(stage && stage.querySelector('.gen-progress'));
+    var left = rowShown && !!stage && !row;
+    rowShown = row;
+    if (left && window.pmFocus) window.pmFocus.when('#main-heading');
+  }
+  function start() {
+    new MutationObserver(check).observe(document.body, { childList: true, subtree: true });
+    check();
+  }
+  if (document.body) start();
+  else document.addEventListener('DOMContentLoaded', start, { once: true });
 })();

@@ -1,4 +1,5 @@
-from typing import Any, List, Optional, Union, Dict
+from typing import Any, List, Optional, Tuple, Union, Dict
+import importlib.util
 import logging
 import time
 import re
@@ -23,6 +24,32 @@ LOCAL_EMBEDDING_MODELS: Dict[str, Dict[str, Union[int, bool]]] = {
 }
 
 LOCAL_EMBEDDING_DEVICE = os.getenv("PLEXMIX_LOCAL_EMBEDDING_DEVICE", "cpu")
+
+_LOCAL_DEPS_MISSING = "sentence-transformers not installed. Run: pip install sentence-transformers"
+
+# Time limits for the short-lived checks behind the Settings buttons (``probe_local_embedding_model``).
+# The long-lived worker that Generate and the embedding jobs share keeps no limit, so a slow
+# first model download during a job is not cut off. Chosen, not measured: 10 minutes leaves room
+# for a first load from a slow disk, 5 minutes for one answer.
+LOCAL_MODEL_READY_TIMEOUT = 600.0
+LOCAL_MODEL_ANSWER_TIMEOUT = 300.0
+# How long a worker child gets to leave by itself before it is terminated, and again before
+# it is killed.
+_WORKER_STOP_WAIT = 5.0
+
+
+def local_embedding_deps_available() -> bool:
+    """Whether ``sentence_transformers`` is installed, WITHOUT importing it.
+
+    Local models run in a worker process (``_local_embedding_worker``). Importing the
+    package in the calling process loads torch's and scikit-learn's OpenMP runtimes
+    next to FAISS's (a segfault on macOS) and blocks for 10 s or more, so callers
+    in the CLI/UI server process must only ever ask ``find_spec``.
+    """
+    try:
+        return importlib.util.find_spec("sentence_transformers") is not None
+    except (ImportError, ValueError):
+        return False
 
 
 class EmbeddingProvider(ABC):
@@ -310,12 +337,9 @@ class LocalEmbeddingProvider(EmbeddingProvider):
 
     def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
         super().__init__()
-        try:
-            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found,import-untyped]  # noqa: F401
-        except ImportError:
-            raise ImportError(
-                "sentence-transformers not installed. Run: pip install sentence-transformers"
-            )
+        # find_spec only: the package is imported in the worker process, never here.
+        if not local_embedding_deps_available():
+            raise ImportError(_LOCAL_DEPS_MISSING)
 
         model_config = LOCAL_EMBEDDING_MODELS.get(model_name, {})
         trust_remote_code = bool(model_config.get("trust_remote_code", False))
@@ -345,35 +369,13 @@ class LocalEmbeddingProvider(EmbeddingProvider):
                     logger.info(f"[{self.provider_name}] Disposing stale local worker {stale_key}")
                     self._shutdown_worker(stale_key)
 
-                ctx = mp.get_context("spawn")
-                parent_conn, child_conn = ctx.Pipe()
-                worker = ctx.Process(
-                    target=_local_embedding_worker,
-                    args=(model_name, trust_remote_code, device, child_conn),
-                    daemon=True,
+                parent_conn, worker, reported_dimension = _start_local_embedding_worker(
+                    model_name, trust_remote_code, device
                 )
-                worker.start()
-                # Close the parent's copy of the child end so recv() raises EOFError
-                # if the worker dies instead of blocking forever holding worker_lock.
-                child_conn.close()
-
-                try:
-                    handshake = parent_conn.recv()
-                except EOFError:
-                    raise RuntimeError(
-                        f"Failed to start local embedding worker for {model_name}. "
-                        "See logs for details."
-                    )
-
-                if handshake.get("status") != "ready":
-                    error = handshake.get("error", "Unknown error")
-                    raise RuntimeError(f"Failed to load local model {model_name}: {error}")
 
                 self.worker_conn = parent_conn
                 self.worker_process = worker
-                self.dimension = int(handshake.get("dimension", 0)) or int(
-                    model_config.get("dimension", 384)
-                )
+                self.dimension = reported_dimension or int(model_config.get("dimension", 384))
                 self.worker_lock = threading.Lock()
                 self.worker_cache[cache_key] = {
                     "conn": self.worker_conn,
@@ -449,11 +451,168 @@ class LocalEmbeddingProvider(EmbeddingProvider):
         self.worker_cache.pop(cache_key, None)
 
 
+def stop_worker_process(
+    conn: mp_connection.Connection, process: mp.process.BaseProcess, *, wait: bool = True
+) -> None:
+    """Stop a worker child process and release its pipe. Never raises.
+
+    ``wait=True`` is for a child that is expected to leave on its own (it was told to shut
+    down, or it has already sent its last message): it gets up to 5 s. ``wait=False`` is for
+    a child that is stuck (loading or computing for too long): it is terminated at once.
+    A child that is still alive after that is killed.
+    """
+    if wait:
+        try:
+            conn.send({"cmd": "shutdown"})
+        except Exception:
+            pass
+        process.join(timeout=_WORKER_STOP_WAIT)
+    try:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=_WORKER_STOP_WAIT)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=_WORKER_STOP_WAIT)
+    except Exception as exc:
+        logger.warning(f"Could not stop worker process cleanly: {type(exc).__name__}")
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+def receive_worker_reply(
+    conn: mp_connection.Connection,
+    process: mp.process.BaseProcess,
+    limit: Optional[float],
+    timeout_message: str,
+) -> Any:
+    """Read one message from a worker, waiting at most ``limit`` seconds.
+
+    ``limit=None`` waits as ``conn.recv()`` does. When the limit passes without a message the
+    child is stopped, its pipe is closed and the built-in ``TimeoutError`` is raised with
+    ``timeout_message``. ``EOFError`` and ``ConnectionError`` (the child died) propagate; the
+    caller words them. ``TimeoutError`` is an ``OSError``: callers that catch ``OSError``
+    around this call would swallow it, so they catch ``ConnectionError`` instead.
+    """
+    if limit is not None and not conn.poll(limit):
+        stop_worker_process(conn, process, wait=False)
+        raise TimeoutError(timeout_message)
+    return conn.recv()
+
+
+def _start_local_embedding_worker(
+    model_name: str,
+    trust_remote_code: bool,
+    device: str,
+    ready_timeout: Optional[float] = None,
+) -> Tuple[mp_connection.Connection, mp.process.BaseProcess, int]:
+    """Start a worker process for ``model_name`` and wait until its model is loaded.
+
+    Returns ``(connection, process, dimension)``; ``dimension`` is 0 when the worker
+    did not report one. Raises ``ImportError`` when the worker could not import
+    sentence-transformers (installed but broken, for example a missing torch),
+    ``RuntimeError`` when the model failed to load or the worker died and ``TimeoutError``
+    when ``ready_timeout`` seconds pass without an answer (the child is stopped first).
+    ``ready_timeout=None`` waits as long as the worker takes, which is what the long-lived
+    provider does. On every failure the child is joined and the pipe is closed.
+    """
+    ctx = mp.get_context("spawn")
+    parent_conn, child_conn = ctx.Pipe()
+    worker = ctx.Process(
+        target=_local_embedding_worker,
+        args=(model_name, trust_remote_code, device, child_conn),
+        daemon=True,
+    )
+    try:
+        worker.start()
+    except BaseException:
+        parent_conn.close()
+        child_conn.close()
+        raise
+    # Close the parent's copy of the child end so recv() raises EOFError
+    # if the worker dies instead of blocking forever holding worker_lock.
+    child_conn.close()
+
+    timeout_message = (
+        ""
+        if ready_timeout is None
+        else f"Local model {model_name} did not finish loading within {ready_timeout:g} seconds"
+    )
+    try:
+        handshake = receive_worker_reply(parent_conn, worker, ready_timeout, timeout_message)
+    except (EOFError, ConnectionError):
+        stop_worker_process(parent_conn, worker)
+        raise RuntimeError(
+            f"Failed to start local embedding worker for {model_name}. See logs for details."
+        )
+
+    if handshake.get("status") != "ready":
+        stop_worker_process(parent_conn, worker)
+        error = handshake.get("error", "Unknown error")
+        if "missing_module" in handshake:
+            raise ImportError(f"{_LOCAL_DEPS_MISSING} ({error})", name=handshake["missing_module"])
+        raise RuntimeError(f"Failed to load local model {model_name}: {error}")
+
+    return parent_conn, worker, int(handshake.get("dimension", 0) or 0)
+
+
+def probe_local_embedding_model(model_name: str, text: Optional[str] = None) -> int:
+    """Load ``model_name`` in a throwaway worker process and return its vector size.
+
+    For the Settings "Test Embeddings" and "Download / Cache Model" buttons, which used to
+    load the model in the server process. With ``text`` the model also embeds it once and the
+    length of that vector is returned. The worker is always stopped, and the shared worker
+    cache (``LocalEmbeddingProvider.worker_cache``) is never read or written.
+
+    Raises ``ImportError`` (package missing or broken, no process started for a missing
+    one), ``RuntimeError`` (the model failed to load, or the worker died or failed to answer)
+    and ``TimeoutError`` (no "ready" within ``LOCAL_MODEL_READY_TIMEOUT`` or no answer within
+    ``LOCAL_MODEL_ANSWER_TIMEOUT``; the child is stopped first).
+    """
+    if not local_embedding_deps_available():
+        raise ImportError(_LOCAL_DEPS_MISSING)
+    trust_remote_code = bool(LOCAL_EMBEDDING_MODELS.get(model_name, {}).get("trust_remote_code"))
+    conn, worker, dimension = _start_local_embedding_worker(
+        model_name,
+        trust_remote_code,
+        LOCAL_EMBEDDING_DEVICE,
+        ready_timeout=LOCAL_MODEL_READY_TIMEOUT,
+    )
+    try:
+        if text is not None:
+            try:
+                conn.send({"cmd": "embed", "texts": [text]})
+                result = receive_worker_reply(
+                    conn,
+                    worker,
+                    LOCAL_MODEL_ANSWER_TIMEOUT,
+                    f"Local model {model_name} did not answer within "
+                    f"{LOCAL_MODEL_ANSWER_TIMEOUT:g} seconds",
+                )
+            except (EOFError, ConnectionError):
+                raise RuntimeError(f"Local embedding worker for {model_name} stopped unexpectedly")
+            if result.get("status") != "ok":
+                raise RuntimeError(result.get("error", "Unknown error generating embedding"))
+            dimension = len(result["embeddings"][0])
+        return dimension
+    finally:
+        stop_worker_process(conn, worker)
+
+
 def _local_embedding_worker(
     model_name: str, trust_remote_code: bool, device: str, conn: mp_connection.Connection
 ) -> None:
     try:
-        from sentence_transformers import SentenceTransformer  # type: ignore[import-untyped]
+        try:
+            from sentence_transformers import SentenceTransformer  # type: ignore[import-not-found,import-untyped]
+        except ImportError as e:
+            # find_spec found the package but it will not import here (broken or
+            # partial install): say so, instead of "the model failed to load".
+            logger.error(f"Local embedding worker could not import sentence-transformers: {e}")
+            conn.send({"status": "error", "error": str(e), "missing_module": e.name or ""})
+            return
 
         model = SentenceTransformer(model_name, trust_remote_code=trust_remote_code, device=device)
         dimension = model.get_sentence_embedding_dimension()

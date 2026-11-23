@@ -8,14 +8,21 @@ The sync tests come in two sets. ``TestSyncIncremental`` and ``TestSyncRemovals`
 patch the engine and check what the commands print and how they exit.
 ``TestSyncRemovalsOnRealEngine`` runs the same situations on the real engine with
 a temporary database and a fake Plex, and checks what is left in the library.
+
+``TestSyncRegenerate`` and the regenerate tests of ``TestEmbeddingsGenerate`` run the
+two regenerate commands on the real engine and a temporary library. Only Plex and
+the providers are fakes, so each test also checks what is left in the database.
 """
 
 import ast
+import json
+import logging
 import sqlite3
 from contextlib import ExitStack
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterable, Iterator, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 from unittest.mock import patch, MagicMock
 
 import click
@@ -25,8 +32,9 @@ from click.testing import Result
 from typer.testing import CliRunner
 
 import plexmix.cli
-from plexmix.cli import sync_cmd
+from plexmix.cli import embeddings_cmd, sync_cmd
 from plexmix.cli.console_helpers import format_size
+from plexmix.cli.embedding_failure import embedding_failure_lines, print_embedding_failure
 from plexmix.cli.main import app
 from plexmix.config.settings import (
     Settings,
@@ -37,7 +45,8 @@ from plexmix.config.settings import (
     PlaylistSettings,
     AudioSettings,
 )
-from plexmix.database.models import Album, Artist, Track, SyncHistory
+from plexmix.database.index_rebuild import IndexRebuild
+from plexmix.database.models import Album, Artist, Embedding, Track, SyncHistory
 from plexmix.database.sqlite_manager import SQLiteManager
 from plexmix.database.vector_index import VectorIndex
 from plexmix.plex.client import PlexFetchError, PlexReadInterrupted, PlexReadReport
@@ -54,14 +63,33 @@ from plexmix.plex.sync import (
     REMOVAL_LISTING_FAILED,
     REMOVAL_MORE_MISSING,
     REMOVAL_REMOVED,
+    RegeneratePass,
+    RegenerateResult,
     RemovalResult,
     SyncOutcome,
+)
+from plexmix.services.providers import ProviderFailure, build_embedding_generator_with_reason
+from plexmix.services.readiness import LOCAL_REMEDY, Cause
+from plexmix.services.regenerate_service import (
+    CAUSE_NO_ANSWER,
+    CAUSE_NO_KEY,
+    COMPONENT_AI,
+    COMPONENT_EMBEDDINGS,
+    REFUSED_NO_ANSWER,
+    REFUSED_NO_KEY,
+    SCOPE_EMBEDDINGS,
+    SCOPE_TAGS,
+    CheckedProviders,
+    RegenerateRefused,
+    marker_path,
+    run_provider,
 )
 
 runner = CliRunner()
 
-# The only "secret" in this file is one of the project's dummy values.
+# The only "secrets" in this file are two of the project's dummy values.
 DUMMY_PASSWORD = "dummy-ui-password-0000"
+DUMMY_KEY = "dummy-api-key-0000"
 
 
 # ---------------------------------------------------------------------------
@@ -123,19 +151,59 @@ def _squeezed(text: str) -> str:
     return "".join(text.split())
 
 
+def _regenerated(
+    tags: int = 5,
+    tags_kept: int = 0,
+    embeddings: Optional[int] = None,
+    embeddings_kept: int = 0,
+    stopped_scope: str = "",
+    error_message: str = "",
+    unfinished: bool = False,
+) -> RegenerateResult:
+    """What the engine publishes after a regenerate run, built from counts.
+
+    ``tags`` and ``embeddings`` rows were written, and the ``*_kept`` tracks hold
+    what they had. ``embeddings=None`` is a run of tags alone. ``stopped_scope``
+    names the pass that an error stopped part-way, with ``error_message`` to show.
+    ``unfinished`` is a run that ended before its passes reached their end.
+    """
+
+    def part(written: int, kept: int, first_id: int, stopped: bool) -> RegeneratePass:
+        ids = set(range(first_id, first_id + written + kept))
+        return RegeneratePass(
+            requested=True,
+            started=True,
+            finished=not (stopped or unfinished),
+            to_do_ids=ids,
+            written_ids=set(range(first_id, first_id + written)),
+        )
+
+    result = RegenerateResult(
+        tags=part(tags, tags_kept, 1, stopped_scope == SCOPE_TAGS),
+        stopped_scope=stopped_scope,
+        error_message=error_message,
+    )
+    if embeddings is not None:
+        result.embeddings = part(embeddings, embeddings_kept, 1, stopped_scope == SCOPE_EMBEDDINGS)
+    return result
+
+
 @pytest.fixture
 def patched_sync(tmp_path: Path) -> Iterator[SimpleNamespace]:
     """The sync commands with Plex, the providers, the database and the engine patched.
 
     ``engine`` stands in for the ``SyncEngine`` object. Its sync reports 5 added and
     2 updated tracks, and its outcome is a clean run until a test sets another one.
-    ``engine_cls`` records how the command built the engine.
+    Its regenerate run wrote the tags of 5 tracks and kept none. ``engine_cls``
+    records how the command built the engine, and ``check`` is the provider check
+    of ``sync regenerate``, which passes and hands over an AI provider.
     """
     engine = MagicMock()
     history = SyncHistory(tracks_added=5, tracks_updated=2, tracks_removed=0)
     engine.incremental_sync.return_value = history
     engine.regenerate_sync.return_value = history
     engine.outcome = SyncOutcome()
+    engine.regenerate_result = _regenerated()
     mock_db = MagicMock()
     mock_db.__enter__ = MagicMock(return_value=mock_db)
     mock_db.__exit__ = MagicMock(return_value=False)
@@ -154,10 +222,16 @@ def patched_sync(tmp_path: Path) -> Iterator[SimpleNamespace]:
             patch("plexmix.cli.sync_cmd._build_embedding_generator", return_value=None)
         )
         stack.enter_context(patch("plexmix.cli.sync_cmd.SQLiteManager", return_value=mock_db))
+        check = stack.enter_context(
+            patch(
+                "plexmix.cli.sync_cmd.check_providers",
+                return_value=CheckedProviders(MagicMock(), None),
+            )
+        )
         engine_cls = stack.enter_context(
             patch("plexmix.cli.sync_cmd.SyncEngine", return_value=engine)
         )
-        yield SimpleNamespace(engine=engine, engine_cls=engine_cls)
+        yield SimpleNamespace(engine=engine, engine_cls=engine_cls, check=check, settings=settings)
 
 
 def _invoke_sync(
@@ -165,12 +239,13 @@ def _invoke_sync(
 ) -> Result:
     """Run a sync command without embeddings, with or without a terminal to ask in.
 
-    ``answers`` is what the user types at the removal question. ``sync regenerate``
-    asks its own question first, and that one is answered with Yes.
+    ``terminal`` and ``answers`` are about the removal question: whether it can be
+    asked, and what the user types there. ``sync regenerate`` asks its own question
+    first, and ``--yes`` answers that one. It answers nothing else.
     """
-    typed = ("y\n" if command[-1] == "regenerate" else "") + answers
+    yes = ["--yes"] if command[-1] == "regenerate" else []
     with patch("plexmix.cli.sync_cmd.can_prompt", return_value=terminal):
-        return runner.invoke(app, [*command, "--no-embeddings", *flags], input=typed)
+        return runner.invoke(app, [*command, "--no-embeddings", *yes, *flags], input=answers)
 
 
 def _sync_call(engine: MagicMock, command: List[str]) -> MagicMock:
@@ -374,8 +449,8 @@ class TestSyncIncremental:
         assert DUMMY_PASSWORD not in _squeezed(result.output)
         assert "Traceback" not in result.output
         assert "completed" not in result.output.lower()
-        # The mock engine cleared nothing, so nothing is said about tags.
-        assert "cleared" not in out
+        # The run never reached the tags, so no count of regenerated tracks is printed.
+        assert "regenerated" not in out
 
     @pytest.mark.parametrize("command", SYNC_COMMANDS)
     def test_interrupted_sync_still_exits_130(
@@ -569,10 +644,10 @@ class TestSyncRemovals:
         self, patched_sync: SimpleNamespace, subcommand: str
     ) -> None:
         """``plexmix sync --allow-removals full`` gives the flag to the group."""
-        typed = "y\n" if subcommand == "regenerate" else ""
+        yes = ["--yes"] if subcommand == "regenerate" else []
         with patch("plexmix.cli.sync_cmd.can_prompt", return_value=False):
             result = runner.invoke(
-                app, ["sync", "--allow-removals", subcommand, "--no-embeddings"], input=typed
+                app, ["sync", "--allow-removals", subcommand, "--no-embeddings", *yes]
             )
 
         assert result.exit_code == 0, result.output
@@ -926,6 +1001,79 @@ class TestSyncRemovals:
         )
         assert "completed" not in out.lower()
 
+    @pytest.mark.parametrize(
+        "command",
+        [["sync"], ["sync", "incremental"], ["sync", "full"]],
+        ids=["sync", "incremental", "full"],
+    )
+    def test_index_that_was_left_as_it_is_ends_with_warnings_and_status_0(
+        self, patched_sync: SimpleNamespace, command: List[str]
+    ) -> None:
+        """The sync did its work, and the engine left the search index as it is.
+
+        Tracks hold an embedding that was made with other embedding settings, so an
+        index of the rows that fit would cover only part of the library. That is a
+        warning, with the count and the command that replaces those embeddings.
+        """
+        patched_sync.engine.outcome = SyncOutcome(library_total=380, index_left_out=380)
+
+        result = _invoke_sync(command)
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 0, result.output
+        assert "Incremental sync finished with warnings." in out
+        assert (
+            "The search index was left as it is: 380 tracks hold an embedding that was made "
+            "with other embedding settings. Run 'plexmix embeddings generate --regenerate' "
+            "to replace them." in out
+        )
+        assert out.count("The search index was left as it is") == 1
+        # The counts of the library sync are still shown, and nothing is called a success.
+        assert "Tracks added: 5" in out
+        assert SUCCESS_LINE not in out.lower()
+        assert "completed" not in out.lower()
+
+    def test_one_track_in_the_way_of_the_index_is_said_in_the_singular(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        patched_sync.engine.outcome = SyncOutcome(library_total=380, index_left_out=1)
+
+        out = _flat(_invoke_sync(["sync"]).stdout)
+
+        assert (
+            "The search index was left as it is: 1 track holds an embedding that was made "
+            "with other embedding settings. Run 'plexmix embeddings generate --regenerate' "
+            "to replace it." in out
+        )
+
+    def test_run_incremental_sync_returns_false_when_the_index_was_left_as_it_is(
+        self, patched_sync: SimpleNamespace, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A caller prints its own "completed" line only after True (Doctor's sync does)."""
+        patched_sync.engine.outcome = SyncOutcome(library_total=380, index_left_out=380)
+
+        with patch("plexmix.cli.sync_cmd.can_prompt", return_value=False):
+            assert sync_cmd.run_incremental_sync(embeddings=True) is False
+
+        out = _flat(capsys.readouterr().out)
+        assert "finished with warnings" in out and _index_sentence(380) in out
+        assert SUCCESS_LINE not in out
+
+    def test_index_left_as_it_is_does_not_hide_a_held_removal(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        outcome = _held_outcome()
+        outcome.index_left_out = 380
+        patched_sync.engine.outcome = outcome
+
+        result = _invoke_sync(["sync"])
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 1
+        assert _index_sentence(380) in out
+        assert "Plex no longer lists 5,443 of the 5,943 tracks" in out
+        assert "--allow-removals" in out
+
     def test_run_incremental_sync_returns_true_only_after_the_success_line(
         self, patched_sync: SimpleNamespace, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -1082,6 +1230,116 @@ class _FakePlex:
         return frozenset(self.listed if self.relisted is None else self.relisted)
 
 
+def _ids_in_prompt(prompt: str) -> List[int]:
+    """The ids of the tracks a tagging request lists."""
+    listed = prompt.split("Assign tags to the following songs:")[1]
+    listed = listed.split("Return a JSON object")[0]
+    return [int(entry["id"]) for entry in json.loads(listed)]
+
+
+class _TaggingAI:
+    """Stands in for the AI provider. It gives every track it is sent a new tag.
+
+    From request ``fail_from`` on (counted from 1) it raises ``error`` in place of
+    an answer. ``omit`` ids are left out of its replies, and ``no_tags`` ids get
+    environments and instruments with an empty list of tags. ``requests`` records
+    the track ids of every request.
+    """
+
+    provider_name = "OpenAI"
+    model = "gpt-test"
+    api_key = DUMMY_KEY
+
+    def __init__(
+        self,
+        error: Optional[BaseException] = None,
+        fail_from: int = 1,
+        omit: Iterable[int] = (),
+        no_tags: Iterable[int] = (),
+    ) -> None:
+        self.error = error
+        self.fail_from = fail_from
+        self.omit = set(omit)
+        self.no_tags = set(no_tags)
+        self.requests: List[List[int]] = []
+
+    def complete(
+        self,
+        prompt: str,
+        temperature: Optional[float] = None,
+        max_tokens: int = 4096,
+        timeout: int = 30,
+    ) -> str:
+        ids = _ids_in_prompt(prompt)
+        self.requests.append(ids)
+        if self.error is not None and len(self.requests) >= self.fail_from:
+            raise self.error
+        return json.dumps(
+            {
+                str(track_id): {
+                    "tags": [] if track_id in self.no_tags else [f"new-{track_id}"],
+                    "environments": ["focus"],
+                    "instruments": ["piano"],
+                }
+                for track_id in ids
+                if track_id not in self.omit
+            }
+        )
+
+    @property
+    def sent(self) -> List[int]:
+        """Every track that was sent to the provider, by id."""
+        return sorted({track_id for request in self.requests for track_id in request})
+
+
+OLD_VECTOR = [0.1, 0.2, 0.3, 0.4]
+NEW_VECTOR = [9.0, 1.0, 1.0, 1.0]
+# The embedding provider of the regenerate tests, as ``_regenerate_settings`` names it.
+VECTOR_MODEL = "openai"
+
+
+class _Vectors:
+    """Stands in for the embedding generator. Every text gets ``NEW_VECTOR``.
+
+    Request ``fail_on_request`` (counted from 1) raises ``error`` in place of an
+    answer. ``short`` vectors are missing at the end of every reply: the provider
+    answered, and left those texts out. ``before_reply`` is called with the number
+    of the request before it is answered. ``requests`` records how many texts each
+    request held.
+    """
+
+    provider_name = VECTOR_MODEL
+
+    def __init__(
+        self,
+        fail_on_request: Optional[int] = None,
+        error: Optional[BaseException] = None,
+        short: int = 0,
+        before_reply: Optional[Callable[[int], None]] = None,
+    ) -> None:
+        self.fail_on_request = fail_on_request
+        self.error = error or RuntimeError("the embedding provider stopped answering")
+        self.short = short
+        self.before_reply = before_reply
+        self.requests: List[int] = []
+
+    def generate_batch_embeddings(
+        self, texts: List[str], batch_size: int = 100
+    ) -> List[List[float]]:
+        self.requests.append(len(texts))
+        if self.fail_on_request == len(self.requests):
+            raise self.error
+        if self.before_reply is not None:
+            self.before_reply(len(self.requests))
+        return [list(NEW_VECTOR) for _ in texts[: len(texts) - self.short]]
+
+    def generate_embedding(self, text: str) -> List[float]:
+        return list(NEW_VECTOR)
+
+    def get_dimension(self) -> int:
+        return len(NEW_VECTOR)
+
+
 @pytest.fixture
 def library(tmp_path: Path) -> Path:
     """A temporary library of 400 tagged tracks, where ``_make_settings`` points."""
@@ -1112,8 +1370,13 @@ def _real_sync(
     terminal: bool = False,
     answers: str = "",
     command: Iterable[str] = ("sync",),
+    ai: Optional[_TaggingAI] = None,
 ) -> Result:
-    """Run a sync command on the real engine. Only Plex is replaced, by ``plex``."""
+    """Run a sync command on the real engine. Only Plex is replaced, by ``plex``.
+
+    ``sync regenerate`` never runs without an AI provider. Its provider check is
+    replaced by one that passes and hands over ``ai`` (a fake that tags every track).
+    """
     settings = _make_settings(library.parent)
     # The library sync alone, whatever the environment of the test run says.
     settings.musicbrainz.enabled = False
@@ -1125,6 +1388,12 @@ def _real_sync(
         )
         stack.enter_context(patch("plexmix.cli.sync_cmd.connect_plex", return_value=plex))
         stack.enter_context(patch("plexmix.cli.sync_cmd._build_ai_provider", return_value=None))
+        stack.enter_context(
+            patch(
+                "plexmix.cli.sync_cmd.check_providers",
+                return_value=CheckedProviders(ai or _TaggingAI(), None),
+            )
+        )
         return _invoke_sync(list(command), *flags, terminal=terminal, answers=answers)
 
 
@@ -1151,6 +1420,14 @@ def _history(library: Path) -> List[str]:
     return [row[0] for row in _query(library, "SELECT status FROM sync_history ORDER BY id")]
 
 
+def _tag_rows(library: Path) -> List[Tuple[Any, ...]]:
+    """Per track: its id, its three tag columns and the time they were written."""
+    return _query(
+        library,
+        "SELECT id, tags, environments, instruments, tags_generated_at FROM tracks ORDER BY id",
+    )
+
+
 def _backup_folders(library: Path) -> List[Path]:
     backups = library.parent / "backups"
     return sorted(backups.iterdir()) if backups.is_dir() else []
@@ -1165,6 +1442,86 @@ def _saved_index(library: Path) -> Path:
     index.build_index([[1.0] + [0.0] * (dimension - 1) for _ in track_ids], track_ids)
     index.save_index(str(index_path))
     return index_path
+
+
+def _index_files(library: Path) -> Dict[str, bytes]:
+    """Every file of the search index beside the library, moved-aside copies included."""
+    return {
+        item.name: item.read_bytes()
+        for item in sorted(library.parent.iterdir())
+        if item.name.startswith(("test.index", "test.metadata"))
+    }
+
+
+# An embedding of the vector size the library had before that size was changed.
+WIDE_VECTOR = [0.5] * 8
+
+
+def _seed_earlier_size(
+    library: Path, track_ids: Optional[Iterable[int]] = None
+) -> Dict[str, bytes]:
+    """The library as it was before the vector size changed from 8 numbers to 4.
+
+    Every track (or each of ``track_ids``) holds an embedding of 8 numbers that was
+    written long ago, under the model name that is still in use, and the saved
+    index holds those vectors. The provider makes 4 numbers now (``_Vectors``), so
+    an index that is opened for it reports a dimension mismatch. Returns the files
+    of the saved index, byte for byte.
+    """
+    with SQLiteManager(str(library)) as db:
+        ids = [track.id for track in db.get_all_tracks() if track.id is not None]
+        if track_ids is not None:
+            ids = sorted(set(ids) & set(track_ids))
+        db.insert_embeddings_batch(
+            [
+                Embedding(
+                    track_id=track_id,
+                    embedding_model=VECTOR_MODEL,
+                    embedding_dim=len(WIDE_VECTOR),
+                    vector=WIDE_VECTOR,
+                    created_at=LONG_AGO,
+                    updated_at=LONG_AGO,
+                )
+                for track_id in ids
+            ]
+        )
+    index_path = library.parent / "test.index"
+    index = VectorIndex(dimension=len(WIDE_VECTOR), index_path=str(index_path))
+    index.build_index([WIDE_VECTOR] * len(ids), ids)
+    assert index.save_index(str(index_path)) is True
+    files = _index_files(library)
+    assert sorted(files) == ["test.index", "test.metadata"]
+    return files
+
+
+def _assert_saved_index_is_untouched(library: Path, before: Dict[str, bytes]) -> None:
+    """The index files are the ones from before the command, byte for byte, and an
+    index opened on them for the current provider still reports the dimension
+    mismatch that tells every command to regenerate."""
+    assert _index_files(library) == before
+    opened = VectorIndex(dimension=len(NEW_VECTOR), index_path=str(library.parent / "test.index"))
+    assert opened.dimension_mismatch is True
+    assert opened.loaded_dimension == len(WIDE_VECTOR)
+    assert opened.load_failed is False
+    # Opening it changed nothing either.
+    assert _index_files(library) == before
+
+
+def _index_sentence(count: int) -> str:
+    """What a command says of a search index that was left as it is (``count`` above 1)."""
+    return (
+        f"The search index was left as it is: {count:,} tracks hold an embedding that was "
+        "made with other embedding settings. Run 'plexmix embeddings generate --regenerate' "
+        "to replace them."
+    )
+
+
+def _embedding_sizes(library: Path) -> Dict[int, int]:
+    """How many embedding rows of the current model hold a vector of each size."""
+    sizes: Dict[int, int] = {}
+    for vector in _vectors_by_track(library).values():
+        sizes[len(vector)] = sizes.get(len(vector), 0) + 1
+    return sizes
 
 
 def _assert_backup_is_named(result: Result, library: Path) -> None:
@@ -1409,6 +1766,46 @@ class TestSyncRemovalsOnRealEngine:
         left = [row[0] for row in _query(library, "SELECT id FROM tracks ORDER BY id")]
         assert sorted(live.track_ids) == left
 
+    @pytest.mark.parametrize("confirmed_by", ["flag", "answer"])
+    def test_unreadable_index_opened_for_a_removal_is_reported(
+        self, library: Path, confirmed_by: str
+    ) -> None:
+        """Spec "An unreadable search index is kept": a CLI command prints that too.
+
+        A sync without embeddings has no index object. The engine opens the saved
+        index itself to drop the removed tracks from it. Files it cannot load are
+        moved aside by that, and the command must say so, not only the log.
+        """
+        folder = library.parent
+        (folder / "test.index").write_bytes(b"this is not a search index")
+        plex = _FakePlex(_keys(100))
+
+        if confirmed_by == "flag":
+            result = _real_sync(library, plex, "--allow-removals")
+        else:
+            result = _real_sync(library, plex, terminal=True, answers="y\n")
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 0, result.output
+        assert _track_count(library) == 100
+        # Said once, with the new name of the file and the command that rebuilds.
+        assert out.count("The search index could not be loaded.") == 1
+        assert "Moved aside, not deleted:" in out
+        assert "run 'plexmix embeddings generate'" in out
+        [moved] = [item for item in folder.iterdir() if ".unreadable-" in item.name]
+        assert moved.name.startswith("test.index.unreadable-")
+        assert moved.read_bytes() == b"this is not a search index"
+        assert str(moved) in _squeezed(result.stdout)
+        assert not (folder / "test.index").exists()
+
+    def test_healthy_index_opened_for_a_removal_prints_no_notice(self, library: Path) -> None:
+        _saved_index(library)
+
+        result = _real_sync(library, _FakePlex(_keys(100)), "--allow-removals")
+
+        assert result.exit_code == 0, result.output
+        assert "could not be loaded" not in _flat(result.stdout)
+
     def test_confirmed_removal_keeps_tracks_that_went_missing_after_the_question(
         self, library: Path
     ) -> None:
@@ -1428,15 +1825,17 @@ class TestSyncRemovalsOnRealEngine:
         assert _backup_folders(library) == []
 
     def test_connection_check_that_fails_changes_nothing(self, library: Path) -> None:
-        """The engine checks the connection itself before it starts (and before it clears)."""
+        """The engine checks the connection itself, before it reads or writes anything."""
         plex = _FakePlex(_keys(LIBRARY_SIZE))
         plex.validate_token = lambda: (  # type: ignore[method-assign]
             False,
             "Cannot reach Plex server: the connection was closed",
         )
+        before = _tag_rows(library)
+        ai = _TaggingAI()
 
         for command in (("sync",), ("sync", "regenerate")):
-            result = _real_sync(library, plex, command=command)
+            result = _real_sync(library, plex, command=command, ai=ai)
 
             out = _flat(result.stdout)
             assert result.exit_code == 1
@@ -1444,37 +1843,39 @@ class TestSyncRemovalsOnRealEngine:
             assert isinstance(result.exception, SystemExit)
             assert "Cannot reach Plex server: the connection was closed." in out
             assert "completed" not in out.lower()
-            # Nothing was cleared, and nothing says so.
-            assert "cleared" not in out
-        tagged: int = _query(
-            library, "SELECT COUNT(*) FROM tracks WHERE tags IS NOT NULL AND tags != ''"
-        )[0][0]
-        assert (_track_count(library), tagged) == (LIBRARY_SIZE, LIBRARY_SIZE)
+        # Every track holds the tags it had, and the AI provider was never asked.
+        assert _tag_rows(library) == before
+        assert ai.requests == []
+        assert not marker_path(library).exists()
 
-    def test_stopped_regenerate_says_what_happened_to_the_tags(self, library: Path) -> None:
-        """A stopped ``sync regenerate`` must not let "nothing was changed" stand alone.
+    def test_stopped_regenerate_changes_nothing(self, library: Path) -> None:
+        """A ``sync regenerate`` that Plex stops leaves every tag where it was.
 
-        The engine's sentence is about the library sync. Today ``regenerate_sync``
-        clears the tags before it reads Plex, so the command adds a line that says so.
-        The line and the database have to agree: when the engine stops clearing
-        first, the line has to go.
+        Nothing is cleared before the library is read, so "nothing was changed" is
+        true for the tags too, and the command adds no line about cleared data.
         """
         plex = _FakePlex(
             _keys(LIBRARY_SIZE), stop=PlexReadInterrupted("tracks", read=22, listed=LIBRARY_SIZE)
         )
+        before = _tag_rows(library)
+        ai = _TaggingAI()
 
-        result = _real_sync(library, plex, command=("sync", "regenerate"))
+        result = _real_sync(library, plex, command=("sync", "regenerate"), ai=ai)
 
         out = _flat(result.stdout)
         assert result.exit_code == 1
-        assert "Plex stopped answering after 22 of 400 tracks were read" in out
+        assert (
+            "Plex stopped answering after 22 of 400 tracks were read, so nothing was changed."
+            in out
+        )
         assert "completed" not in out.lower()
-        assert _track_count(library) == LIBRARY_SIZE
-        tagged: int = _query(
-            library, "SELECT COUNT(*) FROM tracks WHERE tags IS NOT NULL AND tags != ''"
-        )[0][0]
-        says_cleared = "tags and embeddings had already been cleared" in out
-        assert says_cleared == (tagged == 0)
+        assert "already been cleared" not in out
+        assert _tag_rows(library) == before
+        assert [row[1] for row in before] == [f"tag-{key}" for key in _keys(LIBRARY_SIZE)]
+        # The run never reached the tags: no request was sent and no run was opened.
+        assert ai.requests == []
+        assert not marker_path(library).exists()
+        assert "regenerated" not in out
 
     def test_connection_check_that_fails_says_that_nothing_was_changed(self, library: Path) -> None:
         """Design D11, first row: the sentence ends with "Nothing was changed."."""
@@ -1536,8 +1937,1352 @@ class TestSyncRemovalsOnRealEngine:
 
 
 # ---------------------------------------------------------------------------
+# sync regenerate
+# ---------------------------------------------------------------------------
+
+REGENERATE_COMMAND = "plexmix sync regenerate"
+# The same command as a run of tags alone was started, which is what continues it.
+REGENERATE_TAGS_COMMAND = "plexmix sync regenerate --no-embeddings"
+LONG_AGO = datetime(2020, 1, 1, 9, 0, 0)
+# A provider error that stops the tagging for good, and one that only loses a batch.
+FATAL_ERROR = RuntimeError("401 Unauthorized")
+PASSING_ERROR = ConnectionRefusedError("connection refused")
+
+
+def _regenerate_settings(library: Path) -> Settings:
+    """Settings for the regenerate tests: named providers and models, no side stages."""
+    settings = _make_settings(library.parent)
+    settings.musicbrainz.enabled = False
+    settings.audio.analyze_on_sync = False
+    settings.ai.default_provider = "openai"
+    settings.ai.model = "gpt-test"
+    settings.embedding.default_provider = VECTOR_MODEL
+    settings.embedding.model = "embed-test"
+    return settings
+
+
+def _seed_embeddings(library: Path, model: str = VECTOR_MODEL) -> None:
+    """Give every track an embedding of ``model`` that was written long ago."""
+    with SQLiteManager(str(library)) as db:
+        db.insert_embeddings_batch(
+            [
+                Embedding(
+                    track_id=track.id,
+                    embedding_model=model,
+                    embedding_dim=len(OLD_VECTOR),
+                    vector=OLD_VECTOR,
+                    created_at=LONG_AGO,
+                    updated_at=LONG_AGO,
+                )
+                for track in db.get_all_tracks()
+                if track.id is not None
+            ]
+        )
+
+
+def _vectors_by_track(library: Path, model: str = VECTOR_MODEL) -> Dict[int, List[float]]:
+    rows = _query(
+        library,
+        f"SELECT track_id, vector FROM embeddings WHERE embedding_model = '{model}' "
+        "ORDER BY track_id",
+    )
+    return {row[0]: json.loads(row[1]) for row in rows}
+
+
+def _embedding_rows(library: Path) -> List[Tuple[Any, ...]]:
+    return _query(
+        library,
+        "SELECT track_id, embedding_model, vector, updated_at FROM embeddings "
+        "ORDER BY track_id, embedding_model",
+    )
+
+
+def _retagged(library: Path) -> List[int]:
+    """The tracks that hold the fake provider's tags. Every other track holds its old ones."""
+    done = []
+    for track_id, tags, environments, instruments, written_at in _tag_rows(library):
+        if tags == f"new-{track_id}":
+            assert (environments, instruments) == ("focus", "piano")
+            assert written_at is not None
+            done.append(track_id)
+        else:
+            assert (tags, environments, instruments, written_at) == (
+                f"tag-t{track_id - 1}",
+                None,
+                None,
+                None,
+            )
+    return done
+
+
+def _run_regenerate(
+    library: Path,
+    *args: str,
+    plex: Optional[_FakePlex] = None,
+    ai: Optional[_TaggingAI] = None,
+    vectors: Optional[_Vectors] = None,
+    refused: Optional[BaseException] = None,
+    terminal: bool = False,
+    answers: str = "",
+    settings: Optional[Settings] = None,
+) -> SimpleNamespace:
+    """Run ``sync regenerate`` on the real engine and the temporary library.
+
+    Plex and the two providers are fakes, and the provider check hands the fakes
+    over, or raises ``refused`` (a refusal, or Ctrl+C). ``terminal`` says whether a question can be asked
+    and ``answers`` is what the user types. The mocks in the result say how far the
+    command got: ``check`` is the provider check, ``connect`` the Plex connection,
+    ``load`` the settings, and ``build_ai`` the provider builder of the other sync
+    commands, which this command never uses.
+    """
+    settings = settings or _regenerate_settings(library)
+    plex = plex or _FakePlex(_keys(LIBRARY_SIZE))
+    ai = ai or _TaggingAI()
+    vectors = vectors or _Vectors()
+
+    def checked(
+        settings: Settings,
+        need_ai: bool,
+        need_embeddings: bool,
+        ai_provider_name: Optional[str] = None,
+    ) -> CheckedProviders:
+        if refused is not None:
+            raise refused
+        return CheckedProviders(ai if need_ai else None, vectors if need_embeddings else None)
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+        load = stack.enter_context(
+            patch("plexmix.cli.sync_cmd.Settings.load_from_file", return_value=settings)
+        )
+        connect = stack.enter_context(patch("plexmix.cli.sync_cmd.connect_plex", return_value=plex))
+        build_ai = stack.enter_context(patch("plexmix.cli.sync_cmd._build_ai_provider"))
+        check = stack.enter_context(
+            patch("plexmix.cli.sync_cmd.check_providers", side_effect=checked)
+        )
+        # The regenerate question and the removal question ask the same terminal.
+        stack.enter_context(patch("plexmix.cli.console_helpers.can_prompt", return_value=terminal))
+        stack.enter_context(patch("plexmix.cli.sync_cmd.can_prompt", return_value=terminal))
+        result = runner.invoke(app, ["sync", "regenerate", *args], input=answers)
+    return SimpleNamespace(
+        result=result,
+        out=_flat(result.stdout),
+        load=load,
+        check=check,
+        connect=connect,
+        build_ai=build_ai,
+        ai=ai,
+        vectors=vectors,
+    )
+
+
+class TestSyncRegenerate:
+    """``plexmix sync regenerate``: it asks, checks the providers, and replaces in place."""
+
+    def test_refuses_without_terminal_and_without_yes(self, library: Path) -> None:
+        _seed_embeddings(library)
+        tags, embeddings = _tag_rows(library), _embedding_rows(library)
+
+        run = _run_regenerate(library, terminal=False)
+
+        assert run.result.exit_code == 1
+        assert isinstance(run.result.exception, SystemExit)
+        # It names the flag and the whole command to run in its place.
+        assert f"'{REGENERATE_COMMAND} --yes'" in run.out
+        assert "no terminal to answer in" in run.out
+        assert "Nothing was changed." in run.out
+        assert "[y/N]" not in run.out
+        assert SUCCESS_LINE not in run.out.lower()
+        # It ended before it loaded anything: the one load is the entry point's own,
+        # which reads the log level.
+        assert run.load.call_count == 1
+        run.check.assert_not_called()
+        run.connect.assert_not_called()
+        assert run.ai.requests == [] and run.vectors.requests == []
+        assert (_tag_rows(library), _embedding_rows(library)) == (tags, embeddings)
+        assert not marker_path(library).exists()
+        assert _history(library) == []
+
+    def test_yes_skips_the_question(self, library: Path) -> None:
+        run = _run_regenerate(library, "--yes", "--no-embeddings", terminal=False)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "[y/N]" not in run.out
+        assert "Operation cancelled" not in run.out
+        # What the run is about to do is still said: the count and the provider.
+        assert "This replaces the AI tags of all 400 tracks in the PlexMix library." in run.out
+        assert "AI tags: OpenAI · gpt-test" in run.out
+        assert "Regenerate sync completed successfully!" in run.out
+        assert "AI tags: 400 tracks regenerated." in run.out
+        assert len(_retagged(library)) == LIBRARY_SIZE
+        assert run.ai.sent == list(range(1, LIBRARY_SIZE + 1))
+
+    @pytest.mark.parametrize("typed", ["\n", "n\n"], ids=["enter", "n"])
+    def test_declined_exits_zero_and_changes_nothing(self, library: Path, typed: str) -> None:
+        _seed_embeddings(library)
+        tags, embeddings = _tag_rows(library), _embedding_rows(library)
+
+        run = _run_regenerate(library, terminal=True, answers=typed)
+
+        assert run.result.exit_code == 0
+        # The question names the count and both providers, and No is the default.
+        question = "Regenerate the AI tags and embeddings of 400 tracks? [y/N]"
+        assert question in run.out
+        before_question = run.out.split(question)[0]
+        assert (
+            "This replaces the AI tags and embeddings of all 400 tracks in the PlexMix library."
+            in before_question
+        )
+        assert "AI tags: OpenAI · gpt-test" in before_question
+        assert "Embeddings: OpenAI · embed-test" in before_question
+        assert "Nothing is cleared first" in before_question
+        assert run.out.split(question)[1].strip().endswith("Operation cancelled.")
+        # Declining is not a run: no provider was asked and nothing was written.
+        run.check.assert_not_called()
+        run.connect.assert_not_called()
+        assert run.ai.requests == [] and run.vectors.requests == []
+        assert (_tag_rows(library), _embedding_rows(library)) == (tags, embeddings)
+        assert not marker_path(library).exists()
+        assert _history(library) == []
+
+    def test_yes_does_not_allow_large_removals(self, library: Path) -> None:
+        """``--yes`` answers the regenerate question. The removal still needs its own flag."""
+        run = _run_regenerate(
+            library, "--yes", "--no-embeddings", plex=_FakePlex(_keys(100)), terminal=False
+        )
+
+        assert run.result.exit_code == 1
+        assert "Plex no longer lists 300 of the 400 tracks" in run.out
+        assert "300 tracks were kept." in run.out
+        assert "--allow-removals" in run.out
+        assert "Remove 300" not in run.out
+        assert SUCCESS_LINE not in run.out.lower()
+        assert _track_count(library) == LIBRARY_SIZE
+        assert _backup_folders(library) == []
+
+    def test_yes_reaches_the_engine_without_the_removal_flag(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        result = runner.invoke(app, ["sync", "regenerate", "--no-embeddings", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        patched_sync.engine.regenerate_sync.assert_called_once()
+        options = patched_sync.engine.regenerate_sync.call_args.kwargs
+        assert options["allow_large_removals"] is False
+        assert options["generate_embeddings"] is False
+        # The run marker gets the provider and model that the question named.
+        assert options["tags_provider"] == run_provider(patched_sync.settings, SCOPE_TAGS)
+        assert options["embeddings_provider"] is None
+
+    @pytest.mark.parametrize(
+        "flags, need_embeddings", [((), True), (("--no-embeddings",), False)], ids=["both", "tags"]
+    )
+    def test_only_the_needed_providers_are_checked(
+        self, patched_sync: SimpleNamespace, flags: Tuple[str, ...], need_embeddings: bool
+    ) -> None:
+        """Spec "Provider that is not needed": ``--no-embeddings`` asks no embedding provider."""
+        generator = MagicMock()
+        generator.get_dimension.return_value = 4
+        patched_sync.check.return_value = CheckedProviders(
+            MagicMock(), generator if need_embeddings else None
+        )
+        patched_sync.engine.regenerate_result = _regenerated(
+            embeddings=5 if need_embeddings else None
+        )
+
+        with patch("plexmix.cli.sync_cmd._build_embedding_generator") as build_embeddings:
+            result = runner.invoke(app, ["sync", "regenerate", "--yes", *flags])
+
+        assert result.exit_code == 0, result.output
+        patched_sync.check.assert_called_once_with(
+            patched_sync.settings, need_ai=True, need_embeddings=need_embeddings
+        )
+        # The engine gets the providers that answered the check, and no other.
+        build_embeddings.assert_not_called()
+        built_with = patched_sync.engine_cls.call_args.args
+        assert built_with[2] is (generator if need_embeddings else None)
+        assert built_with[4] is patched_sync.check.return_value.ai_provider
+        options = patched_sync.engine.regenerate_sync.call_args.kwargs
+        expected = (
+            run_provider(patched_sync.settings, SCOPE_EMBEDDINGS) if need_embeddings else None
+        )
+        assert options["embeddings_provider"] == expected
+
+    def test_refuses_when_ai_provider_is_not_ready(self, library: Path) -> None:
+        _seed_embeddings(library)
+        tags, embeddings = _tag_rows(library), _embedding_rows(library)
+        refused = RegenerateRefused(
+            "OpenAI", CAUSE_NO_KEY, component=COMPONENT_AI, reason=REFUSED_NO_KEY
+        )
+
+        run = _run_regenerate(library, "--yes", refused=refused)
+
+        assert run.result.exit_code == 1
+        assert isinstance(run.result.exception, SystemExit)
+        # The provider and the cause, and what that means for the library.
+        assert "Checking the AI provider and the embedding provider..." in run.out
+        assert "The AI provider OpenAI is not ready: no API key is stored." in run.out
+        assert "Nothing was changed." in run.out
+        assert "Run 'plexmix config init' to store the key." in run.out
+        # The run does not go on without AI tags, and it says nothing of the kind.
+        assert "Continuing without AI assistance" not in run.out
+        run.build_ai.assert_not_called()
+        assert SUCCESS_LINE not in run.out.lower()
+        assert "Starting regenerate sync" not in run.out
+        run.connect.assert_not_called()
+        assert (_tag_rows(library), _embedding_rows(library)) == (tags, embeddings)
+        assert not marker_path(library).exists()
+        assert _history(library) == []
+
+    def test_refusal_of_the_embedding_provider_shows_its_detail_without_the_key(
+        self, library: Path
+    ) -> None:
+        tags = _tag_rows(library)
+        refused = RegenerateRefused(
+            "OpenAI",
+            CAUSE_NO_ANSWER,
+            component=COMPONENT_EMBEDDINGS,
+            reason=REFUSED_NO_ANSWER,
+            detail="Error code: 401 - [redacted] was rejected",
+            error=RuntimeError(f"Error code: 401 - {DUMMY_KEY} was rejected"),
+        )
+
+        run = _run_regenerate(library, "--yes", refused=refused)
+
+        assert run.result.exit_code == 1
+        assert (
+            "The embedding provider OpenAI is not ready: it did not answer the test request. "
+            "Error code: 401 - [redacted] was rejected." in run.out
+        )
+        # The provider's own error is kept for classification only. It is never printed.
+        assert DUMMY_KEY not in _squeezed(run.result.output)
+        assert _tag_rows(library) == tags
+        assert run.ai.requests == []
+
+    def test_interrupt_during_the_provider_check_changes_nothing(self, library: Path) -> None:
+        tags = _tag_rows(library)
+
+        run = _run_regenerate(library, "--yes", refused=KeyboardInterrupt())
+
+        assert run.result.exit_code == 130
+        assert "Interrupted during the provider check. Nothing was changed." in run.out
+        run.connect.assert_not_called()
+        assert _tag_rows(library) == tags
+        assert not marker_path(library).exists()
+
+    def test_question_for_a_library_without_a_database_creates_none(self, tmp_path: Path) -> None:
+        """Looking at the library for the question must not write anything, not even a file."""
+        database_file = tmp_path / "test.db"
+
+        run = _run_regenerate(database_file, terminal=True, answers="n\n")
+
+        assert run.result.exit_code == 0
+        assert "The PlexMix library holds no tracks yet." in run.out
+        assert "Continue? [y/N]" in run.out
+        assert "0 tracks" not in run.out
+        assert run.out.endswith("Operation cancelled.")
+        assert list(tmp_path.iterdir()) == []
+
+    def test_run_that_rebuilt_nothing_exits_nonzero(self, patched_sync: SimpleNamespace) -> None:
+        patched_sync.engine.regenerate_result = _regenerated(tags=0, tags_kept=400)
+
+        result = _invoke_sync(["sync", "regenerate"])
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "No AI tags were regenerated." in out
+        assert "AI tags: 0 tracks regenerated, 400 keep their previous tags." in out
+        assert SUCCESS_LINE not in out.lower()
+        assert "completed" not in out.lower()
+        # The library sync itself was done, and its counts are still shown.
+        assert "Tracks added: 5" in out
+
+    @pytest.mark.parametrize("command", [["sync"], ["sync", "regenerate"]])
+    def test_sync_that_could_not_save_its_index_is_not_called_a_success(
+        self, patched_sync: SimpleNamespace, command: List[str]
+    ) -> None:
+        """An index file that could not be loaded or moved aside is never written over.
+
+        The run then saved no search index, so it must not end with the success line.
+        """
+        stuck = Path("/somewhere/test.index")
+        patched_sync.engine.vector_index = SimpleNamespace(
+            load_failed=True, moved_paths=[], unmoved_paths=[stuck]
+        )
+
+        result = _invoke_sync(command)
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 0, result.output
+        assert "finished with warnings." in out
+        assert SUCCESS_LINE not in out.lower()
+        assert (
+            "The search index was not saved in this run: a file that could not be loaded "
+            "is still in its place. Move it away, then run 'plexmix embeddings generate'." in out
+        )
+
+    def test_healthy_index_keeps_the_success_line(self, patched_sync: SimpleNamespace) -> None:
+        patched_sync.engine.vector_index = SimpleNamespace(
+            load_failed=False, moved_paths=[], unmoved_paths=[]
+        )
+
+        result = _invoke_sync(["sync"])
+
+        assert SUCCESS_LINE in result.output.lower()
+        assert "was not saved" not in _flat(result.stdout)
+
+    def test_run_whose_index_was_left_as_it_is_gets_no_success_line(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        """Every track was regenerated, and the last rebuild of the index was refused.
+
+        The run did its work, so the status is 0. It ends without a rebuilt index,
+        so it is not called a success, and the sentence says what to run.
+        """
+        done = _regenerated(tags=400, embeddings=400)
+        done.index_left_out = 12
+        patched_sync.engine.regenerate_result = done
+
+        result = _invoke_sync(["sync", "regenerate"])
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 0, result.output
+        assert "Regenerate sync finished with warnings." in out
+        assert "AI tags: 400 tracks regenerated." in out
+        assert "Embeddings: 400 tracks regenerated." in out
+        assert _index_sentence(12) in out
+        assert out.count("The search index was left as it is") == 1
+        assert SUCCESS_LINE not in out.lower()
+        assert "did not finish" not in out and "again to continue" not in out
+
+    def test_stopped_run_says_nothing_of_the_index(self, patched_sync: SimpleNamespace) -> None:
+        """After a stop, the stop is what is reported: the index was left without a word."""
+        stopped = _regenerated(
+            tags=400,
+            embeddings=50,
+            embeddings_kept=350,
+            stopped_scope=SCOPE_EMBEDDINGS,
+            error_message="Embedding generation stopped: Connection refused.",
+        )
+        stopped.index_left_out = 350
+        patched_sync.engine.regenerate_result = stopped
+
+        result = _invoke_sync(["sync", "regenerate"])
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 1
+        assert "Embedding generation stopped: Connection refused." in out
+        assert "The search index was left as it is" not in out
+        assert f"Run '{REGENERATE_TAGS_COMMAND}' again to continue." in out
+
+    @pytest.mark.parametrize("embeddings", [0, None], ids=["both", "tags alone"])
+    def test_run_with_nothing_to_do_is_no_failure(
+        self, patched_sync: SimpleNamespace, embeddings: Optional[int]
+    ) -> None:
+        """A library without tracks: the engine's run reached its end with no track to do."""
+        patched_sync.engine.regenerate_result = _regenerated(tags=0, embeddings=embeddings)
+        assert patched_sync.engine.regenerate_result.nothing_to_do is True
+
+        result = _invoke_sync(["sync", "regenerate"])
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 0, result.output
+        assert "The PlexMix library holds no tracks, so there is nothing to regenerate." in out
+        assert "did not finish" not in out and "No AI tags" not in out
+        assert "again to continue" not in out
+        # No pass has a count to show.
+        assert "tracks regenerated" not in out
+
+    def test_refusal_without_a_terminal_names_the_command_as_it_was_run(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        with patch("plexmix.cli.console_helpers.can_prompt", return_value=False):
+            result = runner.invoke(app, ["sync", "regenerate", "--no-embeddings"])
+
+        assert result.exit_code == 1
+        assert f"'{REGENERATE_TAGS_COMMAND} --yes'" in _flat(result.stdout)
+        patched_sync.engine.regenerate_sync.assert_not_called()
+
+    def test_engine_gets_the_keys_from_the_settings(self, patched_sync: SimpleNamespace) -> None:
+        """Not every provider object shows its key, so the engine is handed them."""
+        with patch("plexmix.cli.sync_cmd.provider_secrets", return_value=[DUMMY_KEY]) as secrets:
+            for command in (["sync"], ["sync", "regenerate"]):
+                patched_sync.engine_cls.reset_mock()
+                result = _invoke_sync(command)
+                assert result.exit_code == 0, result.output
+                assert patched_sync.engine_cls.call_args.kwargs["known_secrets"] == [DUMMY_KEY]
+        assert secrets.call_count == 2
+        assert DUMMY_KEY not in result.output
+
+    def test_run_without_a_result_is_not_a_success(self, patched_sync: SimpleNamespace) -> None:
+        """Only a real result of the engine counts: without one nothing is called a success."""
+        patched_sync.engine.regenerate_result = MagicMock()
+
+        result = _invoke_sync(["sync", "regenerate"])
+
+        assert result.exit_code == 1
+        assert SUCCESS_LINE not in result.output.lower()
+
+    def test_run_where_every_batch_fails_exits_nonzero(self, library: Path) -> None:
+        """Spec "Every request fails": no tag changes, and the run is not a success.
+
+        Each request fails with an error that is not fatal by itself. After three in
+        a row the run stops asking: the provider no longer answers.
+        """
+        tags = _tag_rows(library)
+        ai = _TaggingAI(error=PASSING_ERROR)
+
+        run = _run_regenerate(library, "--yes", "--no-embeddings", ai=ai)
+
+        assert run.result.exit_code == 1
+        assert isinstance(run.result.exception, SystemExit)
+        # Three batches of 20 were asked for, and every track holds the tags it had.
+        assert ai.sent == list(range(1, 61))
+        assert _tag_rows(library) == tags
+        assert (
+            "AI tagging stopped: The AI provider failed 3 requests in a row. "
+            "Last error: connection refused." in run.out
+        )
+        assert "AI tags: 0 tracks regenerated, 400 keep their previous tags." in run.out
+        # The tip names the command as it was run: without the flag it would also
+        # replace every embedding.
+        assert f"Tip: Run '{REGENERATE_TAGS_COMMAND}' again to continue." in run.out
+        assert SUCCESS_LINE not in run.out.lower()
+        assert "completed" not in run.out.lower()
+        assert _history(library) == ["partial"]
+
+    @pytest.mark.parametrize("embeddings", [True, False], ids=["both", "tags alone"])
+    def test_run_without_any_new_tag_exits_nonzero_and_makes_no_embedding(
+        self, library: Path, embeddings: bool
+    ) -> None:
+        """The provider answers every request and gives nothing usable for any track.
+
+        The embeddings are then left alone. Made anyway, each would come from the
+        text it was made from, and the run would pass for one that did its work.
+        """
+        _seed_embeddings(library)
+        tags, rows = _tag_rows(library), _embedding_rows(library)
+        ai = _TaggingAI(omit=range(1, LIBRARY_SIZE + 1))
+        flags = ["--yes"] if embeddings else ["--yes", "--no-embeddings"]
+
+        run = _run_regenerate(library, *flags, ai=ai)
+
+        assert run.result.exit_code == 1
+        assert isinstance(run.result.exception, SystemExit)
+        assert ai.sent == list(range(1, LIBRARY_SIZE + 1))
+        assert _tag_rows(library) == tags and _embedding_rows(library) == rows
+        assert run.vectors.requests == []
+        assert "Regenerate sync did not finish its work." in run.out
+        assert "AI tags: 0 tracks regenerated, 400 keep their previous tags." in run.out
+        if embeddings:
+            assert "No AI tags were regenerated, so no embedding was regenerated either." in run.out
+            assert "Embeddings: 0 tracks regenerated, 400 keep their previous embedding." in run.out
+            assert f"Tip: Run '{REGENERATE_COMMAND}' again to continue." in run.out
+        else:
+            assert "No AI tags were regenerated." in run.out
+            assert f"Tip: Run '{REGENERATE_TAGS_COMMAND}' again to continue." in run.out
+        assert SUCCESS_LINE not in run.out.lower()
+        assert _history(library) == ["partial"]
+
+    def test_reply_without_tags_blanks_no_tags(self, library: Path) -> None:
+        """A reply with environments and instruments and no tags for 30 of 400 tracks.
+
+        Written as it came, those 30 tracks would end without tags, behind a success line.
+        """
+        _seed_embeddings(library)
+        ai = _TaggingAI(no_tags=range(101, 131))
+
+        run = _run_regenerate(library, "--yes", ai=ai)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Regenerate sync finished with warnings." in run.out
+        assert "AI tags: 370 tracks regenerated, 30 keep their previous tags." in run.out
+        assert SUCCESS_LINE not in run.out.lower()
+        rows = _tag_rows(library)
+        assert all(row[1] for row in rows)
+        # The 30 tracks hold every column they had (``_retagged`` checks the others).
+        assert _retagged(library) == [n for n in range(1, 401) if not 101 <= n <= 130]
+
+    def test_provider_that_stops_answering_exits_nonzero_and_can_be_continued(
+        self, library: Path
+    ) -> None:
+        """Spec "Provider failure part-way", for an error that is not fatal by itself.
+
+        Two requests are answered and every later one is refused. The run must not
+        go on to the end, call its tags finished and make every embedding.
+        """
+        _seed_embeddings(library)
+        embeddings = _embedding_rows(library)
+        ai = _TaggingAI(error=PASSING_ERROR, fail_from=3)
+
+        first = _run_regenerate(library, "--yes", ai=ai)
+
+        assert first.result.exit_code == 1
+        assert isinstance(first.result.exception, SystemExit)
+        assert "Regenerate sync did not finish its work." in first.out
+        assert (
+            "AI tagging stopped: The AI provider failed 3 requests in a row. "
+            "Last error: connection refused." in first.out
+        )
+        assert "AI tags: 40 tracks regenerated, 360 keep their previous tags." in first.out
+        assert "Embeddings: 0 tracks regenerated, 400 keep their previous embedding." in first.out
+        assert f"Tip: Run '{REGENERATE_COMMAND}' again to continue." in first.out
+        assert SUCCESS_LINE not in first.out.lower()
+        # Two answered requests and three failed ones. Nothing was asked after them.
+        assert ai.sent == list(range(1, 101))
+        assert _retagged(library) == list(range(1, 41))
+        assert _embedding_rows(library) == embeddings and first.vectors.requests == []
+        assert _history(library) == ["partial"]
+        assert marker_path(library).exists()
+
+        second = _run_regenerate(library, terminal=True, answers="y\n")
+
+        assert second.result.exit_code == 0, second.result.output
+        assert "This run continues it: 360 of 400 tracks remain." in second.out
+        assert second.ai.sent == list(range(41, LIBRARY_SIZE + 1))
+        assert "Regenerate sync completed successfully!" in second.out
+        assert len(_retagged(library)) == LIBRARY_SIZE
+        assert not marker_path(library).exists()
+
+    @pytest.mark.parametrize("stop", ["provider error", "interrupt"])
+    def test_stopped_run_after_a_provider_change_keeps_the_saved_index(
+        self, library: Path, stop: str
+    ) -> None:
+        """The saved index was made by an earlier provider and covers every track.
+
+        The run is stopped after 50 new embeddings. An index of those 50 must not
+        take the place of the saved one before a run has reached its end.
+        """
+        _seed_embeddings(library, model="gemini")
+        _saved_index(library)
+        before = _index_files(library)
+        assert sorted(before) == ["test.index", "test.metadata"]
+        error = KeyboardInterrupt() if stop == "interrupt" else None
+
+        run = _run_regenerate(library, "--yes", vectors=_Vectors(fail_on_request=2, error=error))
+
+        assert run.result.exit_code == (130 if stop == "interrupt" else 1)
+        assert "Embeddings: 50 tracks regenerated, 350 keep their previous embedding." in run.out
+        # Every earlier row is kept, 50 tracks have a new one, and the index files
+        # are the ones from before the run, byte for byte.
+        assert len(_vectors_by_track(library, model="gemini")) == LIBRARY_SIZE
+        assert len(_vectors_by_track(library)) == 50
+        assert _index_files(library) == before
+
+    def test_run_stopped_after_a_size_change_keeps_the_index_and_is_continued_to_a_whole_one(
+        self, library: Path
+    ) -> None:
+        """The vector size changed, and the embedding provider stops after 100 tracks.
+
+        An index of those 100 must not take the place of the saved one. The same
+        command continues the run, and only its end replaces the index: by one that
+        holds every track in the new size.
+        """
+        before = _seed_earlier_size(library)
+
+        first = _run_regenerate(library, "--yes", vectors=_Vectors(fail_on_request=3))
+
+        assert first.result.exit_code == 1
+        assert isinstance(first.result.exception, SystemExit)
+        assert "Embeddings: 100 tracks regenerated, 300 keep their previous embedding." in first.out
+        assert f"Tip: Run '{REGENERATE_COMMAND}' again to continue." in first.out
+        assert SUCCESS_LINE not in first.out.lower()
+        # The stop is what is reported. Nothing is said of the index, and it is untouched.
+        assert "The search index was left as it is" not in first.out
+        assert _embedding_sizes(library) == {4: 100, 8: 300}
+        _assert_saved_index_is_untouched(library, before)
+        assert marker_path(library).exists()
+
+        second = _run_regenerate(library, "--yes")
+
+        assert second.result.exit_code == 0, second.result.output
+        assert "This run continues it: 300 of 400 tracks remain." in second.out
+        assert second.ai.requests == [] and second.vectors.requests == [50] * 6
+        assert "Regenerate sync completed successfully!" in second.out
+        assert "The search index was left as it is" not in second.out
+        assert _embedding_sizes(library) == {4: 400}
+        index = VectorIndex(
+            dimension=len(NEW_VECTOR), index_path=str(library.parent / "test.index")
+        )
+        assert index.dimension_mismatch is False
+        assert sorted(index.track_ids) == list(range(1, LIBRARY_SIZE + 1))
+        assert not marker_path(library).exists()
+        assert _history(library) == ["partial", "success"]
+
+    def test_run_that_ends_with_tracks_in_the_way_saves_no_index_and_says_so(
+        self, library: Path
+    ) -> None:
+        """The run reaches its end, and 40 tracks got no new embedding from the provider.
+
+        They hold the earlier vector size, so an index of the rows that fit would
+        lack them. The saved index stays as it is, the run ends with warnings and
+        status 0, and a later run can still reach a whole index.
+        """
+        before = _seed_earlier_size(library)
+
+        run = _run_regenerate(library, "--yes", vectors=_Vectors(short=5))
+
+        assert run.result.exit_code == 0, run.result.output
+        assert run.result.exception is None
+        assert "Regenerate sync finished with warnings." in run.out
+        assert "AI tags: 400 tracks regenerated." in run.out
+        assert "Embeddings: 360 tracks regenerated, 40 keep their previous embedding." in run.out
+        assert _index_sentence(40) in run.out
+        assert run.out.count("The search index was left as it is") == 1
+        assert SUCCESS_LINE not in run.out.lower()
+        assert _embedding_sizes(library) == {4: 360, 8: 40}
+        _assert_saved_index_is_untouched(library, before)
+        rows = _query(library, "SELECT status, error_message FROM sync_history ORDER BY id")
+        assert rows == [("partial", _index_sentence(40))]
+        # The tags are done, and 40 embeddings are left: the embeddings entry of the
+        # marker stays, so the next run makes only those. It does not start over for
+        # every track and pay the providers for the whole library again.
+        assert set(json.loads(marker_path(library).read_text())) == {"embeddings"}
+
+        again = _run_regenerate(library, "--yes")
+
+        assert again.result.exit_code == 0, again.result.output
+        assert "Regenerate sync completed successfully!" in again.out
+        assert again.ai.requests == []
+        assert again.vectors.requests == [40]
+        assert _ids_in_saved_index(library) == list(range(1, LIBRARY_SIZE + 1))
+        assert not marker_path(library).exists()
+
+    def test_library_without_tracks_has_nothing_to_do(self, tmp_path: Path) -> None:
+        """Real engine: no track in Plex and none in the library. No failure, no marker."""
+        database_file = tmp_path / "test.db"
+        with SQLiteManager(str(database_file)) as db:
+            db.create_tables()
+
+        for flags in (["--yes"], ["--yes", "--no-embeddings"]):
+            run = _run_regenerate(database_file, *flags, plex=_FakePlex([]))
+
+            assert run.result.exit_code == 0, run.result.output
+            assert run.result.exception is None
+            assert (
+                "The PlexMix library holds no tracks, so there is nothing to regenerate." in run.out
+            )
+            assert "did not finish" not in run.out and "again to continue" not in run.out
+            assert run.ai.requests == [] and run.vectors.requests == []
+            assert not marker_path(database_file).exists()
+        assert _history(database_file) == ["success", "success"]
+
+    def test_provider_failure_part_way_exits_nonzero_with_tip(self, library: Path) -> None:
+        _seed_embeddings(library)
+        embeddings = _embedding_rows(library)
+        ai = _TaggingAI(error=FATAL_ERROR, fail_from=3)
+
+        run = _run_regenerate(library, "--yes", ai=ai)
+
+        assert run.result.exit_code == 1
+        # The command caught the failure: there is no error for Typer to report.
+        assert isinstance(run.result.exception, SystemExit)
+        assert "Traceback" not in run.result.stdout
+        assert "Regenerate sync did not finish its work." in run.out
+        assert "AI tagging stopped:" in run.out
+        assert "AI tags: 40 tracks regenerated, 360 keep their previous tags." in run.out
+        # The embeddings wait for the tags, so every track keeps its embedding.
+        assert "Embeddings: 0 tracks regenerated, 400 keep their previous embedding." in run.out
+        assert f"Run '{REGENERATE_COMMAND}' again to continue." in run.out
+        assert SUCCESS_LINE not in run.out.lower()
+        assert "completed" not in run.out.lower()
+        assert _retagged(library) == list(range(1, 41))
+        assert _embedding_rows(library) == embeddings
+        assert run.vectors.requests == []
+        # The run can be continued: its marker entry is still there.
+        assert marker_path(library).exists()
+
+    def test_summary_states_regenerated_and_kept_counts(self, library: Path) -> None:
+        """Spec "Part of the library regenerated": exit 0, both counts, no success line."""
+        _seed_embeddings(library)
+        ai = _TaggingAI(omit=[7, 8, 9])
+
+        run = _run_regenerate(library, "--yes", ai=ai)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Regenerate sync finished with warnings." in run.out
+        assert "AI tags: 397 tracks regenerated, 3 keep their previous tags." in run.out
+        assert "Embeddings: 400 tracks regenerated." in run.out
+        assert SUCCESS_LINE not in run.out.lower()
+        assert len(_retagged(library)) == LIBRARY_SIZE - 3
+        assert set(map(tuple, _vectors_by_track(library).values())) == {tuple(NEW_VECTOR)}
+
+    def test_complete_run_replaces_everything_and_says_so(self, library: Path) -> None:
+        _seed_embeddings(library)
+        _seed_embeddings(library, model="gemini")
+
+        run = _run_regenerate(library, "--yes")
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Regenerate sync completed successfully!" in run.out
+        assert "AI tags: 400 tracks regenerated." in run.out
+        assert "Embeddings: 400 tracks regenerated." in run.out
+        assert "keep" not in run.out.split("completed successfully!")[1]
+        assert len(_retagged(library)) == LIBRARY_SIZE
+        assert len(_vectors_by_track(library)) == LIBRARY_SIZE
+        # Every track has its new embedding, so the rows of the other model are gone,
+        # and the saved index holds the new vectors.
+        assert _vectors_by_track(library, model="gemini") == {}
+        index = VectorIndex(
+            dimension=len(NEW_VECTOR), index_path=str(library.parent / "test.index")
+        )
+        assert len(index.track_ids) == LIBRARY_SIZE
+        assert not marker_path(library).exists()
+        assert _history(library) == ["success"]
+
+    def test_continued_run_question_gives_remaining_count_and_start_over_hint(
+        self, library: Path
+    ) -> None:
+        """Spec "Continuing": the second run says so, and sends only the tracks that are left."""
+        first = _run_regenerate(
+            library, "--yes", "--no-embeddings", ai=_TaggingAI(error=FATAL_ERROR, fail_from=3)
+        )
+        assert first.result.exit_code == 1
+        assert _retagged(library) == list(range(1, 41))
+        marker = marker_path(library)
+
+        second = _run_regenerate(library, "--no-embeddings", terminal=True, answers="y\n")
+
+        assert second.result.exit_code == 0, second.result.output
+        question = "Continue with the remaining 360 tracks? [y/N]"
+        assert question in second.out
+        before_question = second.out.split(question)[0]
+        assert (
+            "An earlier regenerate run did not finish. This run continues it: "
+            "360 of 400 tracks remain." in before_question
+        )
+        # How to start over: the marker file is named, in one piece.
+        assert marker.name == "test.db.regenerate.json"
+        assert (
+            f"To start over with all 400 tracks, delete {marker} and run the command again."
+            in second.result.stdout
+        )
+        assert second.ai.sent == list(range(41, LIBRARY_SIZE + 1))
+        assert "AI tags: 360 tracks regenerated." in second.out
+        assert "Regenerate sync completed successfully!" in second.out
+        assert len(_retagged(library)) == LIBRARY_SIZE
+        # The run reached its end, so nothing is left to continue.
+        assert not marker.exists()
+
+    def test_continued_tags_only_run_whose_remaining_tracks_get_nothing_ends_with_warnings(
+        self, library: Path
+    ) -> None:
+        """The run it continues had replaced 40 tracks. The provider gives nothing for the rest.
+
+        A run of tags alone used to end with status 1 ("No AI tags were regenerated")
+        here, although the 40 were done, and its marker was cleared: the next run then
+        started over for every track and paid the provider again. It ends with
+        warnings and status 0 now, as a run of tags and embeddings does.
+        """
+        first = _run_regenerate(
+            library, "--yes", "--no-embeddings", ai=_TaggingAI(error=FATAL_ERROR, fail_from=3)
+        )
+        assert first.result.exit_code == 1
+        assert _retagged(library) == list(range(1, 41))
+        assert marker_path(library).exists()
+
+        second = _run_regenerate(
+            library,
+            "--yes",
+            "--no-embeddings",
+            ai=_TaggingAI(omit=range(41, LIBRARY_SIZE + 1)),
+        )
+
+        assert second.result.exit_code == 0, second.result.output
+        assert second.ai.sent == list(range(41, LIBRARY_SIZE + 1))
+        assert "Regenerate sync finished with warnings." in second.out
+        assert (
+            "AI tags: 0 tracks regenerated (the earlier run regenerated 40), "
+            "360 keep their previous tags." in second.out
+        )
+        assert "did not finish its work" not in second.out
+        assert SUCCESS_LINE not in second.out.lower()
+        # The 360 keep their tags, the 40 have theirs, and nothing is left to continue.
+        assert _retagged(library) == list(range(1, 41))
+        assert not marker_path(library).exists()
+
+        # The next run is a new one for every track, and it can reach its end.
+        third = _run_regenerate(library, "--yes", "--no-embeddings")
+
+        assert third.result.exit_code == 0, third.result.output
+        assert third.ai.sent == list(range(1, LIBRARY_SIZE + 1))
+        assert len(_retagged(library)) == LIBRARY_SIZE
+
+    def test_run_stopped_in_its_embeddings_is_continued_without_new_tags(
+        self, library: Path
+    ) -> None:
+        """The tags of the earlier run are done: the second run pays for no tag again."""
+        _seed_embeddings(library)
+
+        first = _run_regenerate(library, "--yes", vectors=_Vectors(fail_on_request=2))
+
+        assert first.result.exit_code == 1
+        assert isinstance(first.result.exception, SystemExit)
+        assert (
+            "Embedding generation stopped: the embedding provider stopped answering." in first.out
+        )
+        assert "AI tags: 400 tracks regenerated." in first.out
+        assert "Embeddings: 50 tracks regenerated, 350 keep their previous embedding." in first.out
+        assert f"Run '{REGENERATE_COMMAND}' again to continue." in first.out
+        assert SUCCESS_LINE not in first.out.lower()
+        # No track is without an embedding: 50 new ones, 350 previous ones.
+        vectors = _vectors_by_track(library)
+        assert len(vectors) == LIBRARY_SIZE
+        assert sum(1 for vector in vectors.values() if vector == NEW_VECTOR) == 50
+
+        second = _run_regenerate(library, terminal=True, answers="y\n")
+
+        assert second.result.exit_code == 0, second.result.output
+        assert "This run continues it: 350 of 400 tracks remain." in second.out
+        assert (
+            "That run had finished the AI tags, so only the embeddings that are left are made."
+            in second.out
+        )
+        assert "Continue with the remaining 350 tracks? [y/N]" in second.out
+        assert second.ai.requests == []
+        assert second.vectors.requests == [50] * 7
+        assert "AI tags: regenerated by the earlier run." in second.out
+        assert "Embeddings: 350 tracks regenerated." in second.out
+        assert "Regenerate sync completed successfully!" in second.out
+        assert set(map(tuple, _vectors_by_track(library).values())) == {tuple(NEW_VECTOR)}
+        assert not marker_path(library).exists()
+
+    def test_new_run_does_not_speak_of_an_earlier_one(self, library: Path) -> None:
+        run = _run_regenerate(library, "--no-embeddings", terminal=True, answers="n\n")
+
+        assert "earlier" not in run.out
+        assert "start over" not in run.out
+        assert str(marker_path(library)) not in _squeezed(run.result.stdout)
+
+    def test_changed_model_starts_over_and_says_nothing_of_the_earlier_run(
+        self, library: Path
+    ) -> None:
+        """Spec "Provider or model changed since the interrupted run": a new run, all tracks."""
+        _run_regenerate(
+            library, "--yes", "--no-embeddings", ai=_TaggingAI(error=FATAL_ERROR, fail_from=3)
+        )
+        assert _retagged(library) == list(range(1, 41))
+        settings = _regenerate_settings(library)
+        settings.ai.model = "gpt-other"
+
+        run = _run_regenerate(
+            library, "--no-embeddings", terminal=True, answers="n\n", settings=settings
+        )
+
+        assert run.result.exit_code == 0
+        assert "Regenerate the AI tags of 400 tracks? [y/N]" in run.out
+        assert "AI tags: OpenAI · gpt-other" in run.out
+        assert "earlier" not in run.out
+        assert "Continue with" not in run.out
+
+    def test_interrupt_tip_names_the_same_command(self, library: Path) -> None:
+        """Spec "Tip after Ctrl+C" and "Ctrl+C during a regenerate sync"."""
+        _seed_embeddings(library)
+        embeddings = _embedding_rows(library)
+        ai = _TaggingAI(error=KeyboardInterrupt(), fail_from=3)
+
+        run = _run_regenerate(library, "--yes", ai=ai)
+
+        assert run.result.exit_code == 130
+        assert "Sync interrupted by user." in run.out
+        assert "AI tags: 40 tracks regenerated, 360 keep their previous tags." in run.out
+        assert "Embeddings: 0 tracks regenerated, 400 keep their previous embedding." in run.out
+        assert "Every track that was not regenerated keeps its previous data." in run.out
+        assert f"Tip: Run '{REGENERATE_COMMAND}' again to continue." in run.out
+        assert "clears nothing" in run.out
+        # Not the plain sync, which would leave the regenerate unfinished.
+        assert "Run 'plexmix sync' again" not in run.out
+        assert SUCCESS_LINE not in run.out.lower()
+        # Old and new side by side: no track is without tags or without an embedding.
+        assert _retagged(library) == list(range(1, 41))
+        assert all(row[1] for row in _tag_rows(library))
+        assert _embedding_rows(library) == embeddings
+        assert _history(library) == ["interrupted"]
+
+    def test_interrupt_while_the_index_is_rebuilt_says_the_rows_are_saved(
+        self, library: Path
+    ) -> None:
+        """Ctrl+C after the last embedding was saved, while the search index is rebuilt.
+
+        Every track has its new tags and its new embedding, and the run marker is
+        cleared, so nothing is left to continue: the same command would start over
+        with every track and pay the providers again. The tip said to run it again.
+        Only the index is behind, and the plain embeddings command rebuilds it.
+        """
+        _seed_embeddings(library)
+
+        with patch("plexmix.plex.sync.rebuild_index", side_effect=KeyboardInterrupt()):
+            run = _run_regenerate(library, "--yes")
+
+        assert run.result.exit_code == 130
+        assert "Sync interrupted by user." in run.out
+        assert "AI tags: 400 tracks regenerated." in run.out
+        assert "Embeddings: 400 tracks regenerated." in run.out
+        assert (
+            "The new tags and embeddings are saved. "
+            "Run 'plexmix embeddings generate' to rebuild the search index." in run.out
+        )
+        assert "again to continue" not in run.out
+        assert "keeps its previous data" not in run.out
+        assert SUCCESS_LINE not in run.out.lower()
+        # Every track has its new tags and embedding, and nothing is left to continue.
+        assert len(_retagged(library)) == LIBRARY_SIZE
+        assert not marker_path(library).exists()
+        assert _history(library) == ["interrupted"]
+
+    def test_error_after_both_passes_ended_names_the_command_that_rebuilds_the_index(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        error = RuntimeError("the index could not be saved")
+        patched_sync.engine.outcome = SyncOutcome(library_total=400, compared=True)
+        patched_sync.engine.regenerate_result = _regenerated(tags=400, embeddings=400)
+        patched_sync.engine.regenerate_sync.side_effect = error
+
+        result = _invoke_sync(["sync", "regenerate"])
+
+        assert result.exception is error
+        out = _flat(result.stdout)
+        assert "AI tags: 400 tracks regenerated." in out
+        assert "Embeddings: 400 tracks regenerated." in out
+        assert "Run 'plexmix embeddings generate' to rebuild the search index." in out
+        assert "again to continue" not in out
+
+    def test_interrupt_with_a_mocked_engine_still_gives_the_tip(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        patched_sync.engine.regenerate_result = _regenerated(tags=2400, tags_kept=3543)
+        patched_sync.engine.regenerate_sync.side_effect = KeyboardInterrupt()
+
+        result = _invoke_sync(["sync", "regenerate"])
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 130
+        assert "AI tags: 2,400 tracks regenerated, 3,543 keep their previous tags." in out
+        # ``_invoke_sync`` runs the command with ``--no-embeddings``, and the tip says so.
+        assert f"Run '{REGENERATE_TAGS_COMMAND}' again to continue." in out
+
+    def test_failed_run_still_asks_about_a_held_removal(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        """A failed regenerate does not swallow the removal question, and still exits 1."""
+        patched_sync.engine.outcome = _held_outcome()
+        patched_sync.engine.regenerate_result = _regenerated(
+            tags=2400,
+            tags_kept=3543,
+            stopped_scope=SCOPE_TAGS,
+            error_message="AI tagging stopped: The provider rejected the API key.",
+        )
+
+        result = _invoke_sync(["sync", "regenerate"], terminal=True, answers="n\n")
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 1
+        assert "AI tagging stopped: The provider rejected the API key." in out
+        assert "AI tags: 2,400 tracks regenerated, 3,543 keep their previous tags." in out
+        assert "Remove 5,443 of 5,943 tracks? [y/N]" in out
+        assert "5,443 tracks were kept." in out
+        assert SUCCESS_LINE not in out.lower()
+        patched_sync.engine.remove_unlisted_tracks.assert_not_called()
+
+    def test_error_of_a_later_stage_says_what_was_regenerated(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        error = RuntimeError("the database is locked")
+        patched_sync.engine.outcome = SyncOutcome(library_total=400, added=1, compared=True)
+        patched_sync.engine.regenerate_result = _regenerated(
+            tags=40, tags_kept=360, unfinished=True
+        )
+        patched_sync.engine.regenerate_sync.side_effect = error
+
+        result = _invoke_sync(["sync", "regenerate"])
+
+        # The error itself is still reported. What the run had saved is said first.
+        assert result.exception is error
+        out = _flat(result.stdout)
+        assert "Saved before the sync stopped:" in out
+        assert "AI tags: 40 tracks regenerated, 360 keep their previous tags." in out
+        assert f"Run '{REGENERATE_TAGS_COMMAND}' again to continue." in out
+        assert SUCCESS_LINE not in out.lower()
+
+    def test_error_after_both_passes_ended_gives_no_tip_to_continue(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        """Nothing is left to continue then, and the same command would start over."""
+        error = RuntimeError("the index could not be saved")
+        patched_sync.engine.outcome = SyncOutcome(library_total=400, compared=True)
+        patched_sync.engine.regenerate_result = _regenerated(tags=400)
+        patched_sync.engine.regenerate_sync.side_effect = error
+
+        result = _invoke_sync(["sync", "regenerate"])
+
+        assert result.exception is error
+        out = _flat(result.stdout)
+        assert "AI tags: 400 tracks regenerated." in out
+        assert "again to continue" not in out
+        assert SUCCESS_LINE not in out.lower()
+
+    def test_engine_refusal_is_printed_not_raised(self, patched_sync: SimpleNamespace) -> None:
+        """The engine's own guard ends the command with the refusal, not with an error report."""
+        patched_sync.engine.regenerate_sync.side_effect = RegenerateRefused.not_given(COMPONENT_AI)
+
+        result = _invoke_sync(["sync", "regenerate"])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        out = _flat(result.stdout)
+        assert "The AI provider is not ready: none was given to this run." in out
+        assert "Nothing was changed." in out
+
+    def test_other_sync_commands_still_go_on_without_an_ai_provider(
+        self, patched_sync: SimpleNamespace
+    ) -> None:
+        """Only ``sync regenerate`` lost the "Continuing without AI assistance" path."""
+        with patch("plexmix.cli.sync_cmd._build_ai_provider", return_value=None) as build_ai:
+            plain = _invoke_sync(["sync"])
+            regenerate = _invoke_sync(["sync", "regenerate"])
+
+        assert plain.exit_code == 0, plain.output
+        assert "Continuing without AI assistance" in _flat(plain.stdout)
+        assert regenerate.exit_code == 0, regenerate.output
+        assert "Continuing without AI assistance" not in _flat(regenerate.stdout)
+        # One call, by the plain sync. The regenerate takes its provider from the check.
+        build_ai.assert_called_once()
+        patched_sync.check.assert_called_once()
+
+    def test_help_lists_yes(self) -> None:
+        result = runner.invoke(app, ["sync", "regenerate", "--help"])
+
+        assert result.exit_code == 0
+        # The plain text: a coloured help page splits the option name with colour codes.
+        text = _flat(click.unstyle(result.output))
+        assert "--yes" in text
+        assert "--allow-removals" in text
+        assert "Nothing is cleared first" in text
+
+
+# ---------------------------------------------------------------------------
+# plain sync with embeddings, on the real engine
+# ---------------------------------------------------------------------------
+
+
+def _plain_sync_with_embeddings(
+    library: Path,
+    plex: _FakePlex,
+    vectors: Optional[_Vectors] = None,
+    command: Iterable[str] = ("sync",),
+) -> SimpleNamespace:
+    """Run a plain sync with its embeddings stage on the real engine.
+
+    Plex and the embedding provider are fakes, and there is no AI provider, so no
+    tags are made. Nobody can be asked a question.
+    """
+    vectors = vectors or _Vectors()
+    with ExitStack() as stack:
+        stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+        stack.enter_context(
+            patch(
+                "plexmix.cli.sync_cmd.Settings.load_from_file",
+                return_value=_regenerate_settings(library),
+            )
+        )
+        stack.enter_context(patch("plexmix.cli.sync_cmd.connect_plex", return_value=plex))
+        stack.enter_context(patch("plexmix.cli.sync_cmd._build_ai_provider", return_value=None))
+        stack.enter_context(
+            patch("plexmix.cli.sync_cmd._build_embedding_generator", return_value=vectors)
+        )
+        stack.enter_context(patch("plexmix.cli.sync_cmd.can_prompt", return_value=False))
+        result = runner.invoke(app, list(command))
+    return SimpleNamespace(result=result, out=_flat(result.stdout), vectors=vectors)
+
+
+class TestPlainSyncAndTheSearchIndex:
+    """A plain sync never saves an index that covers only part of the library."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [("sync",), ("sync", "incremental"), ("sync", "full")],
+        ids=["sync", "incremental", "full"],
+    )
+    def test_sync_after_a_size_change_leaves_the_saved_index_and_says_so(
+        self, library: Path, command: Tuple[str, ...]
+    ) -> None:
+        """The vector size was changed, and Plex lists 20 tracks PlexMix does not have.
+
+        The sync embeds those 20 in the new size. An index of them alone would take
+        the place of the index of the whole library, and with it would go the
+        dimension mismatch that tells ``plexmix create`` to stop. So nothing is
+        built: the sync says what it did, with a warning, and ends with status 0.
+        """
+        before = _seed_earlier_size(library)
+
+        run = _plain_sync_with_embeddings(library, _FakePlex(_keys(420)), command=command)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert run.result.exception is None
+        assert "Incremental sync finished with warnings." in run.out
+        assert "Tracks added: 20" in run.out
+        assert (
+            "The search index was left as it is: 400 tracks hold an embedding that was made "
+            "with other embedding settings. Run 'plexmix embeddings generate --regenerate' "
+            "to replace them." in run.out
+        )
+        assert run.out.count("The search index was left as it is") == 1
+        assert SUCCESS_LINE not in run.out.lower()
+        assert "completed" not in run.out.lower()
+        # The 20 new tracks were embedded, and no other track was sent again.
+        assert run.vectors.requests == [20]
+        assert _track_count(library) == 420
+        assert _embedding_sizes(library) == {4: 20, 8: 400}
+        _assert_saved_index_is_untouched(library, before)
+        rows = _query(library, "SELECT status, error_message FROM sync_history ORDER BY id")
+        assert rows == [("partial", _index_sentence(400))]
+
+    def test_sync_with_one_vector_size_updates_the_index_and_says_success(
+        self, library: Path
+    ) -> None:
+        """The healthy path is what it was: the new vectors join the saved index."""
+        _seed_embeddings(library)
+        index_path = library.parent / "test.index"
+        index = VectorIndex(dimension=len(OLD_VECTOR), index_path=str(index_path))
+        index.build_index([OLD_VECTOR] * LIBRARY_SIZE, list(range(1, LIBRARY_SIZE + 1)))
+        index.save_index(str(index_path))
+
+        run = _plain_sync_with_embeddings(library, _FakePlex(_keys(420)))
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Incremental sync completed successfully!" in run.out
+        assert "Tracks added: 20" in run.out
+        assert "The search index was left as it is" not in run.out
+        assert "finished with warnings" not in run.out
+        assert run.vectors.requests == [20]
+        assert _ids_in_saved_index(library) == list(range(1, 421))
+        assert _history(library) == ["success"]
+
+    def test_sync_after_a_regenerate_that_replaced_every_track_is_a_success_again(
+        self, library: Path
+    ) -> None:
+        """No state that no command leaves: the regenerate command makes the index whole."""
+        _seed_earlier_size(library)
+        warned = _plain_sync_with_embeddings(library, _FakePlex(_keys(420)))
+        assert "finished with warnings" in warned.out
+
+        regenerated = _run_embeddings_regenerate(library, "--yes")
+
+        assert regenerated.result.exit_code == 0, regenerated.result.output
+        assert "✓ Embeddings regenerated successfully!" in regenerated.out
+        assert "Vector index saved with 420 total embeddings" in regenerated.out
+        assert _ids_in_saved_index(library) == list(range(1, 421))
+
+        run = _plain_sync_with_embeddings(library, _FakePlex(_keys(430)))
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Incremental sync completed successfully!" in run.out
+        assert "The search index was left as it is" not in run.out
+        assert _ids_in_saved_index(library) == list(range(1, 431))
+
+
+# ---------------------------------------------------------------------------
 # embeddings generate
 # ---------------------------------------------------------------------------
+
+EMBEDDINGS_COMMAND = "plexmix embeddings generate --regenerate"
+
+
+def _run_embeddings_regenerate(
+    library: Path,
+    *args: str,
+    vectors: Optional[_Vectors] = None,
+    refused: Optional[BaseException] = None,
+    terminal: bool = False,
+    answers: str = "",
+) -> SimpleNamespace:
+    """Run ``embeddings generate --regenerate`` on the temporary library.
+
+    The embedding provider is a fake, and the provider check hands it over, or
+    raises ``refused`` (a refusal, or Ctrl+C). ``terminal`` says whether the question can be asked and
+    ``answers`` is what the user types. The mocks in the result say how far the
+    command got: ``check`` is the provider check, ``load`` the settings, and
+    ``build`` the provider builder of the plain command, which a regenerate never uses.
+    """
+    settings = _regenerate_settings(library)
+    vectors = vectors or _Vectors()
+
+    def checked(
+        settings: Settings,
+        need_ai: bool,
+        need_embeddings: bool,
+        ai_provider_name: Optional[str] = None,
+    ) -> CheckedProviders:
+        if refused is not None:
+            raise refused
+        assert (need_ai, need_embeddings) == (False, True)
+        return CheckedProviders(None, vectors)
+
+    with ExitStack() as stack:
+        stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+        load = stack.enter_context(
+            patch("plexmix.cli.embeddings_cmd.Settings.load_from_file", return_value=settings)
+        )
+        check = stack.enter_context(
+            patch("plexmix.cli.embeddings_cmd.check_providers", side_effect=checked)
+        )
+        build = stack.enter_context(
+            patch("plexmix.cli.embeddings_cmd._build_embedding_generator_with_reason")
+        )
+        # The stored key, so that a provider error that repeats it can be checked.
+        stack.enter_context(
+            patch("plexmix.cli.embeddings_cmd.resolve_embedding_api_key", return_value=DUMMY_KEY)
+        )
+        stack.enter_context(patch("plexmix.cli.console_helpers.can_prompt", return_value=terminal))
+        result = runner.invoke(
+            app, ["embeddings", "generate", "--regenerate", *args], input=answers
+        )
+    return SimpleNamespace(
+        result=result,
+        out=_flat(result.stdout),
+        load=load,
+        check=check,
+        build=build,
+        vectors=vectors,
+    )
+
+
+def _run_plain_embeddings(library: Path, vectors: Optional[_Vectors] = None) -> SimpleNamespace:
+    """Run the plain ``embeddings generate`` on the temporary library with a fake provider."""
+    vectors = vectors or _Vectors()
+    with ExitStack() as stack:
+        stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+        stack.enter_context(
+            patch(
+                "plexmix.cli.embeddings_cmd.Settings.load_from_file",
+                return_value=_regenerate_settings(library),
+            )
+        )
+        stack.enter_context(
+            patch(
+                "plexmix.cli.embeddings_cmd._build_embedding_generator_with_reason",
+                return_value=(vectors, None),
+            )
+        )
+        result = runner.invoke(app, ["embeddings", "generate"])
+    return SimpleNamespace(result=result, out=_flat(result.stdout), vectors=vectors)
+
+
+def _new_embeddings(library: Path) -> List[int]:
+    """The tracks whose embedding is a new one. Every other track must hold its old one."""
+    done = []
+    for track_id, vector in _vectors_by_track(library).items():
+        if vector == NEW_VECTOR:
+            done.append(track_id)
+        else:
+            assert vector == OLD_VECTOR
+    return done
+
+
+def _ids_in_saved_index(library: Path) -> List[int]:
+    index = VectorIndex(dimension=len(NEW_VECTOR), index_path=str(library.parent / "test.index"))
+    return sorted(index.track_ids)
 
 
 class TestEmbeddingsGenerate:
@@ -1545,7 +3290,7 @@ class TestEmbeddingsGenerate:
 
     @patch("plexmix.cli.embeddings_cmd.rebuild_vector_index", return_value=1)
     @patch("plexmix.cli.embeddings_cmd.SQLiteManager")
-    @patch("plexmix.cli.embeddings_cmd._build_embedding_generator")
+    @patch("plexmix.cli.embeddings_cmd._build_embedding_generator_with_reason")
     @patch("plexmix.cli.embeddings_cmd.Settings.load_from_file")
     def test_no_tracks_need_embeddings(
         self, mock_load, mock_build_emb, mock_db_cls, mock_rebuild, tmp_path
@@ -1556,7 +3301,7 @@ class TestEmbeddingsGenerate:
         mock_gen = MagicMock()
         mock_gen.get_dimension.return_value = 1536
         mock_gen.provider_name = "OpenAI"
-        mock_build_emb.return_value = mock_gen
+        mock_build_emb.return_value = (mock_gen, None)
 
         mock_db = MagicMock()
         mock_db.get_all_tracks.return_value = [_dummy_track(1)]
@@ -1572,11 +3317,118 @@ class TestEmbeddingsGenerate:
         # The index is still rebuilt so a missing/lost index recovers.
         mock_rebuild.assert_called_once()
 
+    def test_plain_generate_with_two_vector_sizes_leaves_the_saved_index(
+        self, library: Path
+    ) -> None:
+        """A regenerate run was stopped after the vector size changed: 100 tracks hold
+        the new size and 300 the earlier one.
+
+        Replaces the check of an index built from the rows that fit. Such an index
+        would hold 100 of 400 tracks and would hide the dimension mismatch. The plain
+        command builds nothing then, says how many tracks are in the way and what
+        to run, and claims neither a rebuilt index nor that every track is embedded.
+        """
+        before = _seed_earlier_size(library)
+        with SQLiteManager(str(library)) as db:
+            db.insert_embeddings_batch(
+                [
+                    Embedding(
+                        track_id=track_id,
+                        embedding_model=VECTOR_MODEL,
+                        embedding_dim=len(NEW_VECTOR),
+                        vector=NEW_VECTOR,
+                    )
+                    for track_id in range(1, 101)
+                ]
+            )
+        assert _embedding_sizes(library) == {4: 100, 8: 300}
+
+        run = _run_plain_embeddings(library)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert run.result.exception is None
+        assert "Found 0 tracks without embeddings" in run.out
+        assert (
+            "The search index was left as it is: 300 tracks hold an embedding that was made "
+            "with other embedding settings. Run 'plexmix embeddings generate --regenerate' "
+            "to replace them." in run.out
+        )
+        assert run.out.count("The search index was left as it is") == 1
+        assert "All tracks already have embeddings!" not in run.out
+        assert "Vector index rebuilt" not in run.out and "Vector index saved" not in run.out
+        assert "✓" not in run.out
+        assert run.vectors.requests == []
+        assert _embedding_sizes(library) == {4: 100, 8: 300}
+        _assert_saved_index_is_untouched(library, before)
+
+    def test_plain_generate_that_embeds_new_tracks_beside_another_size_leaves_the_index(
+        self, library: Path
+    ) -> None:
+        """The size changed, and 100 tracks have no embedding yet.
+
+        The command makes those 100, and says so. It does not say that the index
+        was saved: 300 tracks still hold the earlier size, so nothing was built.
+        """
+        before = _seed_earlier_size(library, track_ids=range(1, 301))
+
+        run = _run_plain_embeddings(library)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Found 100 tracks without embeddings" in run.out
+        assert "✓ Successfully generated 100 embeddings!" in run.out
+        assert _index_sentence(300) in run.out
+        assert "Vector index saved" not in run.out and "Vector index rebuilt" not in run.out
+        assert run.vectors.requests == [50, 50]
+        assert _embedding_sizes(library) == {4: 100, 8: 300}
+        _assert_saved_index_is_untouched(library, before)
+
+    def test_plain_generate_with_one_vector_size_rebuilds_the_index(self, library: Path) -> None:
+        """The healthy path is what it was: a lost index is rebuilt from the rows."""
+        _seed_embeddings(library)
+        assert _index_files(library) == {}
+
+        run = _run_plain_embeddings(library)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "All tracks already have embeddings!" in run.out
+        assert "✓ Vector index rebuilt with 400 embeddings." in run.out
+        assert "Use --regenerate to regenerate all embeddings." in run.out
+        assert "The search index was left as it is" not in run.out
+        assert _ids_in_saved_index(library) == list(range(1, LIBRARY_SIZE + 1))
+
+    def test_plain_generate_without_any_embedding_claims_no_index(self, tmp_path: Path) -> None:
+        """A library without tracks has no row to build an index from, and none is written."""
+        database_file = tmp_path / "test.db"
+        with SQLiteManager(str(database_file)) as db:
+            db.create_tables()
+
+        run = _run_plain_embeddings(database_file)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Found 0 tracks without embeddings" in run.out
+        assert "Vector index" not in run.out
+        assert _index_files(database_file) == {}
+
+    def test_plain_generate_says_so_when_no_index_could_be_saved(self, library: Path) -> None:
+        _seed_embeddings(library)
+        index_path = library.parent / "test.index"
+        index_path.write_bytes(b"this is not a search index")
+
+        with patch(
+            "plexmix.database.vector_index.os.rename", side_effect=PermissionError(13, "denied")
+        ):
+            run = _run_plain_embeddings(library)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert index_path.read_bytes() == b"this is not a search index"
+        assert "The search index was not saved in this run" in run.out
+        assert "Vector index rebuilt" not in run.out and "Vector index saved" not in run.out
+
     @patch("plexmix.cli.embeddings_cmd.rebuild_vector_index", return_value=2)
     @patch("plexmix.cli.embeddings_cmd.generate_embeddings_for_tracks", return_value=2)
     @patch("plexmix.cli.embeddings_cmd.build_vector_index")
     @patch("plexmix.cli.embeddings_cmd.SQLiteManager")
-    @patch("plexmix.cli.embeddings_cmd._build_embedding_generator")
+    @patch("plexmix.cli.embeddings_cmd._build_embedding_generator_with_reason")
     @patch("plexmix.cli.embeddings_cmd.Settings.load_from_file")
     def test_generate_for_n_tracks(
         self,
@@ -1593,7 +3445,7 @@ class TestEmbeddingsGenerate:
 
         mock_gen = MagicMock()
         mock_gen.get_dimension.return_value = 1536
-        mock_build_emb.return_value = mock_gen
+        mock_build_emb.return_value = (mock_gen, None)
 
         tracks = [_dummy_track(1, "Song A"), _dummy_track(2, "Song B")]
         mock_db = MagicMock()
@@ -1609,7 +3461,10 @@ class TestEmbeddingsGenerate:
         mock_gen_emb.assert_called_once()
         mock_rebuild.assert_called_once()
 
-    @patch("plexmix.cli.embeddings_cmd._build_embedding_generator", return_value=None)
+    @patch(
+        "plexmix.cli.embeddings_cmd._build_embedding_generator_with_reason",
+        return_value=(None, None),
+    )
     @patch("plexmix.cli.embeddings_cmd.Settings.load_from_file")
     def test_no_embedding_provider_exits(self, mock_load, mock_build_emb, tmp_path):
         settings = _make_settings(tmp_path)
@@ -1619,14 +3474,734 @@ class TestEmbeddingsGenerate:
         assert result.exit_code == 1
         assert "api key required" in result.output.lower()
 
+    # -- embeddings generate --regenerate: real database, fake provider --------
+
+    def test_regenerate_asks_first(self, library: Path) -> None:
+        """Spec "Embeddings regenerate asks": the count and the provider, before any work."""
+        _seed_embeddings(library)
+
+        run = _run_embeddings_regenerate(library, terminal=True, answers="y\n")
+
+        assert run.result.exit_code == 0, run.result.output
+        question = "Regenerate the embeddings of 400 tracks? [y/N]"
+        assert question in run.out
+        before_question, after_question = run.out.split(question)
+        assert (
+            "This replaces the embeddings of all 400 tracks in the PlexMix library."
+            in before_question
+        )
+        assert "Embeddings: OpenAI · embed-test" in before_question
+        assert "Nothing is cleared first" in before_question
+        # The provider is asked only after the answer.
+        assert "Checking the embedding provider" in after_question
+        assert "Checking" not in before_question
+        run.check.assert_called_once()
+        run.build.assert_not_called()
+        # Every embedding was replaced in place, in batches, and the run was closed.
+        assert run.vectors.requests == [50] * 8
+        assert _new_embeddings(library) == list(range(1, LIBRARY_SIZE + 1))
+        assert "✓ Embeddings regenerated successfully!" in run.out
+        assert "Embeddings: 400 tracks regenerated." in run.out
+        assert "Vector index saved with 400 total embeddings" in run.out
+        assert _ids_in_saved_index(library) == list(range(1, LIBRARY_SIZE + 1))
+        assert not marker_path(library).exists()
+
+    @pytest.mark.parametrize("typed", ["\n", "n\n"], ids=["enter", "n"])
+    def test_regenerate_declined_changes_nothing(self, library: Path, typed: str) -> None:
+        _seed_embeddings(library)
+        embeddings = _embedding_rows(library)
+
+        run = _run_embeddings_regenerate(library, terminal=True, answers=typed)
+
+        assert run.result.exit_code == 0
+        assert "Regenerate the embeddings of 400 tracks? [y/N]" in run.out
+        assert run.out.endswith("Operation cancelled.")
+        # Declining is not a run: no provider was asked and nothing was written.
+        run.check.assert_not_called()
+        assert run.vectors.requests == []
+        assert _embedding_rows(library) == embeddings
+        assert not marker_path(library).exists()
+        assert not (library.parent / "test.index").exists()
+
+    def test_regenerate_without_terminal_refuses(self, library: Path) -> None:
+        _seed_embeddings(library)
+        embeddings = _embedding_rows(library)
+
+        run = _run_embeddings_regenerate(library, terminal=False)
+
+        assert run.result.exit_code == 1
+        assert isinstance(run.result.exception, SystemExit)
+        assert f"'{EMBEDDINGS_COMMAND} --yes'" in run.out
+        assert "no terminal to answer in" in run.out
+        assert "[y/N]" not in run.out
+        # It ended before it loaded anything: the one load is the entry point's own.
+        assert run.load.call_count == 1
+        run.check.assert_not_called()
+        assert _embedding_rows(library) == embeddings
+        assert not marker_path(library).exists()
+
+    def test_regenerate_with_yes_needs_no_terminal(self, library: Path) -> None:
+        """Spec "Unattended run with the flag"."""
+        _seed_embeddings(library)
+
+        run = _run_embeddings_regenerate(library, "--yes", terminal=False)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "[y/N]" not in run.out
+        assert "This replaces the embeddings of all 400 tracks" in run.out
+        assert _new_embeddings(library) == list(range(1, LIBRARY_SIZE + 1))
+
+    def test_regenerate_refuses_when_provider_is_not_ready(self, library: Path) -> None:
+        """Spec "Embedding provider cannot be reached": all embeddings unchanged, exit 1."""
+        _seed_embeddings(library)
+        embeddings = _embedding_rows(library)
+        refused = RegenerateRefused(
+            "OpenAI",
+            CAUSE_NO_ANSWER,
+            component=COMPONENT_EMBEDDINGS,
+            reason=REFUSED_NO_ANSWER,
+            detail="Connection error",
+        )
+
+        run = _run_embeddings_regenerate(library, "--yes", refused=refused)
+
+        assert run.result.exit_code == 1
+        assert isinstance(run.result.exception, SystemExit)
+        assert (
+            "The embedding provider OpenAI is not ready: it did not answer the test request. "
+            "Connection error." in run.out
+        )
+        assert "Nothing was changed." in run.out
+        assert "successfully" not in run.out
+        assert "Regenerating embeddings" not in run.out
+        assert run.vectors.requests == []
+        assert _embedding_rows(library) == embeddings
+        assert not marker_path(library).exists()
+        assert not (library.parent / "test.index").exists()
+
+    def test_regenerate_interrupt_during_the_provider_check_changes_nothing(
+        self, library: Path
+    ) -> None:
+        _seed_embeddings(library)
+        embeddings = _embedding_rows(library)
+
+        run = _run_embeddings_regenerate(library, "--yes", refused=KeyboardInterrupt())
+
+        assert run.result.exit_code == 130
+        assert "Interrupted during the provider check. Nothing was changed." in run.out
+        assert _embedding_rows(library) == embeddings
+        assert not marker_path(library).exists()
+
+    def test_regenerate_provider_failure_keeps_every_embedding(self, library: Path) -> None:
+        """Spec "Provider fails part-way": new and previous embeddings, never a gap."""
+        _seed_embeddings(library)
+        error = RuntimeError(
+            f"Error code: 401 - key {DUMMY_KEY} was rejected by "
+            f"http://leakuser:{DUMMY_PASSWORD}@127.0.0.1:9/v1"
+        )
+
+        run = _run_embeddings_regenerate(
+            library, "--yes", vectors=_Vectors(fail_on_request=2, error=error)
+        )
+
+        assert run.result.exit_code == 1
+        # The command caught the failure: there is no error for Typer to report.
+        assert isinstance(run.result.exception, SystemExit)
+        assert "Traceback" not in run.result.stdout
+        # Every track still has an embedding: 50 new ones and 350 previous ones.
+        assert len(_vectors_by_track(library)) == LIBRARY_SIZE
+        assert _new_embeddings(library) == list(range(1, 51))
+        assert (
+            "Embedding generation stopped: Error code: 401 - key [redacted] was rejected by "
+            "http://***@127.0.0.1:9/v1." in run.out
+        )
+        assert "Embeddings: 50 tracks regenerated, 350 keep their previous embedding." in run.out
+        assert f"Tip: Run '{EMBEDDINGS_COMMAND}' again to continue." in run.out
+        assert "successfully" not in run.out
+        shown = _squeezed(run.result.output)
+        assert DUMMY_KEY not in shown
+        assert DUMMY_PASSWORD not in shown
+        # The index follows the rows, and the run can be continued.
+        assert _ids_in_saved_index(library) == list(range(1, LIBRARY_SIZE + 1))
+        assert marker_path(library).exists()
+
+    @pytest.mark.parametrize("stop", ["provider error", "interrupt"])
+    @pytest.mark.parametrize("earlier", ["another model", "another size"])
+    def test_regenerate_stopped_after_a_provider_change_keeps_the_saved_index(
+        self, library: Path, stop: str, earlier: str
+    ) -> None:
+        """The saved index covers all 400 tracks and was made before the change.
+
+        The run stops after 50 embeddings. An index of those 50 must not replace it.
+        ``another size``: the rows of the earlier size hold 8 numbers and the provider
+        makes 4 now (the fixture of the first version of this test held 4 numbers in
+        every row, which is no size change at all).
+        """
+        if earlier == "another model":
+            # Rows and index of an earlier provider, with the same vector size.
+            _seed_embeddings(library, model="gemini")
+            index = VectorIndex(
+                dimension=len(OLD_VECTOR), index_path=str(library.parent / "test.index")
+            )
+            index.build_index([OLD_VECTOR] * LIBRARY_SIZE, list(range(1, LIBRARY_SIZE + 1)))
+            index.save_index(str(library.parent / "test.index"))
+            before = _index_files(library)
+        else:
+            # Rows and index of the earlier vector size (a dimension mismatch now).
+            before = _seed_earlier_size(library)
+        error = KeyboardInterrupt() if stop == "interrupt" else None
+
+        run = _run_embeddings_regenerate(
+            library, "--yes", vectors=_Vectors(fail_on_request=2, error=error)
+        )
+
+        assert run.result.exit_code == (130 if stop == "interrupt" else 1)
+        assert "Embeddings: 50 tracks regenerated, 350 keep their previous embedding." in run.out
+        # The stop is what is reported: no word about the index, and no success line.
+        assert "The search index was left as it is" not in run.out
+        assert "Vector index" not in run.out and "successfully" not in run.out
+        assert _index_files(library) == before
+        assert marker_path(library).exists()
+        if earlier == "another model":
+            assert len(_vectors_by_track(library)) == 50
+            assert len(_vectors_by_track(library, model="gemini")) == LIBRARY_SIZE
+        else:
+            assert _embedding_sizes(library) == {4: 50, 8: 350}
+            _assert_saved_index_is_untouched(library, before)
+
+    def test_regenerate_stopped_after_a_size_change_is_continued_to_a_whole_index(
+        self, library: Path
+    ) -> None:
+        """The same command continues the stopped run, and its end replaces the index."""
+        before = _seed_earlier_size(library)
+        first = _run_embeddings_regenerate(library, "--yes", vectors=_Vectors(fail_on_request=3))
+        assert first.result.exit_code == 1
+        _assert_saved_index_is_untouched(library, before)
+
+        second = _run_embeddings_regenerate(library, "--yes")
+
+        assert second.result.exit_code == 0, second.result.output
+        assert "This run continues it: 300 of 400 tracks remain." in second.out
+        assert second.vectors.requests == [50] * 6
+        assert "✓ Embeddings regenerated successfully!" in second.out
+        assert "Vector index saved with 400 total embeddings" in second.out
+        assert "The search index was left as it is" not in second.out
+        assert _embedding_sizes(library) == {4: 400}
+        index = VectorIndex(
+            dimension=len(NEW_VECTOR), index_path=str(library.parent / "test.index")
+        )
+        assert index.dimension_mismatch is False
+        assert sorted(index.track_ids) == list(range(1, LIBRARY_SIZE + 1))
+        assert not marker_path(library).exists()
+
+    def test_regenerate_that_ends_with_tracks_in_the_way_saves_no_index_and_says_so(
+        self, library: Path
+    ) -> None:
+        """The run reaches its end, and the provider left 40 tracks out of its replies.
+
+        They hold the earlier vector size, so the last rebuild of the index is
+        refused. Like ``sync regenerate``: no success line, the sentence with the
+        count and the command, and status 0, because the run did not fail.
+        """
+        before = _seed_earlier_size(library)
+
+        run = _run_embeddings_regenerate(library, "--yes", vectors=_Vectors(short=5))
+
+        assert run.result.exit_code == 0, run.result.output
+        assert run.result.exception is None
+        assert "Embeddings regenerated with warnings." in run.out
+        assert "Embeddings: 360 tracks regenerated, 40 keep their previous embedding." in run.out
+        assert _index_sentence(40) in run.out
+        assert run.out.count("The search index was left as it is") == 1
+        assert "successfully" not in run.out
+        assert "Vector index saved" not in run.out and "✓" not in run.out
+        assert _embedding_sizes(library) == {4: 360, 8: 40}
+        _assert_saved_index_is_untouched(library, before)
+        # The 40 tracks the provider left out are still to do, so the marker stays and
+        # the same command makes only their embeddings. It does not start over for
+        # every track and pay the provider for the whole library again.
+        assert marker_path(library).exists()
+
+        again = _run_embeddings_regenerate(library, "--yes")
+
+        assert again.result.exit_code == 0, again.result.output
+        assert again.vectors.requests == [40]
+        assert "✓ Embeddings regenerated successfully!" in again.out
+        assert "Vector index saved with 400 total embeddings" in again.out
+        assert _ids_in_saved_index(library) == list(range(1, LIBRARY_SIZE + 1))
+        assert not marker_path(library).exists()
+
+    def test_regenerate_continued_run_whose_remaining_tracks_get_no_vector_ends_with_warnings(
+        self, library: Path
+    ) -> None:
+        """The run it continues had replaced 360 tracks. The provider returns no vector for 40.
+
+        Each later run continues with those 40 only, ends with warnings and status 0,
+        and leaves the saved index as it is. It used to end with status 1 ("No
+        embeddings were regenerated") every time. A provider that answers ends the run.
+        """
+        before = _seed_earlier_size(library)
+        first = _run_embeddings_regenerate(library, "--yes", vectors=_Vectors(short=5))
+        assert first.result.exit_code == 0, first.result.output
+        assert marker_path(library).exists()
+
+        for _ in range(2):
+            run = _run_embeddings_regenerate(library, "--yes", vectors=_Vectors(short=40))
+
+            assert run.result.exit_code == 0, run.result.output
+            assert run.vectors.requests == [40]
+            assert "Embeddings regenerated with warnings." in run.out
+            assert (
+                "Embeddings: 0 tracks regenerated (the earlier run regenerated 360), "
+                "40 keep their previous embedding." in run.out
+            )
+            assert _index_sentence(40) in run.out
+            assert "No embeddings were regenerated" not in run.out
+            assert "successfully" not in run.out and "Vector index saved" not in run.out
+            assert marker_path(library).exists()
+            assert _embedding_sizes(library) == {4: 360, 8: 40}
+            _assert_saved_index_is_untouched(library, before)
+
+        done = _run_embeddings_regenerate(library, "--yes")
+
+        assert done.result.exit_code == 0, done.result.output
+        assert done.vectors.requests == [40]
+        assert "✓ Embeddings regenerated successfully!" in done.out
+        assert _embedding_sizes(library) == {4: 400}
+        assert not marker_path(library).exists()
+
+    def test_regenerate_of_every_track_with_one_track_in_the_way_is_not_called_a_success(
+        self, library: Path
+    ) -> None:
+        """All 400 tracks are replaced, and one track still holds only another model's row.
+
+        A sync beside the run added it (here: while the first request was out). No
+        track of the run kept its previous embedding, and the index is still not
+        whole, so the run ends with warnings and without a "saved" line.
+        """
+        _seed_embeddings(library)
+        index_path = library.parent / "test.index"
+        index = VectorIndex(dimension=len(OLD_VECTOR), index_path=str(index_path))
+        index.build_index([OLD_VECTOR] * LIBRARY_SIZE, list(range(1, LIBRARY_SIZE + 1)))
+        index.save_index(str(index_path))
+        before = _index_files(library)
+
+        def a_sync_adds_a_track(request: int) -> None:
+            if request != 1:
+                return
+            with SQLiteManager(str(library)) as other:
+                track_id = other.insert_track(
+                    Track(plex_key="late", title="Late", artist_id=1, album_id=1, play_count=0)
+                )
+                other.insert_embedding(
+                    Embedding(
+                        track_id=track_id,
+                        embedding_model="gemini",
+                        embedding_dim=len(OLD_VECTOR),
+                        vector=OLD_VECTOR,
+                    )
+                )
+
+        run = _run_embeddings_regenerate(
+            library, "--yes", vectors=_Vectors(before_reply=a_sync_adds_a_track)
+        )
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Embeddings regenerated with warnings." in run.out
+        assert "Embeddings: 400 tracks regenerated." in run.out
+        assert (
+            "The search index was left as it is: 1 track holds an embedding that was made "
+            "with other embedding settings. Run 'plexmix embeddings generate --regenerate' "
+            "to replace it." in run.out
+        )
+        assert "successfully" not in run.out and "Vector index saved" not in run.out
+        assert _new_embeddings(library) == list(range(1, LIBRARY_SIZE + 1))
+        # The row of the other model is kept: its track has no replacement yet.
+        assert len(_vectors_by_track(library, model="gemini")) == 1
+        assert _index_files(library) == before
+
+    def test_regenerate_reads_the_result_of_the_last_rebuild(self, library: Path) -> None:
+        """The command asks the one rebuild for its result, and builds nothing itself."""
+        _seed_embeddings(library)
+
+        def refused(db: Any, vector_index: Any, model: str, run: Any = None) -> int:
+            vector_index.last_rebuild = IndexRebuild(left_out=12)
+            return 0
+
+        with patch("plexmix.cli.embeddings_cmd.finish_embeddings_pass", side_effect=refused):
+            run = _run_embeddings_regenerate(library, "--yes")
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Embeddings regenerated with warnings." in run.out
+        assert "Embeddings: 400 tracks regenerated." in run.out
+        assert _index_sentence(12) in run.out
+        assert "successfully" not in run.out and "Vector index saved" not in run.out
+        assert _index_files(library) == {}
+
+    def test_regenerate_says_so_when_no_index_could_be_saved(self, library: Path) -> None:
+        """An index file that cannot be loaded or moved aside is left alone, not written over.
+
+        The run then saves no index, and must not say "Vector index saved".
+        """
+        _seed_embeddings(library)
+        index_path = library.parent / "test.index"
+        index_path.write_bytes(b"this is not a search index")
+
+        with patch(
+            "plexmix.database.vector_index.os.rename", side_effect=PermissionError(13, "denied")
+        ):
+            run = _run_embeddings_regenerate(library, "--yes")
+
+        assert run.result.exit_code == 0, run.result.output
+        assert len(_new_embeddings(library)) == LIBRARY_SIZE
+        assert index_path.read_bytes() == b"this is not a search index"
+        assert "Could not be moved aside, so left where it is:" in run.out
+        assert "Embeddings regenerated with warnings." in run.out
+        assert "Embeddings: 400 tracks regenerated." in run.out
+        assert "The search index was not saved in this run" in run.out
+        assert "Vector index saved" not in run.out
+        assert "successfully" not in run.out
+
+    def test_regenerate_that_writes_nothing_exits_nonzero(self, library: Path) -> None:
+        """Spec "Nothing regenerated": the first request fails, so no row is new."""
+        _seed_embeddings(library)
+        embeddings = _embedding_rows(library)
+
+        run = _run_embeddings_regenerate(library, "--yes", vectors=_Vectors(fail_on_request=1))
+
+        assert run.result.exit_code == 1
+        assert "Embedding generation stopped: the embedding provider stopped answering." in run.out
+        assert "Embeddings: 0 tracks regenerated, 400 keep their previous embedding." in run.out
+        assert "successfully" not in run.out
+        assert _embedding_rows(library) == embeddings
+
+    def test_regenerate_continued_run_question_gives_remaining_count(self, library: Path) -> None:
+        """Spec "Continuing": the question says so, and only the tracks that are left are sent."""
+        _seed_embeddings(library)
+        first = _run_embeddings_regenerate(library, "--yes", vectors=_Vectors(fail_on_request=2))
+        assert first.result.exit_code == 1
+        marker = marker_path(library)
+
+        second = _run_embeddings_regenerate(library, terminal=True, answers="y\n")
+
+        assert second.result.exit_code == 0, second.result.output
+        question = "Continue with the remaining 350 tracks? [y/N]"
+        assert question in second.out
+        before_question = second.out.split(question)[0]
+        assert (
+            "An earlier regenerate run did not finish. This run continues it: "
+            "350 of 400 tracks remain." in before_question
+        )
+        # How to start over: the marker file is named, in one piece.
+        assert (
+            f"To start over with all 400 tracks, delete {marker} and run the command again."
+            in second.result.stdout
+        )
+        assert second.vectors.requests == [50] * 7
+        assert "Embeddings: 350 tracks regenerated." in second.out
+        assert "✓ Embeddings regenerated successfully!" in second.out
+        assert _new_embeddings(library) == list(range(1, LIBRARY_SIZE + 1))
+        # The run reached its end, so nothing is left to continue.
+        assert not marker.exists()
+
+    def test_regenerate_interrupt_tip_continues(self, library: Path) -> None:
+        _seed_embeddings(library)
+
+        run = _run_embeddings_regenerate(
+            library, "--yes", vectors=_Vectors(fail_on_request=2, error=KeyboardInterrupt())
+        )
+
+        assert run.result.exit_code == 130
+        assert "Interrupted." in run.out
+        assert "Embeddings: 50 tracks regenerated, 350 keep their previous embedding." in run.out
+        assert "Every track that was not regenerated keeps its previous data." in run.out
+        assert f"Tip: Run '{EMBEDDINGS_COMMAND}' again to continue." in run.out
+        # Not the plain command, which would leave the other 350 as they are.
+        assert "Run 'plexmix embeddings generate' again" not in run.out
+        assert len(_vectors_by_track(library)) == LIBRARY_SIZE
+        assert _new_embeddings(library) == list(range(1, 51))
+        assert _ids_in_saved_index(library) == list(range(1, LIBRARY_SIZE + 1))
+        assert marker_path(library).exists()
+
+    def test_regenerate_drops_other_models_only_when_every_track_is_done(
+        self, library: Path
+    ) -> None:
+        """A row of another model goes only once its track has a new embedding."""
+        _seed_embeddings(library, model="gemini")
+
+        first = _run_embeddings_regenerate(library, "--yes", vectors=_Vectors(fail_on_request=2))
+
+        assert first.result.exit_code == 1
+        # 50 tracks have a row of the new model. Every track still has its old one.
+        assert len(_vectors_by_track(library)) == 50
+        assert len(_vectors_by_track(library, model="gemini")) == LIBRARY_SIZE
+
+        second = _run_embeddings_regenerate(library, "--yes")
+
+        assert second.result.exit_code == 0, second.result.output
+        assert second.vectors.requests == [50] * 7
+        assert len(_vectors_by_track(library)) == LIBRARY_SIZE
+        assert _vectors_by_track(library, model="gemini") == {}
+        assert "Removed 400 embeddings of other models." in second.out
+
+    @pytest.mark.parametrize("tracks", [None, 0], ids=["no-database", "no-tracks"])
+    def test_regenerate_with_an_empty_library_has_nothing_to_do(
+        self, tmp_path: Path, tracks: Optional[int]
+    ) -> None:
+        """A library without tracks is a run with nothing to do, not a failed run.
+
+        Replaces the check of status 1: nothing is asked, no provider is asked,
+        nothing is written, and the command ends with status 0.
+        """
+        database_file = tmp_path / "test.db"
+        if tracks is not None:
+            with SQLiteManager(str(database_file)) as db:
+                db.create_tables()
+        files = sorted(path.name for path in tmp_path.iterdir())
+
+        run = _run_embeddings_regenerate(database_file, "--yes")
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "The PlexMix library holds no tracks, so there is nothing to regenerate." in run.out
+        assert "Run 'plexmix sync' first." in run.out
+        assert "[y/N]" not in run.out and "successfully" not in run.out
+        run.check.assert_not_called()
+        assert run.vectors.requests == []
+        # Looking at a library that does not exist yet did not create one, and no
+        # run marker was left behind.
+        assert sorted(path.name for path in tmp_path.iterdir()) == files
+        assert not marker_path(database_file).exists()
+
+    def test_generate_as_a_function_never_regenerates(self, library: Path) -> None:
+        """A caller that leaves the options out passes placeholder objects, not True."""
+        _seed_embeddings(library)
+        embeddings = _embedding_rows(library)
+        settings = _regenerate_settings(library)
+
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("plexmix.cli.embeddings_cmd.Settings.load_from_file", return_value=settings)
+            )
+            stack.enter_context(
+                patch(
+                    "plexmix.cli.embeddings_cmd._build_embedding_generator_with_reason",
+                    return_value=(_Vectors(), None),
+                )
+            )
+            regenerate = stack.enter_context(
+                patch("plexmix.cli.embeddings_cmd._regenerate_embeddings")
+            )
+            embeddings_cmd.embeddings_generate()
+
+        regenerate.assert_not_called()
+        assert _embedding_rows(library) == embeddings
+
+    def test_plain_generate_asks_nothing_and_embeds_only_what_is_missing(
+        self, library: Path
+    ) -> None:
+        """Without ``--regenerate`` the command is what it was: no question, nothing replaced."""
+        _seed_embeddings(library)
+        with SQLiteManager(str(library)) as db:
+            db.get_connection().execute("DELETE FROM embeddings WHERE track_id > 300")
+            db._commit()
+        settings = _regenerate_settings(library)
+        vectors = _Vectors()
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+            stack.enter_context(
+                patch("plexmix.cli.embeddings_cmd.Settings.load_from_file", return_value=settings)
+            )
+            stack.enter_context(
+                patch(
+                    "plexmix.cli.embeddings_cmd._build_embedding_generator_with_reason",
+                    return_value=(vectors, None),
+                )
+            )
+            check = stack.enter_context(patch("plexmix.cli.embeddings_cmd.check_providers"))
+            stack.enter_context(patch("plexmix.cli.console_helpers.can_prompt", return_value=False))
+            result = runner.invoke(app, ["embeddings", "generate"])
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 0, result.output
+        assert "[y/N]" not in out
+        check.assert_not_called()
+        assert "Found 100 tracks without embeddings" in out
+        assert "Successfully generated 100 embeddings!" in out
+        assert "Vector index saved with 400 total embeddings" in out
+        assert vectors.requests == [50, 50]
+        assert _new_embeddings(library) == list(range(301, LIBRARY_SIZE + 1))
+        # The plain command opens no run.
+        assert not marker_path(library).exists()
+
+    def test_plain_generate_keeps_its_interrupt_tip(self, library: Path) -> None:
+        settings = _regenerate_settings(library)
+        vectors = _Vectors(fail_on_request=2, error=KeyboardInterrupt())
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+            stack.enter_context(
+                patch("plexmix.cli.embeddings_cmd.Settings.load_from_file", return_value=settings)
+            )
+            stack.enter_context(
+                patch(
+                    "plexmix.cli.embeddings_cmd._build_embedding_generator_with_reason",
+                    return_value=(vectors, None),
+                )
+            )
+            result = runner.invoke(app, ["embeddings", "generate"])
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 130
+        assert "Run 'plexmix embeddings generate' again to continue." in out
+        assert "--regenerate" not in out
+
+    def test_help_lists_yes(self) -> None:
+        result = runner.invoke(app, ["embeddings", "generate", "--help"])
+
+        assert result.exit_code == 0
+        # The plain text: a coloured help page splits the option name with colour codes.
+        text = _flat(click.unstyle(result.output))
+        assert "--yes" in text
+        assert "--regenerate" in text
+
 
 # ---------------------------------------------------------------------------
 # tags generate
 # ---------------------------------------------------------------------------
 
 
+def _run_tags_generate(
+    library: Path,
+    *args: str,
+    ai: Optional[_TaggingAI] = None,
+    vectors: Optional[_Vectors] = None,
+    tag_generator: Any = None,
+    embedding_failure: Optional[ProviderFailure] = None,
+) -> SimpleNamespace:
+    """Run ``tags generate`` on the temporary library with fake providers.
+
+    ``tag_generator`` replaces the real ``TagGenerator``, for results that did not
+    come through its parser. ``embedding_failure`` makes the embedding provider fail
+    to start for the follow-up embedding refresh.
+    """
+    ai = ai or _TaggingAI()
+    vectors = vectors or _Vectors()
+    with ExitStack() as stack:
+        stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+        stack.enter_context(
+            patch(
+                "plexmix.cli.tags_cmd.Settings.load_from_file",
+                return_value=_regenerate_settings(library),
+            )
+        )
+        stack.enter_context(
+            patch("plexmix.cli.tags_cmd._resolve_ai_api_key", return_value=DUMMY_KEY)
+        )
+        stack.enter_context(patch("plexmix.cli.tags_cmd._build_ai_provider", return_value=ai))
+        stack.enter_context(
+            patch(
+                "plexmix.cli.tags_cmd._build_embedding_generator_with_reason",
+                return_value=(None, embedding_failure) if embedding_failure else (vectors, None),
+            )
+        )
+        if tag_generator is not None:
+            stack.enter_context(
+                patch("plexmix.cli.tags_cmd.TagGenerator", return_value=tag_generator)
+            )
+        result = runner.invoke(app, ["tags", "generate", "--provider", "openai", *args])
+    return SimpleNamespace(result=result, out=_flat(result.stdout), ai=ai, vectors=vectors)
+
+
+def _untag(library: Path, first: int, last: int) -> None:
+    """Take the tags of the tracks ``first`` to ``last`` away, as if they were never tagged."""
+    with SQLiteManager(str(library)) as db:
+        db.get_connection().execute(
+            "UPDATE tracks SET tags = NULL WHERE id BETWEEN ? AND ?", (first, last)
+        )
+        db._commit()
+
+
 class TestTagsGenerate:
     """Tests for `plexmix tags generate`."""
+
+    def test_tags_after_a_size_change_are_saved_and_the_index_is_left_as_it_is(
+        self, library: Path
+    ) -> None:
+        """The vector size was changed, and 30 tracks have no tags yet.
+
+        Their tags are saved and their embeddings are made in the new size. An index
+        of those 30 must not take the place of the index of all 400, so nothing is
+        built, and the command says so. It printed nothing about that before.
+        """
+        before = _seed_earlier_size(library)
+        _untag(library, 201, 230)
+
+        run = _run_tags_generate(library)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert run.result.exception is None
+        assert "Updated 30 tracks with tags!" in run.out
+        assert "Regenerated 30 embeddings with tags!" in run.out
+        assert (
+            "The search index was left as it is: 370 tracks hold an embedding that was made "
+            "with other embedding settings. Run 'plexmix embeddings generate --regenerate' "
+            "to replace them." in run.out
+        )
+        assert run.out.count("The search index was left as it is") == 1
+        # The tags are saved: the 30 tracks hold the provider's tags.
+        assert run.ai.sent == list(range(201, 231))
+        tagged = {row[0]: row[1:4] for row in _tag_rows(library) if 201 <= row[0] <= 230}
+        assert tagged == {n: (f"new-{n}", "focus", "piano") for n in range(201, 231)}
+        assert _embedding_sizes(library) == {4: 30, 8: 370}
+        _assert_saved_index_is_untouched(library, before)
+
+    def test_tags_with_one_vector_size_rebuild_the_index(self, library: Path) -> None:
+        """The healthy path is what it was: the index is rebuilt from the rows."""
+        _seed_embeddings(library)
+        _untag(library, 201, 230)
+
+        run = _run_tags_generate(library)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Updated 30 tracks with tags!" in run.out
+        assert "Regenerated 30 embeddings with tags!" in run.out
+        assert "The search index was left as it is" not in run.out
+        assert run.vectors.requests == [30]
+        assert _ids_in_saved_index(library) == list(range(1, LIBRARY_SIZE + 1))
+
+    def test_a_list_of_blanks_is_never_written_and_never_counted(self, library: Path) -> None:
+        """Results that did not come through the tag generator's parser are cleaned too.
+
+        ``[""]``, ``[" "]`` and ``[None]`` hold no tag. Joined as they are, they would
+        write an empty text or a comma over a column and count the track as tagged.
+        """
+        _untag(library, 1, 4)
+        with SQLiteManager(str(library)) as db:
+            db.get_connection().execute(
+                "UPDATE tracks SET environments = 'relax', instruments = 'piano' WHERE id = 1"
+            )
+            db._commit()
+        replies = {
+            1: {"tags": [""], "environments": [" "], "instruments": [None]},
+            2: {"tags": ["", "rock "], "environments": [""], "instruments": [" ", "guitar"]},
+            3: ["", "calm"],
+            4: {"tags": ["", ""], "environments": [None], "instruments": [{"a": 1}]},
+        }
+        generator = SimpleNamespace(generate_tags_batch=lambda batch, batch_size=20: replies)
+
+        run = _run_tags_generate(library, "--no-regenerate-embeddings", tag_generator=generator)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "Updated 2 tracks with tags!" in run.out
+        rows = {row[0]: row[1:] for row in _tag_rows(library) if row[0] <= 4}
+        # Tracks 1 and 4 got nothing: no column changed and no time was stamped.
+        assert rows[1] == (None, "relax", "piano", None)
+        assert rows[4] == (None, None, None, None)
+        # Tracks 2 and 3 got the items that have content, and only those.
+        assert rows[2][:3] == ("rock", None, "guitar") and rows[2][3] is not None
+        assert rows[3][:3] == ("calm", None, None) and rows[3][3] is not None
+        assert run.vectors.requests == []
 
     @patch("plexmix.cli.tags_cmd.SQLiteManager")
     @patch("plexmix.cli.tags_cmd._resolve_ai_api_key", return_value="key123")
@@ -1646,7 +4221,7 @@ class TestTagsGenerate:
         assert result.exit_code == 0
         assert "all tracks already have up-to-date tags" in result.output.lower()
 
-    @patch("plexmix.cli.tags_cmd._build_embedding_generator", return_value=None)
+    @patch("plexmix.cli.tags_cmd._build_embedding_generator_with_reason", return_value=(None, None))
     @patch("plexmix.cli.tags_cmd.TagGenerator")
     @patch("plexmix.cli.tags_cmd._build_ai_provider")
     @patch("plexmix.cli.tags_cmd.SQLiteManager")
@@ -1713,7 +4288,7 @@ class TestCreatePlaylist:
     @patch("plexmix.cli.create_cmd.PlaylistGenerator")
     @patch("plexmix.cli.create_cmd.build_vector_index")
     @patch("plexmix.cli.create_cmd.SQLiteManager")
-    @patch("plexmix.cli.create_cmd._build_embedding_generator")
+    @patch("plexmix.cli.create_cmd._build_embedding_generator_with_reason")
     @patch("plexmix.cli.create_cmd.Settings.load_from_file")
     def test_successful_create(
         self,
@@ -1729,7 +4304,7 @@ class TestCreatePlaylist:
 
         mock_emb = MagicMock()
         mock_emb.get_dimension.return_value = 1536
-        mock_build_emb.return_value = mock_emb
+        mock_build_emb.return_value = (mock_emb, None)
 
         mock_db = MagicMock()
         mock_db.__enter__ = MagicMock(return_value=mock_db)
@@ -1769,7 +4344,7 @@ class TestCreatePlaylist:
     @patch("plexmix.cli.create_cmd.PlaylistGenerator")
     @patch("plexmix.cli.create_cmd.build_vector_index")
     @patch("plexmix.cli.create_cmd.SQLiteManager")
-    @patch("plexmix.cli.create_cmd._build_embedding_generator")
+    @patch("plexmix.cli.create_cmd._build_embedding_generator_with_reason")
     @patch("plexmix.cli.create_cmd.Settings.load_from_file")
     def test_no_tracks_found_exits(
         self, mock_load, mock_build_emb, mock_db_cls, mock_build_vi, mock_gen_cls, tmp_path
@@ -1779,7 +4354,7 @@ class TestCreatePlaylist:
 
         mock_emb = MagicMock()
         mock_emb.get_dimension.return_value = 1536
-        mock_build_emb.return_value = mock_emb
+        mock_build_emb.return_value = (mock_emb, None)
 
         mock_db = MagicMock()
         mock_db.__enter__ = MagicMock(return_value=mock_db)
@@ -1802,7 +4377,9 @@ class TestCreatePlaylist:
         assert "no tracks found" in result.output.lower()
 
     @patch("plexmix.cli.create_cmd.SQLiteManager")
-    @patch("plexmix.cli.create_cmd._build_embedding_generator", return_value=None)
+    @patch(
+        "plexmix.cli.create_cmd._build_embedding_generator_with_reason", return_value=(None, None)
+    )
     @patch("plexmix.cli.create_cmd.Settings.load_from_file")
     def test_no_embedding_provider_exits(self, mock_load, mock_build_emb, mock_db_cls, tmp_path):
         settings = _make_settings(tmp_path)
@@ -1819,6 +4396,377 @@ class TestCreatePlaylist:
         )
         assert result.exit_code == 1
         assert "api key required" in result.output.lower()
+
+    def test_create_after_a_size_change_names_the_command_that_replaces_the_embeddings(
+        self, library: Path
+    ) -> None:
+        """The saved index was made with another vector size, and ``create`` stops there.
+
+        It named ``plexmix sync incremental --embeddings``, which embeds only tracks
+        without an embedding and so cannot replace vectors of another size.
+        """
+        before = _seed_earlier_size(library)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+            stack.enter_context(
+                patch(
+                    "plexmix.cli.create_cmd.Settings.load_from_file",
+                    return_value=_regenerate_settings(library),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "plexmix.cli.create_cmd._build_embedding_generator_with_reason",
+                    return_value=(_Vectors(), None),
+                )
+            )
+            result = runner.invoke(
+                app,
+                ["create", "calm evening", "--limit", "5", "--name", "Calm", "--no-create-in-plex"],
+            )
+
+        out = _flat(result.stdout)
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "Embedding dimension mismatch!" in out
+        assert "Existing embeddings are 8D but current provider 'openai' uses 4D." in out
+        assert "You must regenerate embeddings to use the new provider:" in out
+        assert "plexmix embeddings generate --regenerate" in out
+        assert "sync incremental" not in out
+        # No playlist was made from an index of another size, and the index is as it was.
+        assert _query(library, "SELECT COUNT(*) FROM playlists") == [(0,)]
+        _assert_saved_index_is_untouched(library, before)
+
+    def test_create_reports_a_moved_index(self, library: Path) -> None:
+        """Spec "Truncated metadata file": both files are kept under dated names, and the
+        output says so and names the command that rebuilds the index."""
+        _seed_embeddings(library)
+        embeddings = _embedding_rows(library)
+        folder = library.parent
+        index_path = folder / "test.index"
+        metadata_path = index_path.with_suffix(".metadata")
+        index = VectorIndex(dimension=len(OLD_VECTOR), index_path=str(index_path))
+        index.build_index([OLD_VECTOR, OLD_VECTOR], [1, 2])
+        index.save_index(str(index_path))
+        index_file = index_path.read_bytes()
+        # The metadata file was cut short, as by a save that did not finish.
+        cut_short = metadata_path.read_bytes()[:10]
+        metadata_path.write_bytes(cut_short)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+            stack.enter_context(
+                patch(
+                    "plexmix.cli.create_cmd.Settings.load_from_file",
+                    return_value=_regenerate_settings(library),
+                )
+            )
+            stack.enter_context(
+                patch(
+                    "plexmix.cli.create_cmd._build_embedding_generator_with_reason",
+                    return_value=(_Vectors(), None),
+                )
+            )
+            result = runner.invoke(
+                app,
+                ["create", "calm evening", "--limit", "5", "--name", "Calm", "--no-create-in-plex"],
+            )
+
+        out = _flat(result.stdout)
+        assert "The search index could not be loaded." in out
+        assert "The stored embeddings are not affected." in out
+        assert "To rebuild the search index from them, run 'plexmix embeddings generate'." in out
+        # Nothing was deleted: both files are there under a name that holds the date
+        # and the time, with what they held, and the output names each in one piece.
+        moved_index, moved_metadata = sorted(folder.glob("test.*.unreadable-*"))
+        assert (moved_index.read_bytes(), moved_metadata.read_bytes()) == (index_file, cut_short)
+        for moved, name in ((moved_index, "test.index"), (moved_metadata, "test.metadata")):
+            assert moved.name.startswith(f"{name}.unreadable-")
+            datetime.strptime(moved.name.split(".unreadable-")[1], "%Y%m%d-%H%M%S")
+            assert str(moved) in result.stdout
+        assert not index_path.exists() and not metadata_path.exists()
+        assert _embedding_rows(library) == embeddings
+        # The index is empty until it is rebuilt, so there is nothing to choose from.
+        # The command says that after the notice, and it does not end in an error report.
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert out.index("could not be loaded") < out.index("No tracks found matching criteria.")
+
+
+# ---------------------------------------------------------------------------
+# The embedding provider cannot start: the commands name the real cause
+# ---------------------------------------------------------------------------
+
+LOCAL_MISSING_PACKAGE = ProviderFailure(
+    Cause.MISSING_DEPENDENCY,
+    "local",
+    package="sentence-transformers",
+    detail="sentence-transformers not installed. Run: pip install sentence-transformers",
+)
+LOCAL_LOAD_FAILED = ProviderFailure(
+    Cause.MODEL_LOAD_FAILED,
+    "local",
+    detail="Failed to load local model all-MiniLM-L6-v2: the worker stopped",
+)
+
+
+class TestEmbeddingFailureLines:
+    """``embedding_failure_lines``: the text a command prints when the provider cannot start."""
+
+    @pytest.mark.parametrize(
+        "failure",
+        [None, ProviderFailure(Cause.MISSING_API_KEY, "openai")],
+        ids=["no-failure-object", "missing-api-key"],
+    )
+    def test_no_failure_and_a_missing_key_give_the_two_legacy_lines(
+        self, failure: Optional[ProviderFailure]
+    ) -> None:
+        assert embedding_failure_lines(failure) == [
+            "API key required for embedding provider.",
+            "Run: plexmix config init",
+        ]
+
+    def test_a_local_model_that_could_not_load_is_named(self) -> None:
+        lines = embedding_failure_lines(LOCAL_LOAD_FAILED)
+        text = "\n".join(lines)
+
+        assert "couldn't load" in text
+        assert "API key" not in text
+        assert lines[1] == LOCAL_LOAD_FAILED.detail
+        assert "plexmix config init" in lines[-1]
+
+    def test_missing_local_models_name_how_to_install_them(self) -> None:
+        lines = embedding_failure_lines(LOCAL_MISSING_PACKAGE)
+        text = "\n".join(lines)
+
+        assert "Local models aren't installed" in text
+        assert "plexmix[local]" in text
+        assert LOCAL_REMEDY in lines[-1]
+        assert "choose another embedding provider: plexmix config init" in lines[-1]
+        assert "API key" not in text
+
+    def test_a_detail_is_passed_through_unchanged(self) -> None:
+        detail = "The endpoint answered 503 [Errno 32] (twice)"
+        failure = ProviderFailure(Cause.UNKNOWN, "custom", detail=detail)
+
+        lines = embedding_failure_lines(failure)
+
+        assert lines[1] == detail
+        assert len(lines) == 3
+        assert lines[-1] == "Check the embedding settings: plexmix config init"
+
+    def test_no_detail_leaves_out_the_detail_line(self) -> None:
+        lines = embedding_failure_lines(ProviderFailure(Cause.MISSING_CONFIG, "custom"))
+
+        assert len(lines) == 2
+        assert "API key" not in "\n".join(lines)
+
+    @pytest.mark.parametrize("provider", ["local", "openai"])
+    @pytest.mark.parametrize("cause", [c for c in Cause if c != Cause.MISSING_API_KEY])
+    def test_only_a_missing_key_says_that_a_key_is_required(
+        self, cause: Cause, provider: str
+    ) -> None:
+        lines = embedding_failure_lines(ProviderFailure(cause, provider, detail="it broke"))
+
+        assert all(lines)
+        assert "API key required" not in "\n".join(lines)
+        # Plain text: Rich markup is added where the line is printed.
+        assert not any("[/" in line or line.startswith("[") for line in lines)
+
+    def test_printing_escapes_the_square_brackets_of_a_line(self) -> None:
+        from io import StringIO
+
+        from rich.console import Console
+
+        failure = ProviderFailure(Cause.MISSING_DEPENDENCY, "local", detail="[Errno 32] [bold]x")
+        out = StringIO()
+
+        print_embedding_failure(Console(file=out, width=300, color_system=None), failure)
+
+        text = out.getvalue()
+        assert "plexmix[local]" in text
+        assert "[Errno 32] [bold]x" in text
+
+
+EMBEDDING_COMMANDS = [
+    pytest.param(
+        ["create", "calm evening", "--limit", "5", "--name", "Calm"], "create", id="create"
+    ),
+    pytest.param(["embeddings", "generate"], "embeddings", id="embeddings-generate"),
+]
+
+
+def _run_with_failed_provider(
+    tmp_path: Path, module: str, args: List[str], failure: Optional[ProviderFailure]
+) -> Result:
+    """Run a command whose embedding provider cannot start, with the settings file patched."""
+    with ExitStack() as stack:
+        stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+        stack.enter_context(
+            patch(
+                f"plexmix.cli.{module}_cmd.Settings.load_from_file",
+                return_value=_make_settings(tmp_path),
+            )
+        )
+        stack.enter_context(
+            patch(
+                f"plexmix.cli.{module}_cmd._build_embedding_generator_with_reason",
+                return_value=(None, failure),
+            )
+        )
+        return runner.invoke(app, args)
+
+
+class TestEmbeddingProviderCannotStart:
+    """The four commands print the cause of the failure, and say "API key" only for a key."""
+
+    @pytest.mark.parametrize(("args", "module"), EMBEDDING_COMMANDS)
+    def test_a_model_that_could_not_load_is_named_not_an_api_key(
+        self, tmp_path: Path, args: List[str], module: str
+    ) -> None:
+        args = [*args, "--no-create-in-plex"] if module == "create" else args
+
+        result = _run_with_failed_provider(tmp_path, module, args, LOCAL_LOAD_FAILED)
+
+        out = _flat(result.output)
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert "couldn't load" in out
+        assert LOCAL_LOAD_FAILED.detail in out
+        assert "api key" not in out.lower()
+
+    @pytest.mark.parametrize(("args", "module"), EMBEDDING_COMMANDS)
+    def test_missing_local_models_are_named_with_how_to_install_them(
+        self, tmp_path: Path, args: List[str], module: str
+    ) -> None:
+        args = [*args, "--no-create-in-plex"] if module == "create" else args
+
+        result = _run_with_failed_provider(tmp_path, module, args, LOCAL_MISSING_PACKAGE)
+
+        out = _flat(result.output)
+        assert result.exit_code == 1
+        assert "Local models aren't installed" in out
+        assert "plexmix[local]" in out
+        assert "api key" not in out.lower()
+
+    @pytest.mark.parametrize(("args", "module"), EMBEDDING_COMMANDS)
+    @pytest.mark.parametrize(
+        "failure",
+        [None, ProviderFailure(Cause.MISSING_API_KEY, "openai")],
+        ids=["no-failure-object", "missing-api-key"],
+    )
+    def test_a_missing_key_is_still_reported_as_one(
+        self, tmp_path: Path, args: List[str], module: str, failure: Optional[ProviderFailure]
+    ) -> None:
+        args = [*args, "--no-create-in-plex"] if module == "create" else args
+
+        result = _run_with_failed_provider(tmp_path, module, args, failure)
+
+        out = _flat(result.output)
+        assert result.exit_code == 1
+        assert "API key required for embedding provider." in out
+        assert "Run: plexmix config init" in out
+
+    def test_tags_generate_names_the_cause_skips_the_refresh_and_keeps_its_tags(
+        self, library: Path
+    ) -> None:
+        """The tags were saved before the embedding refresh. Failing to start the provider
+        skips the refresh, says why, and leaves the saved tags and the exit status as they were."""
+        _seed_embeddings(library)
+        _untag(library, 201, 230)
+        embeddings = _embedding_rows(library)
+
+        run = _run_tags_generate(library, embedding_failure=LOCAL_LOAD_FAILED)
+
+        assert run.result.exit_code == 0, run.result.output
+        assert run.result.exception is None
+        assert "Updated 30 tracks with tags!" in run.out
+        assert "The local model couldn't load" in run.out
+        assert LOCAL_LOAD_FAILED.detail in run.out
+        assert "Skipping." in run.out
+        assert "api key" not in run.out.lower()
+        # The tags are saved, and no embedding was made or replaced.
+        assert run.ai.sent == list(range(201, 231))
+        tagged = {row[0]: row[1:4] for row in _tag_rows(library) if 201 <= row[0] <= 230}
+        assert tagged == {n: (f"new-{n}", "focus", "piano") for n in range(201, 231)}
+        assert run.vectors.requests == []
+        assert _embedding_rows(library) == embeddings
+
+    def test_tags_generate_still_says_a_missing_key_is_required(self, library: Path) -> None:
+        _untag(library, 201, 210)
+
+        run = _run_tags_generate(
+            library, embedding_failure=ProviderFailure(Cause.MISSING_API_KEY, "openai")
+        )
+
+        assert run.result.exit_code == 0, run.result.output
+        assert "API key required for embedding provider." in run.out
+        assert "Skipping." in run.out
+
+    @pytest.mark.parametrize(
+        ("error", "cause"),
+        [
+            pytest.param(RuntimeError(f"upstream refused {DUMMY_KEY}"), Cause.UNKNOWN, id="other"),
+            pytest.param(
+                RuntimeError(f"Failed to load local model {DUMMY_KEY}"),
+                Cause.MODEL_LOAD_FAILED,
+                id="model-load-failed",
+            ),
+            pytest.param(
+                ImportError(f"cohere not installed ({DUMMY_KEY})"),
+                Cause.MISSING_DEPENDENCY,
+                id="missing-dependency",
+            ),
+        ],
+    )
+    def test_no_line_holds_the_key_that_an_error_repeated(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        error: BaseException,
+        cause: Cause,
+    ) -> None:
+        """The real builder redacts the stored key from the error text, so no printed
+        line repeats it, whichever way the provider failed."""
+        # A logging handler that an earlier test left on the root logger, with a stream
+        # that is closed, would print "--- Logging error ---" and the chained provider
+        # error (which holds the key). That is test pollution, not what this checks.
+        monkeypatch.setattr(logging, "raiseExceptions", False)
+        settings = _make_settings(tmp_path)
+        settings.embedding.default_provider = "openai"
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("plexmix.services.providers.EmbeddingGenerator", side_effect=error)
+            )
+            stack.enter_context(
+                patch(
+                    "plexmix.services.providers.resolve_embedding_api_key",
+                    return_value=DUMMY_KEY,
+                )
+            )
+            generator, failure = build_embedding_generator_with_reason(settings)
+            assert generator is None and failure is not None
+            assert failure.cause == cause
+
+            lines = embedding_failure_lines(failure)
+            assert DUMMY_KEY not in "\n".join(lines)
+            assert "[redacted]" in "\n".join(lines)
+
+            # The same through a command, from the key that the builder resolved to the screen.
+            stack.enter_context(patch("plexmix.cli.main.setup_logging"))
+            stack.enter_context(
+                patch("plexmix.cli.create_cmd.Settings.load_from_file", return_value=settings)
+            )
+            result = runner.invoke(
+                app,
+                ["create", "calm evening", "--limit", "5", "--name", "Calm", "--no-create-in-plex"],
+            )
+
+        assert result.exit_code == 1
+        assert DUMMY_KEY not in result.output
+        assert DUMMY_KEY not in _squeezed(result.output)
+        assert DUMMY_KEY not in result.stdout
 
 
 # ---------------------------------------------------------------------------

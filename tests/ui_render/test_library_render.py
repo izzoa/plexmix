@@ -5,6 +5,7 @@ Runs against real Reflex only (see tests/ui_render/conftest.py for the JSX forma
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -280,14 +281,122 @@ class TestDialogs:
             'jsx(RadixThemesAlertDialog.Cancel,{},jsx("button",{className:"btn btn-3 btn-soft",'
             'type:"button"},"Cancel"))'
         ) in js
+        # "Regenerate" is also disabled until its dialog has stated the scope.
         confirm_btn = re.search(
-            r'jsx\("button",\{className:"btn btn-3 btn-danger",onClick:(.*?)\},"' + confirm + '"',
+            r'jsx\("button",\{className:"btn btn-3 btn-danger",(?:disabled:[^,]+,)?onClick:(.*?)\},"'
+            + confirm
+            + '"',
             js,
         )
         assert confirm_btn and f".{handler}" in confirm_btn.group(1)
         assert "window.pmFocus&&pmFocus.restore()" in js
         assert "onCloseAutoFocus:" in js
         assert "RadixThemesAlertDialog.Title" in js and "RadixThemesAlertDialog.Description" in js
+
+    @pytest.mark.parametrize(
+        "config,ai,embedder,privacy",
+        [
+            # Spec "Cloud AI provider and local embeddings".
+            (
+                "ai:\n  default_provider: openai\n  model: gpt-5-mini\n"
+                "embedding:\n  default_provider: local\n  model: all-MiniLM-L6-v2\n",
+                ("OpenAI", "gpt-5-mini"),
+                ("Local", "all-MiniLM-L6-v2"),
+                "Track titles, artists, albums and genres are sent to OpenAI.",
+            ),
+            # Spec "Everything local".
+            (
+                "ai:\n  default_provider: local\n  model: local-llm\n"
+                "embedding:\n  default_provider: local\n  model: all-MiniLM-L6-v2\n",
+                ("Local", "local-llm"),
+                ("Local", "all-MiniLM-L6-v2"),
+                "Runs on this machine. Nothing is sent to a cloud provider.",
+            ),
+        ],
+        ids=["cloud AI provider", "both providers on this machine"],
+    )
+    def test_regenerate_confirm_states_count_providers_and_privacy(
+        self,
+        config: str,
+        ai: tuple[str, str],
+        embedder: tuple[str, str],
+        privacy: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Spec "Regenerate sync confirmation states its scope", for 5,943 tracks."""
+        from plexmix.config.settings import Settings
+        from plexmix.ui.states import library_state as ls
+
+        # A scratch profile with its own config.yaml, so the real one is never read.
+        (tmp_path / "config.yaml").write_text(config, encoding="utf-8")
+        monkeypatch.setenv("PLEXMIX_DATA_DIR", str(tmp_path))
+        scope = ls.regenerate_scope(Settings.load_from_file(), 5943)
+
+        # The dialog as it reads once the state holds that scope: every reference to
+        # the scope is replaced by its value. A key the scope lacks fails here.
+        js = rendered(library_page._regenerate_confirm_dialog())
+        reference = re.compile(r'reflex___state[\w.]*\.regenerate_scope_rx_state_\?\.\["(\w+)"\]')
+        assert {match.group(1) for match in reference.finditer(js)} <= set(ls.REGENERATE_SCOPE_KEYS)
+        stated = reference.sub(lambda match: json.dumps(scope[match.group(1)]), js)
+
+        assert 'jsx(RadixThemesAlertDialog.Title,{},"Regenerate all tags & embeddings?")' in js
+        # The count, then the provider that does that step, with its model in mono.
+        tags_step = '"5,943 tracks will be tagged."," ","AI provider: ",'
+        embeddings_step = (
+            '"The embeddings for 5,943 tracks will be replaced."," ","Embedding provider: ",'
+        )
+        assert tags_step in stated and embeddings_step in stated
+        for step, (label, model) in ((tags_step, ai), (embeddings_step, embedder)):
+            line = stated[stated.index(step) :]
+            line = line[: line.index('jsx("span",{className:"mono"},') + 120]
+            assert f'jsx("span",{{}},"{label}",' in line
+            assert f'jsx("span",{{className:"mono"}},"{model}")' in line
+        # Where track details go, or that they go nowhere.
+        privacy_line = f'jsx("span",{{className:"lib-dialog-line"}},{json.dumps(privacy)})'
+        assert stated.count(privacy_line) == 1
+        assert ("are sent to" in stated) == ("are sent to" in privacy)
+        # Nothing is cleared before the new tags and embeddings arrive.
+        in_place = (
+            'jsx("span",{className:"lib-dialog-line"},"Tags and embeddings are replaced as '
+            'new ones arrive, and nothing is cleared first.")'
+        )
+        assert in_place in js and "clear" not in js.replace(in_place, "")
+        order = [
+            stated.index(part) for part in (tags_step, embeddings_step, privacy_line, in_place)
+        ]
+        assert order == sorted(order)
+        assert "Your Plex library is not affected." in js
+
+        # The scope arrives a moment after the dialog opens: it sits in a polite live
+        # region that exists from the start, and the confirm waits for it.
+        region = (
+            'jsx("span",{className:"lib-dialog-line",id:"lib-regenerate-scope",'
+            'ref:ref_lib_regenerate_scope,role:"status"},'
+        )
+        assert js.count(region) == 1 and 'role:"status"' in region
+        description = stated.index("jsx(RadixThemesAlertDialog.Description,")
+        # Inside the description, in front of the lines it announces when they arrive.
+        assert description < stated.index(region) < stated.index(tags_step)
+        assert re.search(
+            r'jsx\("button",\{className:"btn btn-3 btn-danger",'
+            r"disabled:reflex___state[\w.]*\.regenerate_confirm_blocked_rx_state_,onClick:",
+            js,
+        )
+
+    def test_regenerate_mode_is_named_for_what_it_does(self, content_js: str) -> None:
+        assert (
+            'jsx("option",{value:"regenerate"},"Regenerate (replace tags + embeddings)")'
+            in content_js
+        )
+        assert "clear tags" not in content_js
+        # Both Sync buttons open the confirmation and then have its scope read.
+        chain = re.findall(
+            r'\.start_sync_or_confirm", \(\{  \}\), \(\{  \}\)\)\), '
+            r'\(ReflexEvent\("reflex___state[\w.]*\.load_regenerate_scope"',
+            content_js,
+        )
+        assert len(chain) == 2 and content_js.count(".start_sync_or_confirm") == 2
 
     def test_removal_confirm_is_an_alert_dialog_with_safe_default(self) -> None:
         """Spec "Confirmation dialog": an alert dialog, focus on Cancel, the scope stated."""

@@ -84,6 +84,15 @@ NO_MATCH_FILTERED_BODY = (
     "filters or try a broader description."
 )
 
+# Shown when a page load finds this session still marked as generating although no
+# generation is running for it (PlexMix restarted and kept the session, or the run of a
+# long-disconnected tab was reaped). Neutral: both causes end the same way.
+INTERRUPTED_TITLE = "That playlist didn't finish"
+INTERRUPTED_BODY = (
+    "PlexMix stopped working on it before it was done. Your prompt is still here: "
+    "generate again."
+)
+
 
 def empty_generation_error() -> dict[str, str]:
     """A ``generation_error`` value that shows no callout."""
@@ -102,6 +111,17 @@ def generation_error_for(
     error["cause"] = cause
     error["tone"] = tone
     return error
+
+
+def _interrupted_error() -> dict[str, str]:
+    """The warning callout "That playlist didn't finish", as the page-load guard and the
+    prompt restore both show it (component "generation", so a load never drops it)."""
+    return generation_error_for(
+        "generation",
+        "",
+        {"title": INTERRUPTED_TITLE, "body": INTERRUPTED_BODY},
+        tone="warning",
+    )
 
 
 # ── Constraint chips (design D9) ──────────────────────────────────────
@@ -391,6 +411,19 @@ class GeneratorState(AppState):
     # The failure callout (see GENERATION_ERROR_KEYS). It stays for the session until
     # dismiss_error, a new generation, or on_load finding its cause resolved.
     generation_error: dict[str, str] = empty_generation_error()
+    # The prompt of the generation in flight, held in this tab's sessionStorage (entry
+    # ``pm_gen_in_flight``; gone when the tab closes). A restart wipes the server's state
+    # but not the browser's copy, which is how the Generator can still say what was
+    # interrupted (``_resume_interrupted_prompt``). The browser's value replaces the
+    # server's at every hydrate (Reflex resets client-storage vars there and sends the
+    # browser's values before the page's on_load), so a value the server cleared while
+    # the tab was disconnected comes back: read it only as "this was in flight". Non-empty
+    # is the marker. Nothing but the prompt text may be stored here, and the text is
+    # never logged: it comes from the browser. Set when a generation starts; cleared when
+    # it ends with results, a shown failure or a cancel, when the application replaces the
+    # prompt, and when a page load uses it. The cancelled-or-superseded exit of
+    # ``generate_playlist`` leaves it alone: a newer generation owns it there.
+    in_flight_prompt: str = rx.SessionStorage("", name="pm_gen_in_flight")
 
     generated_playlist: list[dict[str, str]] = []
     playlist_name: str = ""
@@ -426,6 +459,7 @@ class GeneratorState(AppState):
             self.is_page_loading = False
             return None
         self.load_app_data()
+        self._recover_orphaned_generation()
         self._clear_resolved_error()
         self._load_audio_stats()
         self._load_templates()
@@ -444,6 +478,10 @@ class GeneratorState(AppState):
                 prompt_before, genre_before = self.mood_query, self.genre_filter
                 self.load_generation_config(config)
                 events = self._field_sync_events(prompt_before, genre_before)
+
+        # A prompt the browser remembers from an interrupted generation. After the rerun
+        # handling, so a rerun (which clears the memory) wins.
+        events = [*events, *self._resume_interrupted_prompt()]
 
         # Re-check Plex reachability in the background when due (TTL + fingerprint).
         events = [*events, *self._plex_readiness_events()]
@@ -468,6 +506,68 @@ class GeneratorState(AppState):
         entry = (self.readiness or {}).get(component) or {}
         if entry and entry.get("cause", "") != error.get("cause", ""):
             self.generation_error = empty_generation_error()
+
+    def _recover_orphaned_generation(self) -> None:
+        """End a generation this session shows as running although none is.
+
+        ``is_generating`` is part of the session's serialized state, while the run itself
+        lives in this process (its cancel handle is in ``jobs``). When the flag outlives
+        the run (a backend restart that kept the session's state, or the reaper cancelling
+        a tab that stayed disconnected past the grace period) the page would sit on the
+        thinking stage until Cancel. A run whose handle is still registered is live and is
+        left alone. ``generate_playlist`` registers the handle and sets the flag in one
+        locked block and clears the flag before releasing the handle, so a healthy run is
+        never mistaken for an orphan.
+        """
+        if not self.is_generating:
+            return
+        token = self.router.session.client_token
+        if jobs.get_cancel_event(token, "generation") is not None:
+            return
+        # Drop anything a straggler of that run might still report.
+        self._generation_id += 1
+        self.is_generating = False
+        self.generation_progress = 0
+        self.generation_message = ""
+        self.generation_log = []
+        self.generation_error = _interrupted_error()
+
+    def _resume_interrupted_prompt(self) -> list["EventSpec"]:
+        """Say that a generation the browser remembers did not finish, and bring its prompt back.
+
+        ``in_flight_prompt`` is the browser's copy of the prompt of a generation in flight.
+        It is still there after a restart wiped the session (a fresh state: no results, no
+        failure, an empty prompt) and after the reaper cancelled the run of a tab that
+        stayed disconnected. Used once per load, in this order:
+
+        1. Nothing to do when it is empty, or while a generation is running (it is kept
+           for that run). A text that is only whitespace is emptied and shows nothing.
+        2. It is emptied.
+        3. A session that already shows how its generation ended (results, or a failure
+           callout, the guard's included) shows nothing more. This covers a run that
+           finished or failed while the tab was disconnected, when the browser's stale
+           copy comes back at the hydrate.
+        4. An empty prompt is refilled with the remembered text (cut to the prompt limit),
+           and the client-owned field is told with ``rx.set_value``.
+        5. The warning callout of the page-load guard is set.
+
+        The text comes from the browser: it is handled as text only and never logged.
+        """
+        remembered = str(self.in_flight_prompt or "")
+        if not remembered or self.is_generating:
+            return []
+        text = remembered[:PROMPT_MAX_CHARS]
+        self.in_flight_prompt = ""
+        if not text.strip():
+            return []
+        if self.generated_playlist or (self.generation_error or {}).get("title"):
+            return []
+        events: list["EventSpec"] = []
+        if not self.mood_query.strip():
+            self.set_mood_query(text)
+            events.append(rx.set_value(PROMPT_INPUT_ID, self.mood_query))
+        self.generation_error = _interrupted_error()
+        return events
 
     @rx.event
     def dismiss_error(self) -> None:
@@ -555,6 +655,9 @@ class GeneratorState(AppState):
             return busy
         if self.generated_playlist:
             self._clear_results()
+        # The prompt is about to change: what the browser remembers as interrupted would
+        # later be reported against a different prompt.
+        self.in_flight_prompt = ""
         return None
 
     def _clear_results(self) -> None:
@@ -994,6 +1097,9 @@ class GeneratorState(AppState):
             self._generation_id += 1
             cancel_event = jobs.start(token, "generation")
             self.is_generating = True
+            # The browser remembers the prompt until this generation ends (see
+            # ``in_flight_prompt``); set in the same locked block as the flag.
+            self.in_flight_prompt = self.mood_query
             self.generation_error = empty_generation_error()
             self.generation_progress = 0
             self.generation_message = "Starting playlist generation..."
@@ -1258,6 +1364,7 @@ class GeneratorState(AppState):
                 self.generated_playlist = [_str_dict(t) for t in playlist_tracks]
                 self.total_duration_ms = total_duration
                 self.is_generating = False
+                self.in_flight_prompt = ""
                 self.generation_progress = 100
                 if not self.playlist_name.strip():
                     self.playlist_name = self.mood_query[:60]
@@ -1299,6 +1406,7 @@ class GeneratorState(AppState):
         """
         async with self:
             self.is_generating = False
+            self.in_flight_prompt = ""
             self.generation_error = error
             self.generation_message = ""
             title = error.get("title", "")
@@ -1336,6 +1444,7 @@ class GeneratorState(AppState):
         jobs.cancel(self.router.session.client_token, "generation")
         self._generation_id += 1
         self.is_generating = False
+        self.in_flight_prompt = ""
         self.generation_progress = 0
         self.generation_message = ""
         self.generation_log = []

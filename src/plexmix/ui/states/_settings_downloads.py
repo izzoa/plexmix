@@ -3,15 +3,23 @@
 These are standalone async functions that accept the SettingsState instance
 (``state``) so they can read/write state fields while keeping the main
 settings_state module shorter.
+
+The server process never loads a local model runtime (torch, transformers,
+sentence-transformers): the warm-up step of each download runs the model in a
+short-lived worker process (``warm_up_local_llm`` and ``probe_local_embedding_model``).
+Both are time-limited and raise the built-in ``TimeoutError`` when the worker does
+not answer, which these handlers word for a local model (never "check the server URL").
 """
 
 import asyncio
 import logging
 from typing import Any
 
-from plexmix.ai.local_provider import LOCAL_LLM_MODELS, LOCAL_LLM_DEFAULT_MODEL
+from plexmix.ai.local_provider import LOCAL_LLM_DEFAULT_MODEL, warm_up_local_llm
 
 logger = logging.getLogger(__name__)
+
+_TIMED_OUT_ADVICE = "The files are downloaded; try again, or pick a smaller model."
 
 
 async def download_local_llm_impl(state: Any) -> None:
@@ -20,7 +28,6 @@ async def download_local_llm_impl(state: Any) -> None:
         return
 
     model_name = state.ai_model or LOCAL_LLM_DEFAULT_MODEL
-    model_info = LOCAL_LLM_MODELS.get(model_name, {})
 
     async with state:
         state.is_downloading_local_llm = True
@@ -45,24 +52,16 @@ async def download_local_llm_impl(state: Any) -> None:
         await update_status("Initializing model (first warmup may take a while)...", 55)
 
         def warmup_model():
-            from transformers import AutoTokenizer, AutoModelForCausalLM
-            import torch
+            # In a short-lived worker process: the server never imports torch.
+            warm_up_local_llm(model_name)
 
-            trust_remote_code = bool(model_info.get("trust_remote_code", False))
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name, trust_remote_code=trust_remote_code
-            )
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                trust_remote_code=trust_remote_code,
-                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            )
-            if tokenizer.pad_token is None and tokenizer.eos_token is not None:
-                tokenizer.pad_token = tokenizer.eos_token
-            inputs = tokenizer("Warm up playlist curation", return_tensors="pt")
-            _ = model.generate(**inputs, max_new_tokens=8)
-
-        await loop.run_in_executor(None, warmup_model)
+        try:
+            await loop.run_in_executor(None, warmup_model)
+        except TimeoutError as e:
+            # Only the warm-up's own time limit: a network timeout from the download
+            # step above is not caught here and keeps its "Error downloading" text.
+            await update_status(f"Timed out: {e}. {_TIMED_OUT_ADVICE}", 0)
+            return
         await update_status("✓ Model cached and ready for offline use", 100)
 
     except ImportError as e:
@@ -108,11 +107,16 @@ async def download_local_embedding_impl(state: Any) -> None:
         await update_status("Initializing model (first run may take a minute)...", 70)
 
         def warmup_model():
-            from sentence_transformers import SentenceTransformer
+            # In a short-lived worker process: the server never imports torch.
+            from plexmix.utils.embeddings import probe_local_embedding_model
 
-            SentenceTransformer(model_name)
+            probe_local_embedding_model(model_name)
 
-        await loop.run_in_executor(None, warmup_model)
+        try:
+            await loop.run_in_executor(None, warmup_model)
+        except TimeoutError as e:
+            await update_status(f"Timed out: {e}. {_TIMED_OUT_ADVICE}", 0)
+            return
         await update_status("✓ Model cached and ready for offline use", 100)
 
     except ImportError as e:

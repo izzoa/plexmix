@@ -4,11 +4,16 @@ from rich.console import Console
 from rich.table import Table
 
 from ..config.settings import Settings
+from ..database.index_rebuild import REGENERATE_COMMAND
 from ..database.sqlite_manager import SQLiteManager
 from ..playlist.generator import PlaylistGenerator
-from ..services.providers import build_embedding_generator as _build_embedding_generator
+from ..services.providers import (
+    build_embedding_generator_with_reason as _build_embedding_generator_with_reason,
+)
 from ..services.sync_service import PlexConnectionError, connect_plex, build_vector_index
 from ..services.playlist_service import build_generation_filters
+from .console_helpers import print_unreadable_index
+from .embedding_failure import print_embedding_failure
 
 console = Console()
 
@@ -63,13 +68,13 @@ def create_playlist(
     db_path = settings.database.get_db_path()
 
     with SQLiteManager(str(db_path)) as db:
-        embedding_generator = _build_embedding_generator(settings)
+        embedding_generator, failure = _build_embedding_generator_with_reason(settings)
         if not embedding_generator:
-            console.print("[red]API key required for embedding provider.[/red]")
-            console.print("Run: plexmix config init")
+            print_embedding_failure(console, failure)
             raise typer.Exit(1)
 
         vector_index = build_vector_index(settings, embedding_generator)
+        print_unreadable_index(console, vector_index)
 
         # Check for dimension mismatch
         if vector_index.dimension_mismatch:
@@ -77,8 +82,10 @@ def create_playlist(
             console.print(
                 f"[yellow]Existing embeddings are {vector_index.loaded_dimension}D but current provider '{settings.embedding.default_provider}' uses {embedding_generator.get_dimension()}D.[/yellow]"
             )
+            # A plain sync embeds only tracks that have no embedding of this
+            # provider, so it cannot replace vectors of another size. This does.
             console.print("\n[cyan]You must regenerate embeddings to use the new provider:[/cyan]")
-            console.print("  plexmix sync incremental --embeddings")
+            console.print(f"  {REGENERATE_COMMAND}")
             raise typer.Exit(1)
 
         generator = PlaylistGenerator(db, vector_index, embedding_generator)

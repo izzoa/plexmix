@@ -489,6 +489,22 @@ html[data-platform="mac"] .kbd-other { display: none; }
 .gen-progress { display: flex; align-items: center; gap: 14px; margin: 4px 0 16px; }
 .gen-progress .pct { font-family: var(--font-mono); font-size: 14px; font-weight: 500; color: var(--fg-1); min-width: 46px; text-align: right; }
 
+/* Lost connection (pages/generator.py, #gen-reconnect-region and #gen-offline-region).
+   Step 1, 2 to 4 failed reconnects: a quiet line takes exactly the progress row's box
+   (the row's margins, and 32px = its .btn-sm button), so the log below keeps its place.
+   Plain secondary text: no error colour, no animation. Step 2, 5 or more: the alert
+   takes its place, and the stage stops looking live. The one lit signal goes out (no glow
+   on the active phase), the field is dimmed and held still (plexmix.js), and the stale
+   progress message is hidden. */
+.gen-reconnect { display: flex; align-items: center; min-height: 32px; margin: 4px 0 16px; font-size: 13px; color: var(--fg-2); }
+#gen-offline-region .callout { margin: 4px 0 16px; text-align: left; }
+#gen-offline-region .c-main { flex: 1; min-width: 0; }
+#gen-offline-region .c-body { overflow-wrap: break-word; overflow-wrap: anywhere; }
+.think.is-offline .viz-wrap canvas { opacity: .4; filter: grayscale(1); }
+.think.is-offline .viz-phase-label { visibility: hidden; }
+.think.is-offline .phase-node.active .phase-dot { background: var(--surface-raised); border-color: var(--border-strong); color: var(--fg-2); box-shadow: none; }
+.think.is-offline .phase-node.active .phase-label { color: var(--fg-2); font-weight: 500; }
+
 .genlog { background: var(--pm-gray-12); border-radius: var(--radius-lg); padding: 16px 18px; max-height: 184px; overflow-y: auto; }
 .dark .genlog { background: #050506; border: 1px solid var(--border-subtle); }
 .genlog .ln { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.85; color: #c9c9cf; display: flex; gap: 10px; }
@@ -646,7 +662,8 @@ input.minisel { cursor: text; }
 /* ── Changelog body ── */
 /* Server-rendered release notes in the changelog dialog (rx.html, .changelog-body).
    Tokens only: Copper Text for links, display face for headings, mono for code. */
-.changelog-body { color: var(--fg-2); font-size: 14px; line-height: 1.6; }
+.changelog-body { color: var(--fg-2); font-size: 14px; line-height: 1.6;
+  overflow-wrap: break-word; overflow-wrap: anywhere; }
 .changelog-body h2 { font-family: var(--font-display); font-size: 18px; font-weight: 700; color: var(--fg-1);
   margin: 24px 0 8px; padding-top: 16px; border-top: 1px solid var(--border-subtle); }
 .changelog-body h2:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
@@ -662,6 +679,14 @@ input.minisel { cursor: text; }
 .changelog-body hr { border: 0; border-top: 1px solid var(--border-subtle); margin: 16px 0; }
 .changelog-body table { border-collapse: collapse; margin: 8px 0; }
 .changelog-body th, .changelog-body td { border: 1px solid var(--border-subtle); padding: 4px 8px; text-align: left; }
+/* The notes sit in a Radix scroll area whose content wrapper is width: fit-content, so one
+   long token (a path or a URL in <code>) set its width: live, 351px of notes in a 228px area
+   at 320x640. `anywhere` (break-word alone is not enough: it leaves the min-content width
+   alone; with it 4 of 12 changelog cells still failed) lets the token wrap. The two guards
+   cover content the notes do not have today but the renderer allows: a fenced code block
+   and an image. */
+.changelog-body pre { white-space: pre-wrap; }
+.changelog-body img { max-width: 100%; height: auto; }
 
 /* ── change 2: a11y foundations (webui-keyboard-and-semantics) ── */
 /* Visually hidden, still in the accessibility tree (standard clip pattern). */
@@ -819,13 +844,43 @@ ul.pl-grid > li { display: flex; min-width: 0; }
   line-height: 1.2; letter-spacing: -.01em; margin: 0; }
 .pl-dialog .pl-dialog-desc { margin: 6px 0 0; font-size: 13.5px; line-height: 1.5; color: var(--fg-2); }
 .pl-dialog .pl-dialog-mood { display: block; color: var(--accent-fg); }
+/* A long playlist name or prompt shows two lines at every width; the full text stays in the
+   page (the dialog's accessible name and description) and in a title attribute. It must come
+   after the rule above, because it replaces that rule's display: block. */
+.pl-dialog .pl-dialog-title, .pl-dialog .pl-dialog-mood { display: -webkit-box; -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: break-word; overflow-wrap: anywhere; }
+/* The clamp's overflow: hidden clips at the box edge, and ink leaves the line's own box above
+   and beside it, so the title takes room there. Above: Radix trims the first line of the title
+   (rt-r-lt-start) by pulling it above its box (its ::before has a negative margin-bottom, about
+   3.3px at 23px and 5.4px at the compact 18px), so the clip cut the top of every glyph (i-dots,
+   accents on capitals). Beside: the title box is shrink-wrapped to its text (the heading is a
+   min-width: 0 flex item of .modal-head), so the edge sat on the advance box of the first and
+   last glyph of a line and cut any glyph whose ink overhangs its advance (the diaeresis of Ï
+   and ï, the hook of j, a final acute, bracket or slash: up to .06em in the app's face, .4em in
+   the one system face that was measured drawing Vietnamese stacked marks). .5em on each of
+   those sides with an equal negative margin moves the clip edge and nothing else: no box, line
+   break or glyph shifts. The prompt takes the same room beside its lines. Nothing below the
+   title: a clipped third line would show in a bottom padding, so at the compact 18px the tip of
+   a bracket can still lose a third of a pixel at that edge. */
+.pl-dialog .pl-dialog-title { padding-top: .5em; margin-top: -.5em; }
+.pl-dialog .pl-dialog-title, .pl-dialog .pl-dialog-mood { padding-inline: .5em; margin-inline: -.5em; }
 .pl-dialog .pl-dialog-stats { display: block; font-family: var(--font-mono); font-size: 12.5px; }
+/* The track list never collapses under a long header or a footer that wraps: one and two compact
+   rows (49.5px each) stay visible, and the Move buttons stay reachable. When header, list and
+   footer do not fit, the panel itself scrolls (Radix gives it overflow: auto). No floor without
+   rows, so a playlist with 0, 1 or 2 tracks gets no blank band: never add an unconditional
+   min-height on .pl-dialog .modal-body (it left 58.5px blank under one track on desktop). */
+.pl-dialog .modal-body:has(> .pl-trk) { min-height: 49px; }
+.pl-dialog .modal-body:has(> .pl-trk + .pl-trk) { min-height: 99px; }
 ol.pl-tracks { list-style: none; margin: 0; }
 .pl-trk { display: flex; align-items: center; gap: 8px; padding: 8px 4px; border-bottom: 1px solid var(--border-subtle); }
 .pl-trk .pos { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg-3); width: 26px; text-align: right; flex-shrink: 0; }
 .pl-trk .info { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .pl-trk .ttl { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.pl-trk .art { font-size: 13px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The artist line is .artist, not .art: .art is the album-swatch rule near the top of this file
+   (display: flex, centred text, shadow, gloss), which centred the line, shaded it and cut it
+   at both ends without an ellipsis. */
+.pl-trk .artist { font-size: 13px; color: var(--fg-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pl-trk .dur { font-family: var(--font-mono); font-size: 12.5px; color: var(--fg-3); flex-shrink: 0; margin-right: 4px; }
 .pl-trk .icon-btn:disabled { opacity: .4; cursor: not-allowed; }
 .pl-trk .icon-btn:disabled:hover { background: transparent; color: var(--fg-2); transform: none; }
@@ -1274,6 +1329,59 @@ input[type=checkbox]:focus-visible, input[type=radio]:focus-visible {
   .setup-action { max-width: 100%; }
   .setup-action .btn { max-width: 100%; white-space: normal; text-align: center; }
   .setup-action .btn-3 { height: auto; min-height: 40px; padding-block: 6px; }
+}
+
+/* --- zoom-fit: dialogs --- */
+/* Radix Themes dialogs (Dialog and AlertDialog share the .rt-BaseDialog* classes):
+   Overlay > .rt-BaseDialogScroll (display: flex; overflow: auto; the dialog layer) >
+   .rt-BaseDialogScrollPadding (the padding wrapper, 16px side padding) > .rt-BaseDialogContent
+   (the panel: width: 100%, capped by the class Reflex emits for the max_width prop: 620px
+   History, 640px changelog, 440 or 480px confirmations).
+
+   Width. The padding wrapper is a flex item, so its automatic minimum width was the dialog's
+   min-content width: the History dialog (nowrap track titles) stayed 620px wide and the
+   changelog 411px at 320 CSS px, and the dialog layer scrolled sideways at 320 CSS px and at
+   200% zoom. With min-width: 0 the wrapper shrinks to the layer, and the panel (width: 100%)
+   is the layer's client width minus the two 16px gutters, also when the layer shows a classic
+   vertical scrollbar. Dialogs that already fit are unchanged (0 differing pixels at 1440x900).
+   This is the one exception to D9 of webui-zoom-and-narrow-fit (never restyle an unscoped
+   Radix dialog class); tests/ui/test_reflow_fit.py pins it as exactly this rule, declared once.
+   Do not add a max-width cap built on var(--max-width): Radix sets that variable to its 600px
+   default on every dialog, so without !important the cap does nothing, and with it the 620,
+   640, 440 and 480px dialogs all become 600px. The palette keeps its own rules
+   (.rt-DialogScrollPadding:has(> .cmdk), D9). */
+.rt-BaseDialogScrollPadding { min-width: 0; }
+
+/* History dialog chrome on narrow or short viewports: 16px gutters, an 18px title and
+   .btn-sm metrics for the six footer actions. Every label and icon stays; the buttons are 32px
+   tall (WCAG 2.5.8 asks for 24). Live: at 320x640 the footer is 137px in 3 rows (127px in 2
+   rows at 1440x900) and the list is 280px; at 640x400 the footer is 97px in 2 rows. The block
+   also applies to a desktop window 600px tall or less. */
+@media (max-width: 640px), (max-height: 600px) {
+  .pl-dialog .modal-head { padding: 14px 16px 10px; }
+  .pl-dialog .pl-dialog-title { font-size: 18px; }
+  .pl-dialog .modal-body { padding: 0 16px; }
+  .pl-dialog .modal-foot { gap: 8px; padding: 12px 16px; margin-top: 8px; }
+  .pl-dialog .modal-foot .btn { height: 32px; padding: 0 12px; font-size: 13px; }
+}
+/* Short viewports (200% zoom): 16px above and below, the panel takes the rest and the track
+   list is the only scroller, as for the palette. 16 + (100vh - 32) + 16 is the viewport, so the
+   dialog layer cannot scroll vertically. Live: the panel is 352, 368 and 418px tall at 512x384,
+   640x400 and 720x450, with no vertical overflow in the layer. The first selector names
+   .pl-dialog, so it beats Radix's padding rule by specificity, not by order. */
+@media (max-height: 600px) {
+  .rt-BaseDialogScrollPadding:has(> .pl-dialog) { padding-top: 16px; padding-bottom: 16px; }
+  .rt-BaseDialogContent.pl-dialog { max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); }
+  .pl-trk { padding-block: 4px; }
+}
+/* Two-line track rows at 480px and below: the position (26px) and the title column fill the
+   first line, and the duration and the Move buttons wrap to a second one. 34px is the position
+   number (26px) plus its 8px gap, so the duration starts under the title. On one line the
+   title column is 78px at 320x640 (live); here it is about 204px (static). Nothing is hidden. */
+@media (max-width: 480px) {
+  .pl-trk { flex-wrap: wrap; row-gap: 0; }
+  .pl-trk .info { flex-basis: calc(100% - 34px); }
+  .pl-trk .dur { margin-inline: 34px auto; }
 }
 
 /* === end zoom & narrow fit === */

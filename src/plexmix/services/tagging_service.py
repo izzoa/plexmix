@@ -4,6 +4,7 @@ import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from plexmix.config.constants import EMBEDDING_BATCH_SIZE
+from plexmix.database.index_rebuild import rebuild_index
 from plexmix.database.models import Embedding
 from plexmix.database.sqlite_manager import SQLiteManager
 from plexmix.database.vector_index import VectorIndex
@@ -93,19 +94,18 @@ def rebuild_vector_index(
     index_path: str,
     embedding_model: Optional[str] = None,
 ) -> int:
-    """Rebuild and save the FAISS index from all embeddings in the database.
+    """Rebuild the FAISS index from the embeddings in the database and save it.
 
-    Pass *embedding_model* to build from a single model's vectors — mixing models
-    (e.g. after switching providers) produces ragged dimensions that crash the
-    index build.
+    A thin wrapper over ``plexmix.database.index_rebuild.rebuild_index``, which
+    holds the rule: the index is built and saved only when it is complete. When a
+    track holds an embedding of another model or vector size, nothing is built and
+    nothing is saved, and the saved index stays as it is.
 
-    Returns the number of embeddings in the rebuilt index.
+    Pass *embedding_model* to build from a single model's vectors.
+
+    Returns the number of vectors in the index that was built, and 0 when none
+    was. For the whole result (the tracks in the way, and whether the files were
+    written) read ``vector_index.last_rebuild`` afterwards, or call
+    ``rebuild_index`` itself.
     """
-    all_embeddings = db.get_all_embeddings(embedding_model)
-    track_ids = [emb[0] for emb in all_embeddings]
-    vectors = [emb[1] for emb in all_embeddings]
-
-    vector_index.build_index(vectors, track_ids)
-    vector_index.save_index(index_path)
-
-    return len(vectors)
+    return rebuild_index(db, vector_index, embedding_model, index_path=index_path).vectors
